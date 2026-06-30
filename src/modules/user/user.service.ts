@@ -1,0 +1,558 @@
+import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import * as bcrypt from 'bcryptjs';
+import { Repository } from 'typeorm';
+import { AuditService } from '../../audit/audit.service';
+import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
+import { paginate } from '../../common/utils/pagination.util';
+import { RoleService } from '../role/role.service';
+import { CreateUserDto, UpdateUserDto } from './dto/create-user.dto';
+import { User } from './entities/user.entity';
+import { UserCategory } from '../user-category/entities/user-category.entity';
+import { BusinessRole } from '../business-role/entities/business-role.entity';
+import { RolePermissionsService } from '../role-permissions/role-permissions.service';
+
+@Injectable()
+export class UserService {
+  constructor(
+    @InjectRepository(User)
+    private readonly users: Repository<User>,
+
+    @InjectRepository(BusinessRole)
+    private readonly businessRoles: Repository<BusinessRole>,
+
+    private readonly rolePermissionService: RolePermissionsService,
+
+    private readonly roles: RoleService,
+
+    private readonly audit: AuditService,
+  ) { }
+
+  async create(
+    dto: CreateUserDto,
+    actorId?: number,
+  ) {
+    await this.validateUniqueFields(dto);
+
+    const role =
+      await this.roles.findOne(
+        dto.roleId,
+      );
+
+
+    const businessRole =
+      dto.businessRoleId
+        ? await this.businessRoles.findOne({
+          where: {
+            id: dto.businessRoleId,
+          },
+        })
+        : null;
+
+    const reportingManager =
+      dto.reportingManagerId
+        ? await this.users.findOne({
+          where: {
+            id: dto.reportingManagerId,
+          },
+        })
+        : null;
+
+    const user = new User();
+
+    user.role = role;
+    user.businessRole =
+      businessRole ?? undefined;
+
+    user.reportingManager =
+      reportingManager ??
+      undefined;
+
+    user.firstName =
+      dto.firstName;
+
+    user.middleName =
+      dto.middleName;
+
+    user.lastName =
+      dto.lastName;
+
+    user.designation =
+      dto.designation;
+
+    user.email =
+      dto.email;
+
+    user.mobile =
+      dto.mobile;
+
+    user.employeeCode =
+      dto.employeeCode;
+
+    user.active =
+      dto.active ?? true;
+
+    user.passwordHash =
+      dto.password
+        ? await bcrypt.hash(
+          dto.password,
+          12,
+        )
+        : null;
+
+    const saved =
+      await this.users.save(user);
+
+    await this.audit.record({
+      moduleName: "users",
+      entityId: saved.id,
+      action: "CREATE",
+      newValue: saved,
+      performedBy: actorId,
+    });
+
+    return saved;
+  }
+
+  async findAll(
+    query: PaginationQueryDto,
+  ) {
+    const qb = this.users
+      .createQueryBuilder("user")
+      .leftJoinAndSelect(
+        "user.role",
+        "role",
+      );
+
+    // Full Name Search
+
+    if (query["search.fullName"]) {
+      qb.andWhere(
+        `
+      CONCAT(
+        COALESCE(user.firstName, ''),
+        ' ',
+        COALESCE(user.middleName, ''),
+        ' ',
+        COALESCE(user.lastName, '')
+      ) LIKE :fullName
+      `,
+        {
+          fullName: `%${query["search.fullName"]}%`,
+        },
+      );
+    }
+
+    // Email Search
+
+    if (query["search.email"]) {
+      qb.andWhere(
+        "user.email LIKE :email",
+        {
+          email: `%${query["search.email"]}%`,
+        },
+      );
+    }
+
+    // Mobile Search
+
+    if (query["search.mobile"]) {
+      qb.andWhere(
+        "user.mobile LIKE :mobile",
+        {
+          mobile: `%${query["search.mobile"]}%`,
+        },
+      );
+    }
+
+    // Role Search
+
+    if (query["search.role"]) {
+      const roles =
+        query["search.role"].split(",");
+
+      qb.andWhere(
+        "role.roleName IN (:...roles)",
+        {
+          roles,
+        },
+      );
+    }
+    const allowedSortColumns = {
+      fullName: "user.firstName",
+      email: "user.email",
+      mobile: "user.mobile",
+      active: "user.active",
+      employeeCode:
+        "user.employeeCode",
+      createdAt:
+        "user.createdAt",
+    } as const;
+
+    const sortColumn =
+      allowedSortColumns[
+      (query.sortBy ??
+        "createdAt") as keyof typeof allowedSortColumns
+      ] ?? "user.createdAt";
+
+    const sortOrder =
+      query.sortOrder === "ASC"
+        ? "ASC"
+        : "DESC";
+
+    qb.orderBy(
+      sortColumn,
+      sortOrder,
+    );
+
+    const result =
+      await paginate(
+        qb,
+        query,
+      );
+
+    result.items =
+      result.items.map(
+        (user: User) => ({
+          ...user,
+
+          fullName: [
+            user.firstName,
+            user.middleName,
+            user.lastName,
+          ]
+            .filter(Boolean)
+            .join(" "),
+        }),
+      );
+
+    return result;
+  }
+  async findOne(id: number) {
+    const user = await this.users.findOne({
+      where: { id },
+      relations: {
+        role: true,
+        businessRole: true,
+        reportingManager: true,
+      },
+    });
+
+
+    if (!user) {
+      throw new NotFoundException("User not found");
+    }
+
+    return user;
+  }
+
+  async getReportingManagers() {
+    const users = await this.users
+      .createQueryBuilder("user")
+      .leftJoinAndSelect(
+        "user.role",
+        "role",
+      )
+      .where(
+        "user.active = :active",
+        {
+          active: true,
+        },
+      )
+      .andWhere(
+        "role.canBeReportingManager = :can",
+        {
+          can: true,
+        },
+      )
+      .orderBy(
+        "user.firstName",
+        "ASC",
+      )
+      .getMany();
+
+    return users.map((user) => ({
+      id: user.id,
+      name: [
+        user.firstName,
+        user.middleName,
+        user.lastName,
+      ]
+        .filter(Boolean)
+        .join(" "),
+      employeeCode:
+        user.employeeCode,
+    }));
+  }
+  async getProfile(id: number) {
+    const user = await this.findOne(id);
+
+    let permissions;
+
+    if (
+      user.role.roleName === "SUPER_ADMIN" ||
+      user.role.roleName === "ADMIN"
+    ) {
+      permissions =
+        await this.rolePermissionService.getAllMenus();
+    } else {
+      permissions =
+        await this.rolePermissionService.getUserPermissions(
+          user.role.id,
+        );
+    }
+
+    return {
+      id: user.id,
+      firstName: user.firstName,
+      middleName: user.middleName,
+      lastName: user.lastName,
+      email: user.email,
+      employeeCode: user.employeeCode,
+      designation: user.designation,
+
+      role: {
+        id: user.role.id,
+        name: user.role.roleName,
+      },
+
+      permissions,
+    };
+  }
+  findByEmailWithRole(email: string) {
+    return this.users
+      .createQueryBuilder('user')
+      .addSelect('user.passwordHash')
+      .leftJoinAndSelect('user.role', 'role')
+      .where('user.email = :email', { email })
+      .getOne();
+  }
+
+  async updateLastLogin(
+    userId: number,
+  ): Promise<void> {
+    await this.users.update(
+      userId,
+      {
+        lastLoginAt:
+          new Date(),
+      },
+    );
+  }
+
+  async update(id: number, dto: UpdateUserDto, actorId?: number) {
+    const user = await this.findOne(id);
+    const oldValue = { ...user };
+    await this.validateUniqueFields(
+      dto,
+      id,
+    );
+    if (dto.roleId) {
+      user.role = await this.roles.findOne(dto.roleId);
+    }
+    if (dto.businessRoleId) {
+      const businessRole =
+        await this.businessRoles.findOne({
+          where: {
+            id: dto.businessRoleId,
+          },
+        });
+
+      if (businessRole) {
+        user.businessRole =
+          businessRole;
+      }
+    }
+
+
+    // if (dto.reportingManagerId) {
+    //   const reportingManager =
+    //     await this.users.findOne({
+    //       where: {
+    //         id: dto.reportingManagerId,
+    //       },
+    //     });
+
+    //   if (reportingManager) {
+    //     user.reportingManager =
+    //       reportingManager;
+    //   }
+    // }
+    Object.assign(user, {
+      firstName:
+        dto.firstName ??
+        user.firstName,
+
+      middleName:
+        dto.middleName ??
+        user.middleName,
+
+      lastName:
+        dto.lastName ??
+        user.lastName,
+
+      designation:
+        dto.designation ??
+        user.designation,
+
+      email:
+        dto.email ??
+        user.email,
+
+      mobile:
+        dto.mobile ??
+        user.mobile,
+
+      active:
+        dto.active ??
+        user.active,
+
+      employeeCode:
+        dto.employeeCode ??
+        user.employeeCode,
+    });
+    if (dto.password) {
+      user.passwordHash = await bcrypt.hash(dto.password, 12);
+    }
+    const saved = await this.users.save(user);
+    await this.audit.record({ moduleName: 'users', entityId: id, action: 'UPDATE', oldValue, newValue: saved, performedBy: actorId });
+    return saved;
+  }
+
+  private async validateUniqueFields(
+    dto: {
+      email?: string;
+      mobile?: string;
+      employeeCode?: string;
+    },
+    excludeUserId?: number,
+  ) {
+    if (dto.email) {
+      const existingEmail =
+        await this.users.findOne({
+          where: {
+            email: dto.email,
+          },
+        });
+
+      if (
+        existingEmail &&
+        existingEmail.id !==
+        excludeUserId
+      ) {
+        throw new ConflictException(
+          'Email already exists',
+        );
+      }
+    }
+
+    if (dto.mobile) {
+      const existingMobile =
+        await this.users.findOne({
+          where: {
+            mobile: dto.mobile,
+          },
+        });
+
+      if (
+        existingMobile &&
+        existingMobile.id !==
+        excludeUserId
+      ) {
+        throw new ConflictException(
+          'Mobile number already exists',
+        );
+      }
+    }
+
+    if (dto.employeeCode) {
+      const existingEmployee =
+        await this.users.findOne({
+          where: {
+            employeeCode:
+              dto.employeeCode,
+          },
+        });
+
+      if (
+        existingEmployee &&
+        existingEmployee.id !==
+        excludeUserId
+      ) {
+        throw new ConflictException(
+          'Employee code already exists',
+        );
+      }
+    }
+  }
+
+  async remove(id: number, actorId?: number) {
+    const user = await this.findOne(id);
+    await this.users.softRemove(user);
+    await this.audit.record({ moduleName: 'users', entityId: id, action: 'DELETE', oldValue: user, performedBy: actorId });
+  }
+
+
+  async getDashboard() {
+    const totalUsers =
+      await this.users.count();
+
+    const activeUsers =
+      await this.users.count({
+        where: {
+          active: true,
+        },
+      });
+
+    const inactiveUsers =
+      await this.users.count({
+        where: {
+          active: false,
+        },
+      });
+
+    const adminUsers =
+      await this.users
+        .createQueryBuilder("user")
+        .leftJoin("user.role", "role")
+        .where(
+          "role.roleName IN (:...roles)",
+          {
+            roles: [
+              "SUPER_ADMIN",
+              "ADMIN",
+            ],
+          }
+        )
+        .getCount();
+
+    const roleDistribution =
+      await this.users
+        .createQueryBuilder("user")
+        .leftJoin("user.role", "role")
+        .select(
+          "role.roleName",
+          "role"
+        )
+        .addSelect(
+          "COUNT(user.id)",
+          "count"
+        )
+        .groupBy("role.roleName")
+        .getRawMany();
+
+    return {
+      summary: {
+        totalUsers,
+        activeUsers,
+        inactiveUsers,
+        adminUsers,
+      },
+
+      analytics: {
+        roleDistribution,
+      },
+    };
+  }
+}
+
