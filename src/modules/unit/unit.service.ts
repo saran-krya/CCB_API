@@ -6,14 +6,16 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
 import { AuditService } from '../../audit/audit.service';
-import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 import { paginate } from '../../common/utils/pagination.util';
 import { PropertyService } from '../property/property.service';
 import {
   CreateUnitDto,
+  UnitQueryDto,
+  UpdateOccupancyDto,
   UpdateUnitDto,
 } from './dto/create-unit.dto';
-import { Unit } from './entities/unit.entity';
+import { UnitDetailDto, UnitListDto } from './dto/unit-response.dto';
+import { OccupancyStatus, Unit, UnitStatus } from './entities/unit.entity';
 
 @Injectable()
 export class UnitService {
@@ -25,202 +27,154 @@ export class UnitService {
     private readonly dataSource: DataSource,
   ) {}
 
-  async create(
-    dto: CreateUnitDto,
-    actorId?: number,
-  ) {
-    const property =
-      await this.properties.findOne(
-        dto.propertyId,
-      );
+  async create(dto: CreateUnitDto, actorId?: number) {
+    const property = await this.properties.findOneEntity(dto.propertyId);
 
-    const existing =
-      await this.units.findOne({
-        where: {
-          unitNo: dto.unitNo,
-          property: {
-            id: dto.propertyId,
-          },
-        },
-        relations: {
-          property: true,
-        },
-      });
-
+    const existing = await this.units.findOne({
+      where: { unitNumber: dto.unitNumber, property: { id: dto.propertyId } },
+    });
     if (existing) {
-      throw new ConflictException(
-        'Unit number already exists in this property',
-      );
+      throw new ConflictException('Unit number already exists in this property');
     }
 
-    return this.dataSource.transaction(
-      async (manager) => {
-        const unit = manager.create(
-          Unit,
-          {
-            property,
-            unitNo: dto.unitNo,
-            unitType: dto.unitType,
-            area: dto.area.toString(),
-            occupancyType:
-              dto.occupancyType,
-            status:
-              dto.status ?? true,
-          },
-        );
+    return this.dataSource.transaction(async (manager) => {
+      const unit = manager.create(Unit, {
+        ...dto,
+        property,
+        occupancyStatus: dto.occupancyStatus ?? OccupancyStatus.VACANT,
+        status: dto.status ?? UnitStatus.ACTIVE,
+        balcony: dto.balcony ?? false,
+        parkingSpaces: dto.parkingSpaces ?? 0,
+      });
+      const saved = await manager.save(Unit, unit);
 
-        const saved =
-          await manager.save(
-            Unit,
-            unit,
-          );
-
-        await this.audit.record({
-          moduleName: 'units',
-          entityId: saved.id,
-          action: 'CREATE',
-          newValue: {
-            unitNo: saved.unitNo,
-            unitType:
-              saved.unitType,
-            area: saved.area,
-            occupancyType:
-              saved.occupancyType,
-            status: saved.status,
-          },
-          performedBy: actorId,
-        });
-
-        return saved;
-      },
-    );
-  }
-
-  findAll(query: PaginationQueryDto) {
-    const qb = this.units
-      .createQueryBuilder('unit')
-      .leftJoinAndSelect(
-        'unit.property',
-        'property',
-      )
-      .leftJoinAndSelect(
-        'property.community',
-        'community',
-      )
-      .orderBy(
-        'unit.createdAt',
-        'DESC',
-      );
-
-    if (query.search) {
-      qb.where(
-        `
-        unit.unitNo LIKE :search
-        OR unit.unitType LIKE :search
-        OR unit.occupancyType LIKE :search
-      `,
-        {
-          search: `%${query.search}%`,
+      await this.audit.record({
+        moduleName: 'units',
+        entityId: saved.id,
+        action: 'CREATE',
+        newValue: {
+          unitNumber: saved.unitNumber,
+          floorNumber: saved.floorNumber,
+          unitType: saved.unitType,
+          occupancyStatus: saved.occupancyStatus,
+          status: saved.status,
+          propertyId: saved.property?.id,
         },
-      );
-    }
-
-    return paginate(qb, query);
-  }
-
-  async findOne(id: number) {
-    const unit =
-      await this.units.findOne({
-        where: { id },
-        relations: {
-          property: {
-            community: true,
-          },
-        },
+        performedBy: actorId,
       });
 
-    if (!unit) {
-      throw new NotFoundException(
-        'Unit not found',
-      );
-    }
-
-    return unit;
+      return saved;
+    });
   }
 
-  async update(
-    id: number,
-    dto: UpdateUnitDto,
-    actorId?: number,
-  ) {
-    const unit =
-      await this.findOne(id);
+  async findAll(query: UnitQueryDto) {
+    const { propertyId, communityId, unitType, occupancyStatus, status, search, sortBy, sortOrder } = query;
 
-    if (dto.propertyId) {
-      unit.property =
-        await this.properties.findOne(
-          dto.propertyId,
-        );
+    const qb = this.units
+      .createQueryBuilder('u')
+      .select(['u.id', 'u.unitNumber', 'u.floorNumber', 'u.unitType', 'u.unitSize', 'u.occupancyStatus', 'u.status', 'u.createdAt'])
+      .leftJoin('u.property', 'property')
+      .addSelect(['property.id', 'property.name'])
+      .leftJoin('property.community', 'community')
+      .addSelect(['community.id', 'community.name'])
+      .orderBy(`u.${sortBy ?? 'createdAt'}`, sortOrder ?? 'DESC');
+
+    if (search) {
+      qb.andWhere('(u.unitNumber LIKE :s OR u.ownerId LIKE :s OR u.tenantId LIKE :s)', {
+        s: `%${search}%`,
+      });
+    }
+    if (propertyId) qb.andWhere('u.property = :propertyId', { propertyId });
+    if (communityId) qb.andWhere('property.community = :communityId', { communityId });
+    if (unitType) qb.andWhere('u.unitType = :unitType', { unitType });
+    if (occupancyStatus) qb.andWhere('u.occupancyStatus = :occupancyStatus', { occupancyStatus });
+    if (status) qb.andWhere('u.status = :status', { status });
+
+    const result = await paginate(qb, query);
+    const items: UnitListDto[] = result.items.map((u: any) => ({
+      id: u.id,
+      unitNumber: u.unitNumber,
+      floorNumber: u.floorNumber,
+      unitType: u.unitType,
+      unitSize: u.unitSize != null ? Number(u.unitSize) : null,
+      occupancyStatus: u.occupancyStatus,
+      status: u.status,
+      createdDate: (u.createdAt as Date)?.toISOString() ?? '',
+      propertyId: u.property?.id,
+      propertyName: u.property?.name,
+      communityId: u.property?.community?.id,
+      communityName: u.property?.community?.name,
+    }));
+    return { items, pagination: result.pagination };
+  }
+
+  async findOne(id: number): Promise<UnitDetailDto> {
+    const unit = await this.units.findOne({
+      where: { id },
+      relations: { property: { community: true } },
+    });
+    if (!unit) throw new NotFoundException('Unit not found');
+    return {
+      id: unit.id,
+      unitNumber: unit.unitNumber,
+      floorNumber: unit.floorNumber,
+      unitType: unit.unitType,
+      unitSize: unit.unitSize != null ? Number(unit.unitSize) : null,
+      occupancyStatus: unit.occupancyStatus,
+      status: unit.status,
+      bedrooms: unit.bedrooms ?? null,
+      bathrooms: unit.bathrooms ?? null,
+      balcony: unit.balcony,
+      parkingSpaces: unit.parkingSpaces,
+      monthlyRent: unit.monthlyRent != null ? Number(unit.monthlyRent) : null,
+      handoverDate: unit.handoverDate ?? null,
+      ownerId: unit.ownerId ?? null,
+      tenantId: unit.tenantId ?? null,
+      masterMeterId: unit.masterMeterId ?? null,
+      subMeterId: unit.subMeterId ?? null,
+      amenities: unit.amenities ?? null,
+      description: unit.description ?? null,
+      createdDate: unit.createdAt?.toISOString() ?? '',
+      propertyId: unit.property.id,
+      propertyName: unit.property.name,
+      propertyCode: unit.property.code,
+      communityId: unit.property.community.id,
+      communityName: unit.property.community.name,
+    };
+  }
+
+  async update(id: number, dto: UpdateUnitDto, actorId?: number) {
+    const unit = await this.units.findOne({
+      where: { id },
+      relations: { property: true },
+    });
+    if (!unit) throw new NotFoundException('Unit not found');
+
+    if (dto.propertyId && dto.propertyId !== unit.property?.id) {
+      unit.property = await this.properties.findOneEntity(dto.propertyId);
     }
 
-    const propertyId =
-      dto.propertyId ??
-      unit.property.id;
+    const targetPropertyId = dto.propertyId ?? unit.property?.id;
 
-    if (dto.unitNo) {
-      const exists =
-        await this.units.findOne({
-          where: {
-            unitNo: dto.unitNo,
-            property: {
-              id: propertyId,
-            },
-          },
-          relations: {
-            property: true,
-          },
-        });
-
-      if (
-        exists &&
-        exists.id !== id
-      ) {
-        throw new ConflictException(
-          'Unit number already exists in this property',
-        );
+    if (dto.unitNumber && dto.unitNumber !== unit.unitNumber) {
+      const exists = await this.units.findOne({
+        where: { unitNumber: dto.unitNumber, property: { id: targetPropertyId } },
+      });
+      if (exists && exists.id !== id) {
+        throw new ConflictException('Unit number already exists in this property');
       }
     }
 
     const oldValue = {
-      unitNo: unit.unitNo,
+      unitNumber: unit.unitNumber,
+      floorNumber: unit.floorNumber,
       unitType: unit.unitType,
-      area: unit.area,
-      occupancyType:
-        unit.occupancyType,
+      occupancyStatus: unit.occupancyStatus,
       status: unit.status,
     };
 
-    Object.assign(unit, {
-      unitNo:
-        dto.unitNo ??
-        unit.unitNo,
-      unitType:
-        dto.unitType ??
-        unit.unitType,
-      area:
-        dto.area !== undefined
-          ? dto.area.toString()
-          : unit.area,
-      occupancyType:
-        dto.occupancyType ??
-        unit.occupancyType,
-      status:
-        dto.status ??
-        unit.status,
-    });
-
-    const saved =
-      await this.units.save(unit);
+    Object.assign(unit, dto);
+    const saved = await this.units.save(unit);
 
     await this.audit.record({
       moduleName: 'units',
@@ -228,12 +182,10 @@ export class UnitService {
       action: 'UPDATE',
       oldValue,
       newValue: {
-        unitNo: saved.unitNo,
-        unitType:
-          saved.unitType,
-        area: saved.area,
-        occupancyType:
-          saved.occupancyType,
+        unitNumber: saved.unitNumber,
+        floorNumber: saved.floorNumber,
+        unitType: saved.unitType,
+        occupancyStatus: saved.occupancyStatus,
         status: saved.status,
       },
       performedBy: actorId,
@@ -242,35 +194,45 @@ export class UnitService {
     return saved;
   }
 
-  async remove(
-    id: number,
-    actorId?: number,
-  ) {
-    const unit =
-      await this.findOne(id);
+  async updateOccupancy(id: number, dto: UpdateOccupancyDto, actorId?: number) {
+    const unit = await this.units.findOne({ where: { id } });
+    if (!unit) throw new NotFoundException('Unit not found');
 
-    await this.units.softRemove(
-      unit,
-    );
+    const oldOccupancy = unit.occupancyStatus;
+    unit.occupancyStatus = dto.occupancyStatus;
+    const saved = await this.units.save(unit);
+
+    await this.audit.record({
+      moduleName: 'units',
+      entityId: id,
+      action: 'UPDATE',
+      oldValue: { occupancyStatus: oldOccupancy },
+      newValue: { occupancyStatus: saved.occupancyStatus },
+      performedBy: actorId,
+    });
+
+    return saved;
+  }
+
+  async remove(id: number, actorId?: number) {
+    const unit = await this.units.findOne({ where: { id } });
+    if (!unit) throw new NotFoundException('Unit not found');
+
+    await this.units.softRemove(unit);
 
     await this.audit.record({
       moduleName: 'units',
       entityId: id,
       action: 'DELETE',
       oldValue: {
-        unitNo: unit.unitNo,
-        unitType:
-          unit.unitType,
-        area: unit.area,
-        occupancyType:
-          unit.occupancyType,
+        unitNumber: unit.unitNumber,
+        unitType: unit.unitType,
+        occupancyStatus: unit.occupancyStatus,
         status: unit.status,
       },
       performedBy: actorId,
     });
 
-    return {
-      deleted: true,
-    };
+    return { deleted: true };
   }
 }

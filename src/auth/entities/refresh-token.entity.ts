@@ -23,6 +23,9 @@ export class RefreshToken {
   @Column({ name: 'family', type: 'varchar', length: 36 })
   family!: string;
 
+  @Column({ name: 'device_id', type: 'varchar', length: 36, nullable: true })
+  deviceId?: string;
+
   @Column({ name: 'expires_at', type: 'timestamp' })
   expiresAt!: Date;
 

@@ -100,7 +100,20 @@ export const PMODULES: SeedPModule[] = [
     url: '/communities',
     displayOrder: 2,
   },
-
+  {
+    moduleName: 'Meter Management',
+    code: 'METER_MANAGEMENT',
+    type: 'MENU',
+    icon: 'Activity',
+    displayOrder: 3,
+  },
+  {
+    moduleName: 'Billing Management',
+    code: 'BILLING_MANAGEMENT',
+    type: 'MENU',
+    icon: 'Receipt',
+    displayOrder: 4,
+  },
   {
     moduleName: 'Admin',
     code: 'ADMIN',
@@ -118,10 +131,80 @@ export const PMODULES: SeedPModule[] = [
 
 export const SUB_MODULES: SeedSubModule[] = [
   // ── Meter Management ──────────────────────────────────────────────────────
-
+  {
+    pModuleCode: 'METER_MANAGEMENT',
+    name: 'Meter Information',
+    code: 'METER_LIST',
+    icon: 'Activity',
+    url: '/meters',
+    displayOrder: 1,
+  },
+  {
+    pModuleCode: 'METER_MANAGEMENT',
+    name: 'SFTP File Monitor',
+    code: 'SFTP_MONITOR',
+    icon: 'FolderSync',
+    url: '/meters/sftp-monitor',
+    displayOrder: 2,
+  },
+  {
+    pModuleCode: 'METER_MANAGEMENT',
+    name: 'Daily Meter Readings',
+    code: 'DAILY_METER_READINGS',
+    icon: 'BarChart2',
+    url: '/meters/daily-meter-readings',
+    displayOrder: 3,
+  },
+  {
+    pModuleCode: 'METER_MANAGEMENT',
+    name: 'Billing Readiness',
+    code: 'BILLING_READINESS',
+    icon: 'BadgeCheck',
+    url: '/meters/billing-readiness',
+    displayOrder: 4,
+  },
 
   // ── Billing Management ────────────────────────────────────────────────────
-  
+  {
+    pModuleCode: 'BILLING_MANAGEMENT',
+    name: 'Billing Dashboard',
+    code: 'BILLING_DASHBOARD',
+    icon: 'TrendingUp',
+    url: '/billing',
+    displayOrder: 1,
+  },
+  {
+    pModuleCode: 'BILLING_MANAGEMENT',
+    name: 'Generate Bills',
+    code: 'GENERATE_BILLS',
+    icon: 'FileText',
+    url: '/billing/generate',
+    displayOrder: 2,
+  },
+  {
+    pModuleCode: 'BILLING_MANAGEMENT',
+    name: 'Bill Register',
+    code: 'BILL_REGISTER',
+    icon: 'CheckCircle2',
+    url: '/billing/register',
+    displayOrder: 3,
+  },
+  {
+    pModuleCode: 'BILLING_MANAGEMENT',
+    name: 'Manage Invoices',
+    code: 'MANAGE_INVOICES',
+    icon: 'Paperclip',
+    url: '/billing/invoices',
+    displayOrder: 4,
+  },
+  {
+    pModuleCode: 'BILLING_MANAGEMENT',
+    name: 'Payments',
+    code: 'PAYMENTS',
+    icon: 'DollarSign',
+    url: '/billing/payments',
+    displayOrder: 5,
+  },
 
   // ── Admin (groupers — Screens below define the actual pages) ──────────────
   {

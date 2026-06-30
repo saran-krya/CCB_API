@@ -1,11 +1,32 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  ParseIntPipe,
+  Patch,
+  Post,
+  Query,
+} from '@nestjs/common';
+import {
+  ApiBearerAuth,
+  ApiOkResponse,
+  ApiOperation,
+  ApiParam,
+  ApiTags,
+} from '@nestjs/swagger';
 import { AuthenticatedUser } from '../../auth/interfaces/authenticated-user.interface';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
-import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 import { ROLES } from '../../common/constants/global';
-import { CreatePropertyDto, UpdatePropertyDto } from './dto/create-property.dto';
+import {
+  CreatePropertyDto,
+  PropertyQueryDto,
+  UpdatePropertyDto,
+  UpdatePropertyStatusDto,
+} from './dto/create-property.dto';
+import { PropertyDetailDto, PropertyListDto } from './dto/property-response.dto';
 import { PropertyService } from './property.service';
 
 @ApiBearerAuth()
@@ -16,27 +37,58 @@ export class PropertyController {
   constructor(private readonly properties: PropertyService) {}
 
   @Post()
-  create(@Body() dto: CreatePropertyDto, @CurrentUser() user?: AuthenticatedUser) {
+  @ApiOperation({ summary: 'Create a property' })
+  create(
+    @Body() dto: CreatePropertyDto,
+    @CurrentUser() user?: AuthenticatedUser,
+  ) {
     return this.properties.create(dto, user?.sub);
   }
 
   @Get()
-  findAll(@Query() query: PaginationQueryDto) {
+  @ApiOperation({ summary: 'List all properties with pagination and filters' })
+  @ApiOkResponse({ type: PropertyListDto, isArray: true, description: 'Paginated list of properties' })
+  findAll(@Query() query: PropertyQueryDto) {
     return this.properties.findAll(query);
   }
 
   @Get(':id')
-  findOne(@Param('id') id: number) {
+  @ApiOperation({ summary: 'Get property detail with stats and units' })
+  @ApiOkResponse({ type: PropertyDetailDto })
+  @ApiParam({ name: 'id', type: Number })
+  findOne(@Param('id', ParseIntPipe) id: number) {
     return this.properties.findOne(id);
   }
 
   @Patch(':id')
-  update(@Param('id') id: number, @Body() dto: UpdatePropertyDto, @CurrentUser() user?: AuthenticatedUser) {
+  @ApiOperation({ summary: 'Update property' })
+  @ApiParam({ name: 'id', type: Number })
+  update(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdatePropertyDto,
+    @CurrentUser() user?: AuthenticatedUser,
+  ) {
     return this.properties.update(id, dto, user?.sub);
   }
 
+  @Patch(':id/status')
+  @ApiOperation({ summary: 'Update property status' })
+  @ApiParam({ name: 'id', type: Number })
+  updateStatus(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdatePropertyStatusDto,
+    @CurrentUser() user?: AuthenticatedUser,
+  ) {
+    return this.properties.updateStatus(id, dto, user?.sub);
+  }
+
   @Delete(':id')
-  remove(@Param('id') id: number, @CurrentUser() user?: AuthenticatedUser) {
+  @ApiOperation({ summary: 'Soft-delete a property' })
+  @ApiParam({ name: 'id', type: Number })
+  remove(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user?: AuthenticatedUser,
+  ) {
     return this.properties.remove(id, user?.sub);
   }
 }

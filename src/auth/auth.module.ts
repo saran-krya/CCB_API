@@ -9,6 +9,7 @@ import { UserModule } from '../modules/user/user.module';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { RefreshToken } from './entities/refresh-token.entity';
+import { UserDevice } from './entities/user-device.entity';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { JwtStrategy } from './strategies/jwt.strategy';
 
@@ -16,7 +17,7 @@ import { JwtStrategy } from './strategies/jwt.strategy';
   imports: [
     ConfigModule,
     PassportModule,
-    TypeOrmModule.forFeature([RefreshToken]),
+    TypeOrmModule.forFeature([RefreshToken, UserDevice]),
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
