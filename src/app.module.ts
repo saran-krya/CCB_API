@@ -3,6 +3,7 @@ import { ConfigModule } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AuditModule } from './audit/audit.module';
 import { AuthModule } from './auth/auth.module';
+import { BootstrapModule } from './bootstrap/bootstrap.module';
 import { typeOrmConfig } from './config/typeorm.config';
 import { CommunityModule } from './modules/community/community.module';
 import { PropertyModule } from './modules/property/property.module';
@@ -37,6 +38,7 @@ import { UserTypeModule } from './modules/user-type/user-type.module';
     RolePermissionsModule,
     ScreensModule,
     UserTypeModule,
+    BootstrapModule,
   ],
 })
 export class AppModule {}
