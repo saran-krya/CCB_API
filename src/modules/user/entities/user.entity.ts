@@ -1,6 +1,7 @@
 import {
   Column,
   Entity,
+  Index,
   JoinColumn,
   ManyToOne,
 } from "typeorm";
@@ -16,7 +17,7 @@ export class User extends BaseEntity {
     (role) => role.users,
     {
       eager: true,
-      nullable: false,
+      nullable: true,
     },
   )
   @JoinColumn({
@@ -87,9 +88,11 @@ export class User extends BaseEntity {
     type: "varchar",
     length: 20,
     nullable: true,
+    unique: true,
   })
   mobile?: string | null;
 
+  @Index()
   @Column({
     type: "boolean",
     default: true,
@@ -136,4 +139,5 @@ export class User extends BaseEntity {
     nullable: true,
   })
   ssoSubject?: string | null;
+
 }

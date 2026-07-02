@@ -34,8 +34,14 @@ export interface SeedSubModule {
   displayOrder: number
 }
 
+/**
+ * A Screen must belong to exactly one of:
+ *   - subModuleCode  → Scenario 1: PModule → SubModule → Screen → Actions
+ *   - pModuleCode    → Scenario 2: PModule → Screen → Actions (no SubModule)
+ */
 export interface SeedScreen {
-  subModuleCode: string
+  subModuleCode?: string
+  pModuleCode?: string
   name: string
   code: string
   url?: string
@@ -274,6 +280,27 @@ export const SCREENS: SeedScreen[] = [
     url: '/admin/business/workflow',
     displayOrder: 3,
   },
+
+  // ── Community Management (Scenario 2 — direct PModule screens) ────────────
+  {
+    pModuleCode: 'COMMUNITY_LIST',
+    name: 'Community',
+    code: 'COMMUNITY',
+    url: '/communities',
+    displayOrder: 1,
+  },
+  {
+    pModuleCode: 'COMMUNITY_LIST',
+    name: 'Property',
+    code: 'PROPERTY',
+    displayOrder: 2,
+  },
+  {
+    pModuleCode: 'COMMUNITY_LIST',
+    name: 'Unit',
+    code: 'UNIT',
+    displayOrder: 3,
+  },
 ]
 
 // ---------------------------------------------------------------------------
@@ -334,6 +361,66 @@ export const ACTIONS: SeedAction[] = [
     name: 'View Tariff Detail',
     code: 'TARIFF_VIEW',
     description: 'View a tariff version detail page',
+  },
+
+  // ── Community ─────────────────────────────────────────────────────────────
+  {
+    screenCode: 'COMMUNITY',
+    name: 'View Community',
+    code: 'VIEW_COMMUNITY',
+    description: 'View community list and detail pages',
+  },
+  {
+    screenCode: 'COMMUNITY',
+    name: 'Create Community',
+    code: 'CREATE_COMMUNITY',
+    description: 'Access the create-community form',
+  },
+  {
+    screenCode: 'COMMUNITY',
+    name: 'Edit Community',
+    code: 'EDIT_COMMUNITY',
+    description: 'Access the edit-community form',
+  },
+
+  // ── Property ──────────────────────────────────────────────────────────────
+  {
+    screenCode: 'PROPERTY',
+    name: 'View Property',
+    code: 'VIEW_PROPERTY',
+    description: 'View property detail within a community',
+  },
+  {
+    screenCode: 'PROPERTY',
+    name: 'Create Property',
+    code: 'CREATE_PROPERTY',
+    description: 'Access the create-property form',
+  },
+  {
+    screenCode: 'PROPERTY',
+    name: 'Edit Property',
+    code: 'EDIT_PROPERTY',
+    description: 'Access the edit-property form',
+  },
+
+  // ── Unit ──────────────────────────────────────────────────────────────────
+  {
+    screenCode: 'UNIT',
+    name: 'View Unit',
+    code: 'VIEW_UNIT',
+    description: 'View unit detail within a property',
+  },
+  {
+    screenCode: 'UNIT',
+    name: 'Create Unit',
+    code: 'CREATE_UNIT',
+    description: 'Access the create-unit form',
+  },
+  {
+    screenCode: 'UNIT',
+    name: 'Edit Unit',
+    code: 'EDIT_UNIT',
+    description: 'Access the edit-unit form',
   },
 ]
 

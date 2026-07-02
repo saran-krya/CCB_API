@@ -4,13 +4,11 @@ import { ScreensController } from './screens.controller';
 import { ScreensService } from './screens.service';
 import { Screen } from './entities/screen.entity';
 import { SubModule } from '../sub-modules/entities/sub-module.entity';
+import { PModule } from '../pmodules/entities/pmodule.entity';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([
-      Screen,
-      SubModule,
-    ]),
+    TypeOrmModule.forFeature([Screen, SubModule, PModule]),
   ],
   controllers: [ScreensController],
   providers: [ScreensService],

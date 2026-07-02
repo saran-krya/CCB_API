@@ -1,5 +1,6 @@
 import { BaseEntity } from '@app/common/entities/base.entity';
 import { SubModule } from '@app/modules/sub-modules/entities/sub-module.entity';
+import { Screen } from '@app/modules/screens/entities/screen.entity';
 import {
     Column,
     Entity,
@@ -52,4 +53,10 @@ export class PModule extends BaseEntity {
         (subModule) => subModule.pModule,
     )
     subModules!: SubModule[];
+
+    @OneToMany(
+        () => Screen,
+        (screen) => screen.pModule,
+    )
+    screens!: Screen[];
 }

@@ -28,6 +28,7 @@ import { LoginDto } from './dto/login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { TokenResponseDto } from './dto/token-response.dto';
 import { UserDeviceDto } from './dto/device-response.dto';
+import { LoginHistoryDto } from './dto/login-history-response.dto';
 
 @ApiTags('Auth')
 @Controller({ path: 'auth', version: '1' })
@@ -105,6 +106,14 @@ export class AuthController {
   @ApiNoContentResponse({ description: 'All devices logged out' })
   logoutAll(@CurrentUser() user: AuthenticatedUser): Promise<void> {
     return this.auth.logoutAll(user.sub);
+  }
+
+  @Get('login-history')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Get login/logout history for the authenticated user' })
+  @ApiOkResponse({ type: [LoginHistoryDto] })
+  getLoginHistory(@CurrentUser() user: AuthenticatedUser): Promise<LoginHistoryDto[]> {
+    return this.auth.getLoginHistory(user.sub);
   }
 
   private extractDeviceCtx(req: Request): DeviceContext {

@@ -20,10 +20,6 @@ export class CreateRolePermissionDto {
 
     @ApiProperty()
     @IsNumber()
-    tabId!: number;
-
-    @ApiProperty()
-    @IsNumber()
     actionId!: number;
 }
 export class UpdateRolePermissionDto extends PartialType(

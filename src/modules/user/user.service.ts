@@ -340,6 +340,7 @@ export class UserService {
     );
   }
 
+
   async update(id: number, dto: UpdateUserDto, actorId?: number) {
     const user = await this.findOne(id);
     const oldValue = { ...user };

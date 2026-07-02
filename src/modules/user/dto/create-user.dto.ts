@@ -100,6 +100,7 @@ export class CreateUserDto {
   @IsOptional()
   @MaxLength(50)
   employeeCode?: string;
+
 }
 
 export class UpdateUserDto extends PartialType(

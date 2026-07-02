@@ -8,10 +8,12 @@ import * as bcrypt from 'bcryptjs';
 import { UserService } from '../modules/user/user.service';
 import { LoginDto } from './dto/login.dto';
 import { TokenResponseDto } from './dto/token-response.dto';
+import { LoginHistoryDto } from './dto/login-history-response.dto';
 import { AuthenticatedUser } from './interfaces/authenticated-user.interface';
 import { DeviceContext } from './interfaces/device-context.interface';
 import { RefreshToken } from './entities/refresh-token.entity';
 import { UserDevice } from './entities/user-device.entity';
+import { UserLoginHistory } from './entities/user-login-history.entity';
 import { UserDeviceDto } from './dto/device-response.dto';
 
 @Injectable()
@@ -24,6 +26,8 @@ export class AuthService {
     private readonly refreshTokens: Repository<RefreshToken>,
     @InjectRepository(UserDevice)
     private readonly devices: Repository<UserDevice>,
+    @InjectRepository(UserLoginHistory)
+    private readonly loginHistory: Repository<UserLoginHistory>,
   ) {}
 
   async login(dto: LoginDto, deviceCtx?: DeviceContext): Promise<TokenResponseDto> {
@@ -39,6 +43,7 @@ export class AuthService {
     }
 
     await this.users.updateLastLogin(user.id);
+    await this.insertLoginHistory(user.id, deviceCtx);
 
     return this.issueTokenPair(
       { sub: user.id, email: user.email, roleId: user.role.id, roleName: user.role.roleName },
@@ -106,6 +111,7 @@ export class AuthService {
           { deviceId: stored.deviceId, userId: stored.userId },
           { isActive: false },
         );
+        await this.closeLoginHistory(stored.userId, stored.deviceId);
       }
     }
   }
@@ -122,6 +128,7 @@ export class AuthService {
       .execute();
 
     await this.devices.update({ id: device.id }, { isActive: false });
+    await this.closeLoginHistory(userId, deviceId);
   }
 
   async logoutAll(userId: number): Promise<void> {
@@ -133,6 +140,7 @@ export class AuthService {
       .execute();
 
     await this.devices.update({ userId }, { isActive: false });
+    await this.closeAllLoginHistory(userId);
   }
 
   async getDevices(userId: number, currentDeviceId?: string): Promise<UserDeviceDto[]> {
@@ -155,6 +163,24 @@ export class AuthService {
       lastActivityAt: d.lastActivityAt?.toISOString() ?? null,
       isTrusted: d.isTrusted,
       isCurrentDevice: !!currentDeviceId && d.deviceId === currentDeviceId,
+    }));
+  }
+
+  async getLoginHistory(userId: number, limit = 20): Promise<LoginHistoryDto[]> {
+    const records = await this.loginHistory.find({
+      where: { userId },
+      order: { loginAt: 'DESC' },
+      take: limit,
+    });
+
+    return records.map((r) => ({
+      id: r.id,
+      deviceId: r.deviceId ?? null,
+      ipAddress: r.ipAddress ?? null,
+      browser: r.browser ?? null,
+      platform: r.platform ?? null,
+      loginAt: r.loginAt.toISOString(),
+      logoutAt: r.logoutAt?.toISOString() ?? null,
     }));
   }
 
@@ -200,6 +226,52 @@ export class AuthService {
     url.searchParams.set('redirect_uri', this.config.getOrThrow<string>('SSO_CALLBACK_URL'));
     if (state) url.searchParams.set('state', state);
     return url.toString();
+  }
+
+  // ─── Private helpers ────────────────────────────────────────────────────────
+
+  private async insertLoginHistory(userId: number, deviceCtx?: DeviceContext): Promise<void> {
+    // Close any stale open session for the same device (e.g. browser closed without logout)
+    if (deviceCtx?.deviceId) {
+      await this.loginHistory
+        .createQueryBuilder()
+        .update()
+        .set({ logoutAt: new Date() })
+        .where('user_id = :userId AND device_id = :deviceId AND logout_at IS NULL', {
+          userId,
+          deviceId: deviceCtx.deviceId,
+        })
+        .execute();
+    }
+
+    const uaInfo = this.parseUserAgent(deviceCtx?.userAgent);
+    await this.loginHistory.save(
+      this.loginHistory.create({
+        userId,
+        deviceId: deviceCtx?.deviceId ?? null,
+        ipAddress: deviceCtx?.ipAddress ?? null,
+        browser: uaInfo.browser ?? null,
+        platform: uaInfo.operatingSystem ?? null,
+      }),
+    );
+  }
+
+  private async closeLoginHistory(userId: number, deviceId: string): Promise<void> {
+    await this.loginHistory
+      .createQueryBuilder()
+      .update()
+      .set({ logoutAt: new Date() })
+      .where('user_id = :userId AND device_id = :deviceId AND logout_at IS NULL', { userId, deviceId })
+      .execute();
+  }
+
+  private async closeAllLoginHistory(userId: number): Promise<void> {
+    await this.loginHistory
+      .createQueryBuilder()
+      .update()
+      .set({ logoutAt: new Date() })
+      .where('user_id = :userId AND logout_at IS NULL', { userId })
+      .execute();
   }
 
   private async upsertDevice(

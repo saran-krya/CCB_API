@@ -27,17 +27,7 @@ export class ActionsService {
   ) {}
 
   async create(dto: CreateActionDto) {
-    if (!dto.screenId && !dto.tabId) {
-      throw new ConflictException(
-        'Screen or Tab is required',
-      );
-    }
 
-    if (dto.screenId && dto.tabId) {
-      throw new ConflictException(
-        'Action can belong either to Screen or Tab',
-      );
-    }
 
     if (dto.screenId) {
       const screen = await this.screenRepository.findOne({

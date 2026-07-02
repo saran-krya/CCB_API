@@ -8,21 +8,32 @@ import {
 
 import { BaseEntity } from '@app/common/entities/base.entity';
 import { SubModule } from '../../sub-modules/entities/sub-module.entity';
+import { PModule } from '../../pmodules/entities/pmodule.entity';
 import { Action } from '../../actions/entities/action.entity';
 
 @Entity('screens')
 export class Screen extends BaseEntity {
-    @Column()
-    subModuleId!: number;
+    @Column({ nullable: true })
+    subModuleId?: number | null;
 
     @ManyToOne(
         () => SubModule,
         (subModule) => subModule.screens,
+        { nullable: true },
     )
-    @JoinColumn({
-        name: 'subModuleId',
-    })
-    subModule!: SubModule;
+    @JoinColumn({ name: 'subModuleId' })
+    subModule?: SubModule | null;
+
+    @Column({ nullable: true })
+    pModuleId?: number | null;
+
+    @ManyToOne(
+        () => PModule,
+        (pModule) => pModule.screens,
+        { nullable: true },
+    )
+    @JoinColumn({ name: 'pModuleId' })
+    pModule?: PModule | null;
 
     @Column()
     name!: string;
@@ -40,7 +51,6 @@ export class Screen extends BaseEntity {
         unique: true,
     })
     code!: string;
-
 
     @Column({ default: 0 })
     displayOrder!: number;

@@ -348,7 +348,7 @@ export class RoleService {
     const role =
       await this.findOne(id);
 
-    await this.roles.softRemove(
+    await this.roles.remove(
       role,
     );
 

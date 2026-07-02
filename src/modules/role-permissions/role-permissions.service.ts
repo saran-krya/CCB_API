@@ -9,8 +9,7 @@ import { paginate } from '@app/common/utils/pagination.util';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 import {
   CreateRolePermissionDto,
-  SaveRolePermissionsDto,
-  UpdateRolePermissionDto,
+
 } from './dto/create-role-permission.dto';
 import { RolePermission } from './entities/role-permission.entity';
 import { Role } from '../role/entities/role.entity';
@@ -144,82 +143,78 @@ export class RolePermissionsService {
     const permissions: RolePermission[] =
       [];
 
-    for (const module of dto.screenPermissionList ??
-      []) {
-      if (
-        module.hasAccess &&
-        (!module.subModule ||
-          module.subModule.length === 0)
-      ) {
+    for (const module of dto.screenPermissionList ?? []) {
+      const hasSubModules = module.subModule && module.subModule.length > 0;
+      const hasDirectScreens = module.screens && module.screens.length > 0;
+
+      // Module-only access (no subModules and no direct screens)
+      if (module.hasAccess && !hasSubModules && !hasDirectScreens) {
         permissions.push(
-          this.rolePermissionRepository.create({
-            roleId: role.id,
-            moduleId:
-              module.moduleId,
-          }),
+          this.rolePermissionRepository.create({ roleId: role.id, moduleId: module.moduleId }),
         );
       }
 
-      for (const subModule of module.subModule ??
-        []) {
-        if (
-          subModule.hasAccess &&
-          (!subModule.screens ||
-            subModule.screens.length ===
-            0)
-        ) {
+      // Scenario 1: SubModule → Screen → Action
+      for (const subModule of module.subModule ?? []) {
+        if (subModule.hasAccess && (!subModule.screens || subModule.screens.length === 0)) {
           permissions.push(
             this.rolePermissionRepository.create({
               roleId: role.id,
-              moduleId:
-                module.moduleId,
-              subModuleId:
-                subModule.subModuleId,
+              moduleId: module.moduleId,
+              subModuleId: subModule.subModuleId,
             }),
           );
         }
 
-        for (const screen of subModule.screens ??
-          []) {
-          if (
-            screen.hasAccess &&
-            (!screen.actions ||
-              screen.actions.length ===
-              0)
-          ) {
+        for (const screen of subModule.screens ?? []) {
+          if (screen.hasAccess && (!screen.actions || screen.actions.length === 0)) {
             permissions.push(
               this.rolePermissionRepository.create({
                 roleId: role.id,
-                moduleId:
-                  module.moduleId,
-                subModuleId:
-                  subModule.subModuleId,
-                screenId:
-                  screen.screenId,
+                moduleId: module.moduleId,
+                subModuleId: subModule.subModuleId,
+                screenId: screen.screenId,
               }),
             );
           }
 
-          for (const action of screen.actions ??
-            []) {
-            if (!action.hasAccess) {
-              continue;
-            }
-
+          for (const action of screen.actions ?? []) {
+            if (!action.hasAccess) continue;
             permissions.push(
               this.rolePermissionRepository.create({
                 roleId: role.id,
-                moduleId:
-                  module.moduleId,
-                subModuleId:
-                  subModule.subModuleId,
-                screenId:
-                  screen.screenId,
-                actionId:
-                  action.actionId,
+                moduleId: module.moduleId,
+                subModuleId: subModule.subModuleId,
+                screenId: screen.screenId,
+                actionId: action.actionId,
               }),
             );
           }
+        }
+      }
+
+      // Scenario 2: direct Screen → Action (no SubModule)
+      for (const screen of module.screens ?? []) {
+        if (screen.hasAccess && (!screen.actions || screen.actions.length === 0)) {
+          permissions.push(
+            this.rolePermissionRepository.create({
+              roleId: role.id,
+              moduleId: module.moduleId,
+              screenId: screen.screenId,
+            }),
+          );
+        }
+
+        for (const action of screen.actions ?? []) {
+          if (!action.hasAccess) continue;
+          permissions.push(
+            this.rolePermissionRepository.create({
+              roleId: role.id,
+              moduleId: module.moduleId,
+              screenId: screen.screenId,
+              actionId: action.actionId,
+            }),
+          );
         }
       }
     }
@@ -292,28 +287,37 @@ export class RolePermissionsService {
       .map((module) => ({
         ...module,
 
+        // Scenario 1: SubModule → Screen path
         subModule: module.subModule
           .filter((sub) => sub.hasAccess)
           .map((sub) => ({
             ...sub,
-
             screens: sub.screens
               .filter((screen) => screen.hasAccess)
               .map((screen) => ({
                 ...screen,
-
-
-                actions: screen.actions.filter(
-                  (action) => action.hasAccess,
-                ),
-
+                actions: screen.actions.filter((action) => action.hasAccess),
               })),
+          })),
+
+        // Scenario 2: direct Screen path
+        screens: module.screens
+          .filter((screen) => screen.hasAccess)
+          .map((screen) => ({
+            ...screen,
+            actions: screen.actions.filter((action) => action.hasAccess),
           })),
       }));
   }
 
   async getAllMenus() {
     const tree = await this.getPermissionTree();
+
+    const grantAll = (screen: { hasAccess: boolean; actions: { hasAccess: boolean }[] }) => ({
+      ...screen,
+      hasAccess: true,
+      actions: screen.actions.map((action) => ({ ...action, hasAccess: true })),
+    });
 
     return tree.screenPermissionList.map((module) => ({
       ...module,
@@ -322,49 +326,47 @@ export class RolePermissionsService {
       subModule: module.subModule.map((sub) => ({
         ...sub,
         hasAccess: true,
-
-        screens: sub.screens.map((screen) => ({
-          ...screen,
-          hasAccess: true,
-
-        })),
+        screens: sub.screens.map(grantAll),
       })),
+
+      screens: module.screens.map(grantAll),
     }));
   }
 
-  async getPermissionTree(
-    roleId?: number,
-  ) {
+  async getPermissionTree(roleId?: number) {
     const role = roleId
-      ? await this.roleRepository.findOne({
-        where: { id: roleId },
-      })
+      ? await this.roleRepository.findOne({ where: { id: roleId } })
       : null;
 
-    const modules =
-      await this.pModuleRepository.find({
-        order: {
-          displayOrder: 'ASC',
-        },
-      });
-
-    const subModules =
-      await this.subModuleRepository.find();
-
-    const screens =
-      await this.screenRepository.find();
-
-
-    const actions =
-      await this.actionRepository.find();
+    const modules = await this.pModuleRepository.find({
+      order: { displayOrder: 'ASC' },
+    });
+    const subModules = await this.subModuleRepository.find();
+    const screens = await this.screenRepository.find();
+    const actions = await this.actionRepository.find();
 
     const permissions = roleId
-      ? await this.rolePermissionRepository.find({
-        where: {
-          roleId,
-        },
-      })
+      ? await this.rolePermissionRepository.find({ where: { roleId } })
       : [];
+
+    const buildActions = (screenId: number) =>
+      actions
+        .filter((a) => a.screenId === screenId)
+        .map((a) => ({
+          actionId: a.id,
+          actionName: a.name,
+          code: a.code,
+          hasAccess: permissions.some((p) => p.actionId === a.id),
+        }));
+
+    const buildScreen = (screen: typeof screens[0]) => ({
+      screenId: screen.id,
+      code: screen.code,
+      screenName: screen.name,
+      url: screen.url,
+      hasAccess: permissions.some((p) => p.screenId === screen.id),
+      actions: buildActions(screen.id),
+    });
 
     return {
       roleId: role?.id ?? null,
@@ -372,88 +374,40 @@ export class RolePermissionsService {
       roleDescription: null,
       userCategoryId: role?.userCategoryId ?? null,
       userTypeId: role?.userTypeId ?? null,
-      // canBeReportingManager: role?.canBeReportingManager ?? false,
       userId: 0,
 
-      screenPermissionList:
-        modules.map((module) => ({
-          moduleId: module.id,
-          moduleName: module.moduleName,
-          displayOrder: module.displayOrder,
-          icon: module.icon,
-          url: module.url,
-          code: module.code,
-          hasAccess: permissions.some(
-            (p) =>
-              p.moduleId === module.id,
-          ),
+      screenPermissionList: modules.map((module) => ({
+        moduleId: module.id,
+        moduleName: module.moduleName,
+        displayOrder: module.displayOrder,
+        icon: module.icon,
+        url: module.url,
+        code: module.code,
+        hasAccess: permissions.some((p) => p.moduleId === module.id),
 
-          subModule: subModules
-            .filter(
-              (s) =>
-                s.pModuleId === module.id,
-            )
-            .map((subModule) => ({
-              subModuleId:
-                subModule.id,
-              code: subModule.code,
+        // Scenario 1: PModule → SubModule → Screen → Actions
+        subModule: subModules
+          .filter((s) => s.pModuleId === module.id)
+          .map((subModule) => ({
+            subModuleId: subModule.id,
+            code: subModule.code,
+            subModuleName: subModule.name,
+            icon: subModule.icon,
+            url: subModule.url,
+            displayOrder: subModule.displayOrder,
+            addFlag: false,
+            hasAccess: permissions.some((p) => p.subModuleId === subModule.id),
+            screens: screens
+              .filter((s) => s.subModuleId === subModule.id)
+              .map(buildScreen),
+            fields: [],
+          })),
 
-              subModuleName:
-                subModule.name,
-              icon: subModule.icon,
-              url: subModule.url,
-              displayOrder:
-                subModule.displayOrder,
-
-              addFlag: false,
-
-              hasAccess:
-                permissions.some(
-                  (p) =>
-                    p.subModuleId ===
-                    subModule.id,
-                ),
-
-              screens: screens
-                .filter(
-                  (screen) =>
-                    screen.subModuleId ===
-                    subModule.id,
-                )
-                .map((screen) => ({
-                  screenId:
-                    screen.id,
-                  code: screen.code,
-                  screenName:
-                    screen.name,
-                  url: screen.url,
-
-                  hasAccess:
-                    permissions.some(
-                      (p) =>
-                        p.screenId ===
-                        screen.id,
-                    ),
-
-                  actions: actions
-                    .filter(
-                      (action) =>
-                        action.screenId === screen.id,
-                    )
-                    .map((action) => ({
-                      actionId: action.id,
-                      actionName: action.name,
-                      code: action.code,
-                      hasAccess: permissions.some(
-                        (p) =>
-                          p.actionId === action.id,
-                      ),
-                    })),
-                })),
-
-              fields: [],
-            })),
-        })),
+        // Scenario 2: PModule → Screen → Actions (no SubModule)
+        screens: screens
+          .filter((s) => s.pModuleId === module.id)
+          .map(buildScreen),
+      })),
     };
   }
 
@@ -494,75 +448,77 @@ export class RolePermissionsService {
       [];
 
     for (const module of dto.screenPermissionList ?? []) {
+      const hasSubModules = module.subModule && module.subModule.length > 0;
+      const hasDirectScreens = module.screens && module.screens.length > 0;
 
-      if (
-        module.hasAccess &&
-        (!module.subModule ||
-          module.subModule.length === 0)
-      ) {
+      // Module-only access (no subModules and no direct screens)
+      if (module.hasAccess && !hasSubModules && !hasDirectScreens) {
         permissions.push(
-          this.rolePermissionRepository.create({
-            roleId,
-            moduleId: module.moduleId,
-          }),
+          this.rolePermissionRepository.create({ roleId, moduleId: module.moduleId }),
         );
       }
 
+      // Scenario 1: SubModule → Screen → Action
       for (const subModule of module.subModule ?? []) {
-
-        if (
-          subModule.hasAccess &&
-          (!subModule.screens ||
-            subModule.screens.length === 0)
-        ) {
+        if (subModule.hasAccess && (!subModule.screens || subModule.screens.length === 0)) {
           permissions.push(
             this.rolePermissionRepository.create({
               roleId,
               moduleId: module.moduleId,
-              subModuleId:
-                subModule.subModuleId,
+              subModuleId: subModule.subModuleId,
             }),
           );
         }
 
         for (const screen of subModule.screens ?? []) {
-
-          if (
-            screen.hasAccess &&
-            (!screen.actions ||
-              screen.actions.length === 0)
-          ) {
+          if (screen.hasAccess && (!screen.actions || screen.actions.length === 0)) {
             permissions.push(
               this.rolePermissionRepository.create({
                 roleId,
                 moduleId: module.moduleId,
-                subModuleId:
-                  subModule.subModuleId,
-                screenId:
-                  screen.screenId,
+                subModuleId: subModule.subModuleId,
+                screenId: screen.screenId,
               }),
             );
           }
 
           for (const action of screen.actions ?? []) {
-
-            if (!action.hasAccess) {
-              continue;
-            }
-
+            if (!action.hasAccess) continue;
             permissions.push(
               this.rolePermissionRepository.create({
                 roleId,
                 moduleId: module.moduleId,
-                subModuleId:
-                  subModule.subModuleId,
-                screenId:
-                  screen.screenId,
-                actionId:
-                  action.actionId,
+                subModuleId: subModule.subModuleId,
+                screenId: screen.screenId,
+                actionId: action.actionId,
               }),
             );
           }
+        }
+      }
+
+      // Scenario 2: direct Screen → Action (no SubModule)
+      for (const screen of module.screens ?? []) {
+        if (screen.hasAccess && (!screen.actions || screen.actions.length === 0)) {
+          permissions.push(
+            this.rolePermissionRepository.create({
+              roleId,
+              moduleId: module.moduleId,
+              screenId: screen.screenId,
+            }),
+          );
+        }
+
+        for (const action of screen.actions ?? []) {
+          if (!action.hasAccess) continue;
+          permissions.push(
+            this.rolePermissionRepository.create({
+              roleId,
+              moduleId: module.moduleId,
+              screenId: screen.screenId,
+              actionId: action.actionId,
+            }),
+          );
         }
       }
     }

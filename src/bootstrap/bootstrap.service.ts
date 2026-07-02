@@ -67,7 +67,7 @@ export class BootstrapService implements OnApplicationBootstrap {
     const typeMap = await this.seedUserTypes(manager)
     const pModuleMap = await this.seedPModules(manager)
     const subModuleMap = await this.seedSubModules(manager, pModuleMap)
-    const screenMap = await this.seedScreens(manager, subModuleMap)
+    const screenMap = await this.seedScreens(manager, subModuleMap, pModuleMap)
     await this.seedActions(manager, screenMap)
     const roleMap = await this.seedRoles(manager, categoryMap, typeMap)
     await this.seedSuperAdmin(manager, roleMap)
@@ -187,18 +187,38 @@ export class BootstrapService implements OnApplicationBootstrap {
   private async seedScreens(
     manager: EntityManager,
     subModuleMap: Map<string, SubModule>,
+    pModuleMap: Map<string, PModule>,
   ): Promise<Map<string, Screen>> {
     const map = new Map<string, Screen>()
 
     for (const sc of SCREENS) {
-      const subModule = subModuleMap.get(sc.subModuleCode)
-      if (!subModule) {
-        this.logger.warn(`Screen "${sc.code}" skipped — SubModule "${sc.subModuleCode}" not found`)
+      if (!sc.subModuleCode && !sc.pModuleCode) {
+        this.logger.warn(`Screen "${sc.code}" skipped — neither subModuleCode nor pModuleCode specified`)
         continue
       }
 
+      let subModuleId: number | undefined
+      let pModuleId: number | undefined
+
+      if (sc.subModuleCode) {
+        const subModule = subModuleMap.get(sc.subModuleCode)
+        if (!subModule) {
+          this.logger.warn(`Screen "${sc.code}" skipped — SubModule "${sc.subModuleCode}" not found`)
+          continue
+        }
+        subModuleId = subModule.id
+      } else if (sc.pModuleCode) {
+        const pModule = pModuleMap.get(sc.pModuleCode)
+        if (!pModule) {
+          this.logger.warn(`Screen "${sc.code}" skipped — PModule "${sc.pModuleCode}" not found`)
+          continue
+        }
+        pModuleId = pModule.id
+      }
+
       const entity = manager.create(Screen, {
-        subModuleId: subModule.id,
+        subModuleId: subModuleId ?? null,
+        pModuleId: pModuleId ?? null,
         name: sc.name,
         code: sc.code,
         url: sc.url ?? null,

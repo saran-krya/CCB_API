@@ -14,15 +14,7 @@ export class CreateActionDto {
   @IsOptional()
   @IsInt()
   screenId?: number;
-
-  @ApiProperty({
-    required: false,
-    example: 1,
-  })
-  @IsOptional()
-  @IsInt()
-  tabId?: number;
-
+  
   @ApiProperty({
     example: 'Create',
   })
