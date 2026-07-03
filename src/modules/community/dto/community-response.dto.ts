@@ -7,6 +7,7 @@ export class CommunityListDto {
   @ApiProperty() id!: number;
   @ApiProperty() name!: string;
   @ApiProperty() code!: string;
+  @ApiPropertyOptional() businessCode!: string | null;
   @ApiPropertyOptional() location!: string | null;
   @ApiProperty() totalProperties!: number;
   @ApiProperty() totalUnits!: number;
@@ -33,6 +34,7 @@ export class CommunityDetailDto {
   @ApiProperty() id!: number;
   @ApiProperty() name!: string;
   @ApiProperty() code!: string;
+  @ApiPropertyOptional() businessCode!: string | null;
   @ApiProperty({ enum: CommunityStatus }) status!: CommunityStatus;
   @ApiPropertyOptional() description!: string | null;
   @ApiProperty({ description: 'ISO-8601 date string' }) createdDate!: string;

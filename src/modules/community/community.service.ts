@@ -78,6 +78,11 @@ export class CommunityService {
       );
       const saved = await manager.save(Community, entities);
 
+      for (const c of saved) {
+        c.businessCode = `COM-${String(c.id).padStart(6, '0')}`;
+      }
+      await manager.save(Community, saved);
+
       await Promise.all(
         saved.map((c) =>
           this.audit.record({
@@ -100,7 +105,7 @@ export class CommunityService {
     const qb = this.communities
       .createQueryBuilder('c')
       .select([
-        'c.id', 'c.name', 'c.code', 'c.status',
+        'c.id', 'c.name', 'c.code', 'c.businessCode', 'c.status',
         'c.location', 'c.city', 'c.state', 'c.country', 'c.createdAt',
       ])
       .loadRelationCountAndMap('c.totalProperties', 'c.properties', 'p', (sub) =>
@@ -110,7 +115,7 @@ export class CommunityService {
 
     if (search) {
       qb.andWhere(
-        '(c.name LIKE :s OR c.code LIKE :s OR c.city LIKE :s OR c.location LIKE :s)',
+        '(c.name LIKE :s OR c.code LIKE :s OR c.businessCode LIKE :s OR c.city LIKE :s OR c.location LIKE :s)',
         { s: `%${search}%` },
       );
     }
@@ -138,6 +143,7 @@ export class CommunityService {
       id: c.id,
       name: c.name,
       code: c.code,
+      businessCode: c.businessCode ?? null,
       location: c.location ?? null,
       totalProperties: c.totalProperties ?? 0,
       totalUnits: totalUnitsMap[c.id] ?? 0,
@@ -194,6 +200,7 @@ export class CommunityService {
       id: community.id,
       name: community.name,
       code: community.code,
+      businessCode: community.businessCode ?? null,
       status: community.status,
       description: community.description ?? null,
       createdDate: community.createdAt?.toISOString() ?? '',

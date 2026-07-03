@@ -16,6 +16,9 @@ export class Community extends BaseEntity {
   @Column({ type: 'varchar', length: 50, unique: true })
   code!: string;
 
+  @Column({ name: 'business_code', type: 'varchar', length: 20, unique: true, nullable: true })
+  businessCode?: string | null;
+
   @Column({
     name: 'community_status',
     type: 'enum',

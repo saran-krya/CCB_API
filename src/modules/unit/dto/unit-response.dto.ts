@@ -5,6 +5,7 @@ import { OccupancyStatus, UnitStatus, UnitType } from '../entities/unit.entity';
 export class UnitListDto {
   @ApiProperty() id!: number;
   @ApiProperty() unitNumber!: string;
+  @ApiPropertyOptional() businessCode!: string | null;
   @ApiProperty() floorNumber!: number;
   @ApiProperty({ enum: UnitType }) unitType!: UnitType;
   @ApiPropertyOptional({ description: 'sq ft' }) unitSize!: number | null;
@@ -21,6 +22,7 @@ export class UnitListDto {
 export class UnitDetailDto {
   @ApiProperty() id!: number;
   @ApiProperty() unitNumber!: string;
+  @ApiPropertyOptional() businessCode!: string | null;
   @ApiProperty() floorNumber!: number;
   @ApiProperty({ enum: UnitType }) unitType!: UnitType;
   @ApiPropertyOptional({ description: 'sq ft' }) unitSize!: number | null;

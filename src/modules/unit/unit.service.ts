@@ -47,6 +47,8 @@ export class UnitService {
         parkingSpaces: dto.parkingSpaces ?? 0,
       });
       const saved = await manager.save(Unit, unit);
+      saved.businessCode = `UNT-${String(saved.id).padStart(6, '0')}`;
+      await manager.save(Unit, saved);
 
       await this.audit.record({
         moduleName: 'units',
@@ -72,7 +74,7 @@ export class UnitService {
 
     const qb = this.units
       .createQueryBuilder('u')
-      .select(['u.id', 'u.unitNumber', 'u.floorNumber', 'u.unitType', 'u.unitSize', 'u.occupancyStatus', 'u.status', 'u.createdAt'])
+      .select(['u.id', 'u.unitNumber', 'u.businessCode', 'u.floorNumber', 'u.unitType', 'u.unitSize', 'u.occupancyStatus', 'u.status', 'u.createdAt'])
       .leftJoin('u.property', 'property')
       .addSelect(['property.id', 'property.name'])
       .leftJoin('property.community', 'community')
@@ -80,7 +82,7 @@ export class UnitService {
       .orderBy(`u.${sortBy ?? 'createdAt'}`, sortOrder ?? 'DESC');
 
     if (search) {
-      qb.andWhere('(u.unitNumber LIKE :s OR u.ownerId LIKE :s OR u.tenantId LIKE :s)', {
+      qb.andWhere('(u.unitNumber LIKE :s OR u.businessCode LIKE :s OR u.ownerId LIKE :s OR u.tenantId LIKE :s)', {
         s: `%${search}%`,
       });
     }
@@ -94,6 +96,7 @@ export class UnitService {
     const items: UnitListDto[] = result.items.map((u: any) => ({
       id: u.id,
       unitNumber: u.unitNumber,
+      businessCode: u.businessCode ?? null,
       floorNumber: u.floorNumber,
       unitType: u.unitType,
       unitSize: u.unitSize != null ? Number(u.unitSize) : null,
@@ -117,6 +120,7 @@ export class UnitService {
     return {
       id: unit.id,
       unitNumber: unit.unitNumber,
+      businessCode: unit.businessCode ?? null,
       floorNumber: unit.floorNumber,
       unitType: unit.unitType,
       unitSize: unit.unitSize != null ? Number(unit.unitSize) : null,

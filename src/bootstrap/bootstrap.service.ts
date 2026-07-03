@@ -5,6 +5,7 @@ import * as bcrypt from 'bcryptjs'
 import { DataSource, EntityManager } from 'typeorm'
 
 import { Action } from '../modules/actions/entities/action.entity'
+import { LovService } from '../modules/lov/lov.service'
 import { PModule } from '../modules/pmodules/entities/pmodule.entity'
 import { Role } from '../modules/role/entities/role.entity'
 import { Screen } from '../modules/screens/entities/screen.entity'
@@ -29,6 +30,7 @@ export class BootstrapService implements OnApplicationBootstrap {
   constructor(
     @InjectDataSource() private readonly dataSource: DataSource,
     private readonly config: ConfigService,
+    private readonly lovService: LovService,
   ) {}
 
   async onApplicationBootstrap(): Promise<void> {
@@ -63,13 +65,14 @@ export class BootstrapService implements OnApplicationBootstrap {
   // ---------------------------------------------------------------------------
 
   private async seed(manager: EntityManager): Promise<void> {
-    const categoryMap = await this.seedUserCategories(manager)
-    const typeMap = await this.seedUserTypes(manager)
+    await this.seedUserCategories(manager)
+    await this.seedUserTypes(manager)
     const pModuleMap = await this.seedPModules(manager)
     const subModuleMap = await this.seedSubModules(manager, pModuleMap)
     const screenMap = await this.seedScreens(manager, subModuleMap, pModuleMap)
     await this.seedActions(manager, screenMap)
-    const roleMap = await this.seedRoles(manager, categoryMap, typeMap)
+    const lovMap = await this.lovService.seedValues(manager)
+    const roleMap = await this.seedRoles(manager, lovMap)
     await this.seedSuperAdmin(manager, roleMap)
   }
 
@@ -270,18 +273,17 @@ export class BootstrapService implements OnApplicationBootstrap {
 
   private async seedRoles(
     manager: EntityManager,
-    categoryMap: Map<string, UserCategory>,
-    typeMap: Map<string, UserType>,
+    lovMap: Map<string, number>,
   ): Promise<Map<string, Role>> {
     const map = new Map<string, Role>()
 
     for (const r of ROLES) {
-      const category = categoryMap.get(r.userCategoryName)
-      const userType = typeMap.get(r.userTypeName)
+      const userCategoryId = lovMap.get(`USER_CATEGORY:${r.userCategoryName.toLowerCase()}`)
+      const userTypeId = lovMap.get(`USER_TYPE:${r.userTypeName.toLowerCase()}`)
 
-      if (!category || !userType) {
+      if (!userCategoryId || !userTypeId) {
         this.logger.warn(
-          `Role "${r.roleName}" skipped — missing category "${r.userCategoryName}" or type "${r.userTypeName}"`,
+          `Role "${r.roleName}" skipped — missing LOV entry for "${r.userCategoryName}" or "${r.userTypeName}"`,
         )
         continue
       }
@@ -289,8 +291,8 @@ export class BootstrapService implements OnApplicationBootstrap {
       const entity = manager.create(Role, {
         roleName: r.roleName,
         roleDescription: r.roleDescription,
-        userCategoryId: category.id,
-        userTypeId: userType.id,
+        userCategoryId,
+        userTypeId,
         canBeReportingManager: r.canBeReportingManager,
       })
       const saved = await manager.save(entity)

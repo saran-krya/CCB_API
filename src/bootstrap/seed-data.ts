@@ -107,25 +107,33 @@ export const PMODULES: SeedPModule[] = [
     displayOrder: 2,
   },
   {
+    moduleName: 'LOV Master',
+    code: 'LOV_MASTER',
+    type: 'PAGE',
+    icon: 'ListChecks',
+    url: '/lov-master',
+    displayOrder: 3,
+  },
+  {
     moduleName: 'Meter Management',
     code: 'METER_MANAGEMENT',
     type: 'MENU',
     icon: 'Activity',
-    displayOrder: 3,
+    displayOrder: 4,
   },
   {
     moduleName: 'Billing Management',
     code: 'BILLING_MANAGEMENT',
     type: 'MENU',
     icon: 'Receipt',
-    displayOrder: 4,
+    displayOrder: 5,
   },
   {
     moduleName: 'Admin',
     code: 'ADMIN',
     type: 'MENU',
     icon: 'Settings',
-    displayOrder: 5,
+    displayOrder: 6,
   },
 ]
 

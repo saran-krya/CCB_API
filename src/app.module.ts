@@ -18,6 +18,9 @@ import { ScreensModule } from './modules/screens/screens.module';
 import { PModulesModule } from './modules/pmodules/pmodules.module';
 import { ActionsModule } from './modules/actions/actions.module';
 import { UserTypeModule } from './modules/user-type/user-type.module';
+import { BillingCycleModule } from './modules/billing-cycle/billing-cycle.module';
+import { LovModule } from './modules/lov/lov.module';
+import { BusinessCodeMigrationModule } from './common/migrations/business-code-migration.module';
 
 @Module({
   imports: [
@@ -38,6 +41,9 @@ import { UserTypeModule } from './modules/user-type/user-type.module';
     RolePermissionsModule,
     ScreensModule,
     UserTypeModule,
+    BillingCycleModule,
+    LovModule,
+    BusinessCodeMigrationModule,
     BootstrapModule,
   ],
 })

@@ -8,8 +8,7 @@ import {
 
 import { BaseEntity } from '../../../common/entities/base.entity';
 import { User } from '../../user/entities/user.entity';
-import { UserCategory } from '../../user-category/entities/user-category.entity';
-import { UserType } from '../../user-type/entities/user-type.entity';
+import { LovValue } from '../../lov/entities/lov-value.entity';
 
 @Entity('roles')
 export class Role extends BaseEntity {
@@ -35,27 +34,26 @@ export class Role extends BaseEntity {
   })
   userCategoryId!: number;
 
-  @ManyToOne(() => UserCategory, {
+  @ManyToOne(() => LovValue, {
     eager: true,
   })
   @JoinColumn({
     name: 'user_category_id',
   })
-  userCategory!: UserCategory;
+  userCategory!: LovValue;
 
   @Column({
     name: 'user_type_id',
   })
   userTypeId!: number;
 
-  @ManyToOne(() => UserType, {
+  @ManyToOne(() => LovValue, {
     eager: true,
   })
   @JoinColumn({
     name: 'user_type_id',
-
   })
-  userType!: UserType;
+  userType!: LovValue;
 
   @Column({
     name: 'can_be_reporting_manager',

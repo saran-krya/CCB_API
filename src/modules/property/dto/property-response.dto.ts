@@ -7,6 +7,7 @@ export class PropertyListDto {
   @ApiProperty() id!: number;
   @ApiProperty() name!: string;
   @ApiProperty() code!: string;
+  @ApiPropertyOptional() businessCode!: string | null;
   @ApiProperty({ enum: PropertyType }) propertyType!: PropertyType;
   @ApiProperty() numberOfFloors!: number;
   @ApiProperty() totalUnits!: number;
@@ -35,6 +36,7 @@ export class PropertyDetailDto {
   @ApiProperty() id!: number;
   @ApiProperty() name!: string;
   @ApiProperty() code!: string;
+  @ApiPropertyOptional() businessCode!: string | null;
   @ApiProperty({ enum: PropertyType }) propertyType!: PropertyType;
   @ApiProperty() numberOfFloors!: number;
   @ApiProperty({ enum: PropertyStatus }) status!: PropertyStatus;

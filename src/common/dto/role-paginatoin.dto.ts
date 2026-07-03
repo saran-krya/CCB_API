@@ -40,18 +40,24 @@ export class RoleQueryDto {
   ["search.roleName"]?: string;
 
   @ApiPropertyOptional({
-    description: "Search by user category",
+    description: "Filter by user category ID",
+    minimum: 1,
   })
   @IsOptional()
-  @IsString()
-  ["search.userCategory"]?: string;
+  @IsInt()
+  @Min(1)
+  @Type(() => Number)
+  userCategoryId?: number;
 
   @ApiPropertyOptional({
-    description: "Search by user type",
+    description: "Filter by user type ID",
+    minimum: 1,
   })
   @IsOptional()
-  @IsString()
-  ["search.userType"]?: string;
+  @IsInt()
+  @Min(1)
+  @Type(() => Number)
+  userTypeId?: number;
 
   @ApiPropertyOptional({
     description: "Search by created date (YYYY-MM-DD)",

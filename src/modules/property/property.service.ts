@@ -45,6 +45,8 @@ export class PropertyService {
         status: dto.status ?? PropertyStatus.ACTIVE,
       });
       const saved = await manager.save(Property, property);
+      saved.businessCode = `PRP-${String(saved.id).padStart(6, '0')}`;
+      await manager.save(Property, saved);
 
       await this.audit.record({
         moduleName: 'properties',
@@ -63,7 +65,7 @@ export class PropertyService {
 
     const qb = this.properties
       .createQueryBuilder('p')
-      .select(['p.id', 'p.name', 'p.code', 'p.propertyType', 'p.numberOfFloors', 'p.status', 'p.createdAt'])
+      .select(['p.id', 'p.name', 'p.code', 'p.businessCode', 'p.propertyType', 'p.numberOfFloors', 'p.status', 'p.createdAt'])
       .leftJoin('p.community', 'community')
       .addSelect(['community.id', 'community.name'])
       .loadRelationCountAndMap('p.totalUnits', 'p.units', 'u', (sub) =>
@@ -72,7 +74,7 @@ export class PropertyService {
       .orderBy(`p.${sortBy ?? 'createdAt'}`, sortOrder ?? 'DESC');
 
     if (search) {
-      qb.andWhere('(p.name LIKE :s OR p.code LIKE :s OR p.location LIKE :s)', {
+      qb.andWhere('(p.name LIKE :s OR p.code LIKE :s OR p.businessCode LIKE :s OR p.location LIKE :s)', {
         s: `%${search}%`,
       });
     }
@@ -85,6 +87,7 @@ export class PropertyService {
       id: p.id,
       name: p.name,
       code: p.code,
+      businessCode: p.businessCode ?? null,
       propertyType: p.propertyType,
       numberOfFloors: p.numberOfFloors,
       totalUnits: p.totalUnits ?? 0,
@@ -133,6 +136,7 @@ export class PropertyService {
       id: property.id,
       name: property.name,
       code: property.code,
+      businessCode: property.businessCode ?? null,
       propertyType: property.propertyType,
       numberOfFloors: property.numberOfFloors,
       status: property.status,

@@ -4,6 +4,7 @@ import { RoleController } from './role.controller';
 import { RoleService } from './role.service';
 import { Role } from './entities/role.entity';
 import { AuditModule } from '../../audit/audit.module';
+import { LovModule } from '../lov/lov.module';
 import { PModule } from '../pmodules/entities/pmodule.entity';
 import { SubModule } from '../sub-modules/entities/sub-module.entity';
 import { Screen } from '../screens/entities/screen.entity';
@@ -13,6 +14,7 @@ import { RolePermission } from '../role-permissions/entities/role-permission.ent
 @Module({
   imports: [
     AuditModule,
+    LovModule,
     TypeOrmModule.forFeature([
       Role,
       PModule,

@@ -26,6 +26,9 @@ export class Property extends BaseEntity {
   @Column({ name: 'property_code', type: 'varchar', length: 50, unique: true })
   code!: string;
 
+  @Column({ name: 'business_code', type: 'varchar', length: 20, unique: true, nullable: true })
+  businessCode?: string | null;
+
   @Column({
     name: 'property_type',
     type: 'enum',

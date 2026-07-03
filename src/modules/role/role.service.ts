@@ -18,12 +18,15 @@ import {
 
 import { Role } from './entities/role.entity';
 import { RoleQueryDto } from '@app/common/dto/role-paginatoin.dto';
+import { LovService } from '../lov/lov.service';
 
 @Injectable()
 export class RoleService {
   constructor(
     @InjectRepository(Role)
     private readonly roles: Repository<Role>,
+
+    private readonly lovService: LovService,
 
     private readonly audit: AuditService,
   ) { }
@@ -99,14 +102,14 @@ export class RoleService {
     switch (query.sortBy) {
       case "userCategory":
         qb.orderBy(
-          "userCategory.name",
+          "userCategory.label",
           query.sortOrder,
         );
         break;
 
       case "userType":
         qb.orderBy(
-          "userType.name",
+          "userType.label",
           query.sortOrder,
         );
         break;
@@ -138,25 +141,21 @@ export class RoleService {
       );
     }
 
-    // Search - User Category
+    // Filter - User Category (ID-based)
 
-    if (query["search.userCategory"]) {
+    if (query.userCategoryId) {
       qb.andWhere(
-        "userCategory.name LIKE :userCategory",
-        {
-          userCategory: `%${query["search.userCategory"]}%`,
-        },
+        "role.userCategoryId = :userCategoryId",
+        { userCategoryId: query.userCategoryId },
       );
     }
 
-    // Search - User Type
+    // Filter - User Type (ID-based)
 
-    if (query["search.userType"]) {
+    if (query.userTypeId) {
       qb.andWhere(
-        "userType.name LIKE :userType",
-        {
-          userType: `%${query["search.userType"]}%`,
-        },
+        "role.userTypeId = :userTypeId",
+        { userTypeId: query.userTypeId },
       );
     }
 
@@ -188,10 +187,10 @@ export class RoleService {
             role.roleDescription,
           userCategoryType:
             role.userCategory
-              ?.name ?? null,
+              ?.label ?? null,
           userType:
             role.userType
-              ?.name ?? null,
+              ?.label ?? null,
           created:
             role.createdAt,
         }),
@@ -248,6 +247,18 @@ export class RoleService {
       id: role.id,
       name: role.roleName,
     }));
+  }
+
+  async getFilterMetadata() {
+    const [userCategories, userTypes] = await Promise.all([
+      this.lovService.findByCategory('USER_CATEGORY'),
+      this.lovService.findByCategory('USER_TYPE'),
+    ]);
+
+    return {
+      userCategories: userCategories.map((lv) => ({ id: lv.id, name: lv.label })),
+      userTypes: userTypes.map((lv) => ({ id: lv.id, name: lv.label })),
+    };
   }
 
 

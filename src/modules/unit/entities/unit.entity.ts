@@ -93,4 +93,7 @@ export class Unit extends BaseEntity {
 
   @Column({ type: 'text', nullable: true })
   description?: string | null;
+
+  @Column({ name: 'business_code', type: 'varchar', length: 20, unique: true, nullable: true })
+  businessCode?: string | null;
 }

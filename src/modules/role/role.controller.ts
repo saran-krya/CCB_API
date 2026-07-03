@@ -46,6 +46,11 @@ export class RoleController {
     return this.roles.getRoleFilter();
   }
 
+  @Get("metaFilters")
+  getFilterMetadata() {
+    return this.roles.getFilterMetadata();
+  }
+
   @Get(':id')
   findOne(@Param('id') id: number) {
     return this.roles.findOne(id);
