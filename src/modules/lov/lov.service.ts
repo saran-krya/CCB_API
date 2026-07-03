@@ -15,6 +15,15 @@ const LOV_SEED: { category: string; code: string; label: string; displayOrder: n
   { category: 'USER_TYPE',         code: 'customer',  label: 'Customer',  displayOrder: 2 },
 ];
 
+// Module assignment for the Lookup Field Master "Module Lookup" tab — keeps each
+// category grouped under the screen that actually consumes it instead of
+// defaulting to "General".
+const LOV_CATEGORY_MODULES: Record<string, string> = {
+  BILLING_FREQUENCY: 'admin-business', // Billing Cycle Config (Admin > Business Admin)
+  USER_CATEGORY: 'admin-system',       // User & Role Management (Admin > System Admin)
+  USER_TYPE: 'admin-system',
+};
+
 @Injectable()
 export class LovService {
   constructor(
@@ -112,6 +121,10 @@ export class LovService {
       const entity = manager.create(LovValue, { ...v, isActive: true });
       const saved = await manager.save(LovValue, entity);
       idMap.set(`${v.category}:${v.code}`, saved.id)
+    }
+    for (const [category, module] of Object.entries(LOV_CATEGORY_MODULES)) {
+      const entity = manager.create(LovCategory, { category, module });
+      await manager.save(LovCategory, entity);
     }
     return idMap
   }
