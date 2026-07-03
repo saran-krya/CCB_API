@@ -6,16 +6,6 @@
  * in CCB_Platform/lib/constants/route-map.ts.
  */
 
-export interface SeedUserCategory {
-  name: string
-  description: string
-}
-
-export interface SeedUserType {
-  name: string
-  description: string
-}
-
 export interface SeedPModule {
   moduleName: string
   code: string
@@ -62,26 +52,6 @@ export interface SeedRole {
   userTypeName: string
   canBeReportingManager: boolean
 }
-
-// ---------------------------------------------------------------------------
-// Lookup tables
-// ---------------------------------------------------------------------------
-
-export const USER_CATEGORIES: SeedUserCategory[] = [
-  {
-    name: 'Internal',
-    description: 'CCB internal staff, administrators, and operations team',
-  },
-  {
-    name: 'External',
-    description: 'End customers with self-service portal access',
-  },
-]
-
-export const USER_TYPES: SeedUserType[] = [
-  { name: 'Employee', description: 'CCB employee' },
-  { name: 'Customer', description: 'End-customer / resident' },
-]
 
 // ---------------------------------------------------------------------------
 // Navigation modules (PModules)

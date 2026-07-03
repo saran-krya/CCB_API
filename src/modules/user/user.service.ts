@@ -8,7 +8,6 @@ import { paginate } from '../../common/utils/pagination.util';
 import { RoleService } from '../role/role.service';
 import { CreateUserDto, UpdateUserDto } from './dto/create-user.dto';
 import { User } from './entities/user.entity';
-import { UserCategory } from '../user-category/entities/user-category.entity';
 import { BusinessRole } from '../business-role/entities/business-role.entity';
 import { RolePermissionsService } from '../role-permissions/role-permissions.service';
 

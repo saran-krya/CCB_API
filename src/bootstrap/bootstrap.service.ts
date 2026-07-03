@@ -10,8 +10,6 @@ import { PModule } from '../modules/pmodules/entities/pmodule.entity'
 import { Role } from '../modules/role/entities/role.entity'
 import { Screen } from '../modules/screens/entities/screen.entity'
 import { SubModule } from '../modules/sub-modules/entities/sub-module.entity'
-import { UserCategory } from '../modules/user-category/entities/user-category.entity'
-import { UserType } from '../modules/user-type/entities/user-type.entity'
 import { User } from '../modules/user/entities/user.entity'
 import {
   ACTIONS,
@@ -19,8 +17,6 @@ import {
   ROLES,
   SCREENS,
   SUB_MODULES,
-  USER_CATEGORIES,
-  USER_TYPES,
 } from './seed-data'
 
 @Injectable()
@@ -65,8 +61,6 @@ export class BootstrapService implements OnApplicationBootstrap {
   // ---------------------------------------------------------------------------
 
   private async seed(manager: EntityManager): Promise<void> {
-    await this.seedUserCategories(manager)
-    await this.seedUserTypes(manager)
     const pModuleMap = await this.seedPModules(manager)
     const subModuleMap = await this.seedSubModules(manager, pModuleMap)
     const screenMap = await this.seedScreens(manager, subModuleMap, pModuleMap)
@@ -77,53 +71,7 @@ export class BootstrapService implements OnApplicationBootstrap {
   }
 
   // ---------------------------------------------------------------------------
-  // Step 1 — User categories
-  // ---------------------------------------------------------------------------
-
-  private async seedUserCategories(
-    manager: EntityManager,
-  ): Promise<Map<string, UserCategory>> {
-    const map = new Map<string, UserCategory>()
-
-    for (const cat of USER_CATEGORIES) {
-      const entity = manager.create(UserCategory, {
-        name: cat.name,
-        description: cat.description,
-        active: true,
-      })
-      const saved = await manager.save(entity)
-      map.set(cat.name, saved)
-    }
-
-    this.logger.debug(`Seeded ${map.size} user categories`)
-    return map
-  }
-
-  // ---------------------------------------------------------------------------
-  // Step 2 — User types
-  // ---------------------------------------------------------------------------
-
-  private async seedUserTypes(
-    manager: EntityManager,
-  ): Promise<Map<string, UserType>> {
-    const map = new Map<string, UserType>()
-
-    for (const ut of USER_TYPES) {
-      const entity = manager.create(UserType, {
-        name: ut.name,
-        description: ut.description,
-        isActive: true,
-      })
-      const saved = await manager.save(entity)
-      map.set(ut.name, saved)
-    }
-
-    this.logger.debug(`Seeded ${map.size} user types`)
-    return map
-  }
-
-  // ---------------------------------------------------------------------------
-  // Step 3 — PModules (top-level navigation modules)
+  // Step 1 — PModules (top-level navigation modules)
   // ---------------------------------------------------------------------------
 
   private async seedPModules(
@@ -150,7 +98,7 @@ export class BootstrapService implements OnApplicationBootstrap {
   }
 
   // ---------------------------------------------------------------------------
-  // Step 4 — SubModules
+  // Step 2 — SubModules
   // ---------------------------------------------------------------------------
 
   private async seedSubModules(
@@ -184,7 +132,7 @@ export class BootstrapService implements OnApplicationBootstrap {
   }
 
   // ---------------------------------------------------------------------------
-  // Step 5 — Screens
+  // Step 3 — Screens
   // ---------------------------------------------------------------------------
 
   private async seedScreens(
@@ -237,7 +185,7 @@ export class BootstrapService implements OnApplicationBootstrap {
   }
 
   // ---------------------------------------------------------------------------
-  // Step 6 — Actions
+  // Step 4 — Actions
   // ---------------------------------------------------------------------------
 
   private async seedActions(
@@ -268,7 +216,7 @@ export class BootstrapService implements OnApplicationBootstrap {
   }
 
   // ---------------------------------------------------------------------------
-  // Step 7 — Roles
+  // Step 5 — Roles
   // ---------------------------------------------------------------------------
 
   private async seedRoles(
@@ -304,7 +252,7 @@ export class BootstrapService implements OnApplicationBootstrap {
   }
 
   // ---------------------------------------------------------------------------
-  // Step 8 — Default Super Admin user
+  // Step 6 — Default Super Admin user
   // ---------------------------------------------------------------------------
 
   private async seedSuperAdmin(

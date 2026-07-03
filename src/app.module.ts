@@ -10,14 +10,12 @@ import { PropertyModule } from './modules/property/property.module';
 import { RoleModule } from './modules/role/role.module';
 import { UnitModule } from './modules/unit/unit.module';
 import { UserModule } from './modules/user/user.module';
-import { UserCategoryModule } from './modules/user-category/user-category.module';
 import { BusinessRoleModule } from './modules/business-role/business-role.module';
 import { SubModulesModule } from './modules/sub-modules/sub-modules.module';
 import { RolePermissionsModule } from './modules/role-permissions/role-permissions.module';
 import { ScreensModule } from './modules/screens/screens.module';
 import { PModulesModule } from './modules/pmodules/pmodules.module';
 import { ActionsModule } from './modules/actions/actions.module';
-import { UserTypeModule } from './modules/user-type/user-type.module';
 import { BillingCycleModule } from './modules/billing-cycle/billing-cycle.module';
 import { LovModule } from './modules/lov/lov.module';
 import { BusinessCodeMigrationModule } from './common/migrations/business-code-migration.module';
@@ -33,14 +31,12 @@ import { BusinessCodeMigrationModule } from './common/migrations/business-code-m
     CommunityModule,
     PropertyModule,
     UnitModule,
-    UserCategoryModule,
     BusinessRoleModule,
     PModulesModule,
     SubModulesModule,
     ActionsModule,
     RolePermissionsModule,
     ScreensModule,
-    UserTypeModule,
     BillingCycleModule,
     LovModule,
     BusinessCodeMigrationModule,

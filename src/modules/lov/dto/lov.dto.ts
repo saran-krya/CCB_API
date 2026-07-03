@@ -7,6 +7,11 @@ export class GetLovDto {
   @IsOptional()
   @IsString()
   category?: string;
+
+  @ApiPropertyOptional({ description: 'Include inactive values (default: active only)', default: false })
+  @IsOptional()
+  @IsBoolean()
+  includeInactive?: boolean;
 }
 
 export class CreateLovDto {

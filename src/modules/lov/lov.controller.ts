@@ -31,7 +31,7 @@ export class LovController {
   @ApiOkResponse({ type: LovValue, isArray: true })
   findByCategory(@Query() query: GetLovDto): Promise<LovValue[]> {
     if (!query.category) return this.lovService.findAll();
-    return this.lovService.findByCategory(query.category);
+    return this.lovService.findByCategory(query.category, query.includeInactive ?? false);
   }
 
   /** POST /lov — create a new LOV value */

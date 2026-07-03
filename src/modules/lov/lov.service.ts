@@ -30,9 +30,9 @@ export class LovService {
     return rows.map((r) => r.category);
   }
 
-  async findByCategory(category: string): Promise<LovValue[]> {
+  async findByCategory(category: string, includeInactive = false): Promise<LovValue[]> {
     return this.lovValues.find({
-      where: { category, isActive: true },
+      where: includeInactive ? { category } : { category, isActive: true },
       order: { displayOrder: 'ASC', code: 'ASC' },
     });
   }

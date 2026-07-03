@@ -7,7 +7,6 @@ import {
 } from "typeorm";
 import { BaseEntity } from "../../../common/entities/base.entity";
 import { Role } from "../../role/entities/role.entity";
-import { UserCategory } from "../../user-category/entities/user-category.entity";
 import { BusinessRole } from "../../business-role/entities/business-role.entity";
 
 @Entity("users")
