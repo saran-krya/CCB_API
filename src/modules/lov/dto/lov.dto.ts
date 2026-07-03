@@ -37,6 +37,24 @@ export class CreateLovDto {
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
+
+  @ApiPropertyOptional({
+    description: 'Module key to assign this category to (e.g. "meter", "billing"). Omit or null for General.',
+    nullable: true,
+  })
+  @IsOptional()
+  @IsString()
+  module?: string | null;
 }
 
 export class UpdateLovDto extends PartialType(CreateLovDto) {}
+
+export class SetLovCategoryModuleDto {
+  @ApiPropertyOptional({
+    description: 'Module key to assign this category to. Omit or null to move it back to General.',
+    nullable: true,
+  })
+  @IsOptional()
+  @IsString()
+  module?: string | null;
+}

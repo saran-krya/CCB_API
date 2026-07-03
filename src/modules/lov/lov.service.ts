@@ -2,6 +2,7 @@ import { ConflictException, Injectable, NotFoundException } from '@nestjs/common
 import { InjectRepository } from '@nestjs/typeorm';
 import { EntityManager, Repository } from 'typeorm';
 import { CreateLovDto, UpdateLovDto } from './dto/lov.dto';
+import { LovCategory } from './entities/lov-category.entity';
 import { LovValue } from './entities/lov-value.entity';
 
 const LOV_SEED: { category: string; code: string; label: string; displayOrder: number }[] = [
@@ -19,6 +20,8 @@ export class LovService {
   constructor(
     @InjectRepository(LovValue)
     private readonly lovValues: Repository<LovValue>,
+    @InjectRepository(LovCategory)
+    private readonly lovCategories: Repository<LovCategory>,
   ) {}
 
   async findCategories(): Promise<string[]> {
@@ -41,6 +44,23 @@ export class LovService {
     return this.lovValues.find({ order: { category: 'ASC', displayOrder: 'ASC' } });
   }
 
+  async findCategoryModules(): Promise<Record<string, string | null>> {
+    const rows = await this.lovCategories.find();
+    const map: Record<string, string | null> = {};
+    for (const row of rows) map[row.category] = row.module;
+    return map;
+  }
+
+  async setCategoryModule(category: string, module: string | null | undefined): Promise<LovCategory> {
+    let entity = await this.lovCategories.findOne({ where: { category } });
+    if (!entity) {
+      entity = this.lovCategories.create({ category, module: module ?? null });
+    } else {
+      entity.module = module ?? null;
+    }
+    return this.lovCategories.save(entity);
+  }
+
   async create(dto: CreateLovDto): Promise<LovValue> {
     const existing = await this.lovValues.findOne({
       where: { category: dto.category, code: dto.code },
@@ -50,8 +70,15 @@ export class LovService {
         `LOV value with code "${dto.code}" already exists in category "${dto.category}"`,
       );
     }
-    const entity = this.lovValues.create({ ...dto, isActive: dto.isActive ?? true });
-    return this.lovValues.save(entity);
+    const { module, ...rest } = dto;
+    const entity = this.lovValues.create({ ...rest, isActive: dto.isActive ?? true });
+    const saved = await this.lovValues.save(entity);
+
+    if (module !== undefined) {
+      await this.setCategoryModule(dto.category, module);
+    }
+
+    return saved;
   }
 
   async update(id: number, dto: UpdateLovDto): Promise<LovValue> {

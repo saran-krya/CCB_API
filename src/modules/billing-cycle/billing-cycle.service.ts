@@ -187,7 +187,7 @@ export class BillingCycleService {
   }
 
   async findAll(query: BillingCycleQueryDto) {
-    const { communityId, propertyId, frequency, status, readingStartDay, readingEndDay, sortBy, sortOrder, search } = query;
+    const { communityId, propertyId, property, frequency, status, readingStartDay, readingEndDay, sortBy, sortOrder, search } = query;
 
     const SORTABLE = new Set(['createdAt', 'updatedAt', 'status', 'frequency', 'readingStartDay', 'readingEndDay']);
     const orderCol = SORTABLE.has(sortBy ?? '') ? sortBy! : 'createdAt';
@@ -200,6 +200,7 @@ export class BillingCycleService {
 
     if (communityId) qb.andWhere('bc.community_id = :communityId', { communityId });
     if (propertyId) qb.andWhere('bc.property_id = :propertyId', { propertyId });
+    if (property) qb.andWhere('property.property_name LIKE :propertyName', { propertyName: `%${property}%` });
     if (frequency) qb.andWhere('bc.frequency = :frequency', { frequency });
     if (status) qb.andWhere('bc.status = :status', { status });
     if (readingStartDay) qb.andWhere('bc.reading_start_day = :readingStartDay', { readingStartDay });

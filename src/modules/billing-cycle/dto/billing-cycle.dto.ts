@@ -100,6 +100,11 @@ export class BillingCycleQueryDto extends BasePaginationDto {
   @Type(() => Number)
   propertyId?: number;
 
+  @ApiPropertyOptional({ description: 'Property name substring search' })
+  @IsOptional()
+  @IsString()
+  property?: string;
+
   @ApiPropertyOptional({ description: 'Billing frequency code from LOV' })
   @IsOptional()
   @IsString()

@@ -10,7 +10,8 @@ import {
   Query,
 } from '@nestjs/common';
 import { ApiOkResponse, ApiTags } from '@nestjs/swagger';
-import { CreateLovDto, GetLovDto, UpdateLovDto } from './dto/lov.dto';
+import { CreateLovDto, GetLovDto, SetLovCategoryModuleDto, UpdateLovDto } from './dto/lov.dto';
+import { LovCategory } from './entities/lov-category.entity';
 import { LovValue } from './entities/lov-value.entity';
 import { LovService } from './lov.service';
 
@@ -24,6 +25,23 @@ export class LovController {
   @ApiOkResponse({ type: String, isArray: true })
   findCategories(): Promise<string[]> {
     return this.lovService.findCategories();
+  }
+
+  /** GET /lov/categories/modules — map of category -> assigned module (null = General) */
+  @Get('categories/modules')
+  @ApiOkResponse({ type: Object })
+  findCategoryModules(): Promise<Record<string, string | null>> {
+    return this.lovService.findCategoryModules();
+  }
+
+  /** PATCH /lov/categories/:category/module — assign or reassign a category's module */
+  @Patch('categories/:category/module')
+  @ApiOkResponse({ type: LovCategory })
+  setCategoryModule(
+    @Param('category') category: string,
+    @Body() dto: SetLovCategoryModuleDto,
+  ): Promise<LovCategory> {
+    return this.lovService.setCategoryModule(category, dto.module);
   }
 
   /** GET /lov?category=BILLING_FREQUENCY — values for a category */
