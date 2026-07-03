@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common'
 import { LovModule } from '../modules/lov/lov.module'
+import { AttributeModule } from '../modules/attribute/attribute.module'
 import { BootstrapService } from './bootstrap.service'
 
 /**
@@ -10,7 +11,7 @@ import { BootstrapService } from './bootstrap.service'
  * Requires env vars: DEFAULT_ADMIN_NAME, DEFAULT_ADMIN_EMAIL, DEFAULT_ADMIN_PASSWORD
  */
 @Module({
-  imports: [LovModule],
+  imports: [LovModule, AttributeModule],
   providers: [BootstrapService],
 })
 export class BootstrapModule {}

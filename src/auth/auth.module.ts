@@ -6,6 +6,7 @@ import { PassportModule } from '@nestjs/passport';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { UserModule } from '../modules/user/user.module';
+import { AttributeModule } from '../modules/attribute/attribute.module';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { RefreshToken } from './entities/refresh-token.entity';
@@ -28,6 +29,7 @@ import { JwtStrategy } from './strategies/jwt.strategy';
       }),
     }),
     UserModule,
+    AttributeModule,
   ],
   controllers: [AuthController],
   providers: [

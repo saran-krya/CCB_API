@@ -235,6 +235,13 @@ export const SCREENS: SeedScreen[] = [
     url: '/admin/system/config',
     displayOrder: 3,
   },
+  {
+    subModuleCode: 'SYSTEM_ADMIN',
+    name: 'Attributes',
+    code: 'ATTRIBUTES',
+    url: '/admin/system/attributes',
+    displayOrder: 4,
+  },
 
   // ── Business Admin ────────────────────────────────────────────────────────
   {
@@ -319,6 +326,26 @@ export const ACTIONS: SeedAction[] = [
     name: 'Edit Role',
     code: 'EDIT_ROLE',
     description: 'Access the edit-role and permissions form',
+  },
+
+  // ── Attributes ─────────────────────────────────────────────────────────────
+  {
+    screenCode: 'ATTRIBUTES',
+    name: 'Create Attribute',
+    code: 'CREATE_ATTRIBUTE',
+    description: 'Add a new custom attribute',
+  },
+  {
+    screenCode: 'ATTRIBUTES',
+    name: 'Edit Attribute',
+    code: 'EDIT_ATTRIBUTE',
+    description: 'Change an attribute value',
+  },
+  {
+    screenCode: 'ATTRIBUTES',
+    name: 'Delete Attribute',
+    code: 'DELETE_ATTRIBUTE',
+    description: 'Remove a custom (non-system-defined) attribute',
   },
 
   // ── Tariff Configuration ──────────────────────────────────────────────────

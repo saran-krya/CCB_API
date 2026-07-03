@@ -18,6 +18,7 @@ import { PModulesModule } from './modules/pmodules/pmodules.module';
 import { ActionsModule } from './modules/actions/actions.module';
 import { BillingCycleModule } from './modules/billing-cycle/billing-cycle.module';
 import { LovModule } from './modules/lov/lov.module';
+import { AttributeModule } from './modules/attribute/attribute.module';
 import { BusinessCodeMigrationModule } from './common/migrations/business-code-migration.module';
 
 @Module({
@@ -39,6 +40,7 @@ import { BusinessCodeMigrationModule } from './common/migrations/business-code-m
     ScreensModule,
     BillingCycleModule,
     LovModule,
+    AttributeModule,
     BusinessCodeMigrationModule,
     BootstrapModule,
   ],

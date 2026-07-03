@@ -5,6 +5,7 @@ import * as bcrypt from 'bcryptjs'
 import { DataSource, EntityManager } from 'typeorm'
 
 import { Action } from '../modules/actions/entities/action.entity'
+import { AttributeService } from '../modules/attribute/attribute.service'
 import { LovService } from '../modules/lov/lov.service'
 import { PModule } from '../modules/pmodules/entities/pmodule.entity'
 import { Role } from '../modules/role/entities/role.entity'
@@ -27,6 +28,7 @@ export class BootstrapService implements OnApplicationBootstrap {
     @InjectDataSource() private readonly dataSource: DataSource,
     private readonly config: ConfigService,
     private readonly lovService: LovService,
+    private readonly attributeService: AttributeService,
   ) {}
 
   async onApplicationBootstrap(): Promise<void> {
@@ -66,6 +68,7 @@ export class BootstrapService implements OnApplicationBootstrap {
     const screenMap = await this.seedScreens(manager, subModuleMap, pModuleMap)
     await this.seedActions(manager, screenMap)
     const lovMap = await this.lovService.seedValues(manager)
+    await this.attributeService.seedValues(manager)
     const roleMap = await this.seedRoles(manager, lovMap)
     await this.seedSuperAdmin(manager, roleMap)
   }

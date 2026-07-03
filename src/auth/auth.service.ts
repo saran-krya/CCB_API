@@ -6,6 +6,7 @@ import { createHash, randomBytes, randomUUID } from 'crypto';
 import { Repository } from 'typeorm';
 import * as bcrypt from 'bcryptjs';
 import { UserService } from '../modules/user/user.service';
+import { AttributeService } from '../modules/attribute/attribute.service';
 import { LoginDto } from './dto/login.dto';
 import { TokenResponseDto } from './dto/token-response.dto';
 import { LoginHistoryDto } from './dto/login-history-response.dto';
@@ -22,6 +23,7 @@ export class AuthService {
     private readonly users: UserService,
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
+    private readonly attributes: AttributeService,
     @InjectRepository(RefreshToken)
     private readonly refreshTokens: Repository<RefreshToken>,
     @InjectRepository(UserDevice)
@@ -189,7 +191,8 @@ export class AuthService {
     family: string = randomUUID(),
     deviceCtx?: DeviceContext,
   ): Promise<TokenResponseDto> {
-    const accessToken = this.jwt.sign(payload);
+    const accessTokenExpiresIn = await this.resolveAccessTokenExpiry();
+    const accessToken = this.jwt.sign(payload, { expiresIn: accessTokenExpiresIn });
 
     const rawRefreshToken = randomBytes(32).toString('hex');
     const tokenHash = this.hashToken(rawRefreshToken);
@@ -213,7 +216,7 @@ export class AuthService {
     return {
       accessToken,
       tokenType: 'Bearer',
-      expiresIn: this.config.getOrThrow<string>('JWT_EXPIRES_IN'),
+      expiresIn: accessTokenExpiresIn,
       refreshToken: rawRefreshToken,
       refreshTokenExpiresIn: refreshExpiresIn,
     };
@@ -229,6 +232,20 @@ export class AuthService {
   }
 
   // ─── Private helpers ────────────────────────────────────────────────────────
+
+  /**
+   * Session Timeout is admin-configurable via System Admin → Attributes
+   * (SESSION_TIMEOUT_MINUTES) — falls back to the static JWT_EXPIRES_IN env
+   * var if the attribute is missing/invalid so login never breaks because of it.
+   */
+  private async resolveAccessTokenExpiry(): Promise<string> {
+    const raw = await this.attributes.getValueByKey('SESSION_TIMEOUT_MINUTES');
+    const minutes = raw ? Number(raw) : NaN;
+    if (Number.isFinite(minutes) && minutes > 0) {
+      return `${minutes}m`;
+    }
+    return this.config.getOrThrow<string>('JWT_EXPIRES_IN');
+  }
 
   private async insertLoginHistory(userId: number, deviceCtx?: DeviceContext): Promise<void> {
     // Close any stale open session for the same device (e.g. browser closed without logout)
