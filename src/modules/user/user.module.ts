@@ -6,6 +6,7 @@ import { UserController } from './user.controller';
 import { UserService } from './user.service';
 import { BusinessRole } from '../business-role/entities/business-role.entity';
 import { RolePermissionsModule } from '../role-permissions/role-permissions.module';
+import { AttributeModule } from '../attribute/attribute.module';
 
 @Module({
   imports: [
@@ -14,6 +15,7 @@ import { RolePermissionsModule } from '../role-permissions/role-permissions.modu
       BusinessRole,
     ]), RoleModule,
     RolePermissionsModule,
+    AttributeModule,
 
   ], controllers: [UserController],
   providers: [UserService],

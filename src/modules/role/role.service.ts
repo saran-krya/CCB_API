@@ -131,14 +131,27 @@ export class RoleService {
     }
 
     // Search - Role Name
+    // A multiselect on the frontend sends multiple exact names as a
+    // comma-separated list — matched with IN. A single value (whether typed
+    // free-text or one multiselect pick) still uses LIKE, so this covers both
+    // without changing the param shape ("search.roleName" stays a string).
 
     if (query["search.roleName"]) {
-      qb.andWhere(
-        "role.roleName LIKE :roleName",
-        {
-          roleName: `%${query["search.roleName"]}%`,
-        },
-      );
+      const roleNames = query["search.roleName"]
+        .split(",")
+        .map((name) => name.trim())
+        .filter(Boolean);
+
+      if (roleNames.length > 1) {
+        qb.andWhere("role.roleName IN (:...roleNames)", { roleNames });
+      } else if (roleNames.length === 1) {
+        qb.andWhere(
+          "role.roleName LIKE :roleName",
+          {
+            roleName: `%${roleNames[0]}%`,
+          },
+        );
+      }
     }
 
     // Filter - User Category (ID-based)

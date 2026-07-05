@@ -5,6 +5,7 @@ import {
   Get,
   HttpCode,
   HttpStatus,
+  NotFoundException,
   Param,
   Post,
   Query,
@@ -21,6 +22,7 @@ import {
 import { Request } from 'express';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { Public } from '../common/decorators/public.decorator';
+import { AttributeService } from '../modules/attribute/attribute.service';
 import { AuthenticatedUser } from './interfaces/authenticated-user.interface';
 import { DeviceContext } from './interfaces/device-context.interface';
 import { AuthService } from './auth.service';
@@ -29,11 +31,15 @@ import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { TokenResponseDto } from './dto/token-response.dto';
 import { UserDeviceDto } from './dto/device-response.dto';
 import { LoginHistoryDto } from './dto/login-history-response.dto';
+import { SessionConfigDto } from './dto/session-config-response.dto';
 
 @ApiTags('Auth')
 @Controller({ path: 'auth', version: '1' })
 export class AuthController {
-  constructor(private readonly auth: AuthService) {}
+  constructor(
+    private readonly auth: AuthService,
+    private readonly attributes: AttributeService,
+  ) {}
 
   @Public()
   @Post('login')
@@ -114,6 +120,22 @@ export class AuthController {
   @ApiOkResponse({ type: [LoginHistoryDto] })
   getLoginHistory(@CurrentUser() user: AuthenticatedUser): Promise<LoginHistoryDto[]> {
     return this.auth.getLoginHistory(user.sub);
+  }
+
+  // Deliberately NOT @Roles-gated (unlike AttributeController, which is
+  // SUPER_ADMIN/ADMIN only) — every authenticated role needs this value to
+  // enforce its own idle-timeout client-side, not just admins managing
+  // Attributes config.
+  @Get('session-config')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Session-related config for the authenticated user (e.g. idle timeout)' })
+  @ApiOkResponse({ type: SessionConfigDto })
+  async getSessionConfig(): Promise<SessionConfigDto> {
+    const raw = await this.attributes.getValueByKey('SESSION_TIMEOUT_MINUTES');
+    if (raw === null) {
+      throw new NotFoundException('SESSION_TIMEOUT_MINUTES is not configured');
+    }
+    return { idleTimeoutMinutes: Number(raw) };
   }
 
   private extractDeviceCtx(req: Request): DeviceContext {

@@ -1,104 +1,49 @@
-import { ApiProperty, ApiPropertyOptional, OmitType, PartialType } from '@nestjs/swagger';
-import { Type } from 'class-transformer';
-import {
-  IsBoolean,
-  IsEnum,
-  IsIn,
-  IsInt,
-  IsNotEmpty,
-  IsOptional,
-  IsString,
-  Min,
-  ValidateIf,
-} from 'class-validator';
+import { ApiPropertyOptional } from '@nestjs/swagger';
+import { IsEnum, IsIn, IsNotEmpty, IsOptional, IsString } from 'class-validator';
 import { BasePaginationDto } from '../../../common/dto/base-pagination.dto';
 import { AttributeScope, AttributeValueType } from '../entities/attribute.entity';
 
-export const ATTRIBUTE_MODULE_KEYS = ['customer', 'meter', 'billing', 'field-operations'] as const;
+export const ATTRIBUTE_MODULE_KEYS = [
+  'customer',
+  'meter',
+  'billing',
+  'field-operations',
+  'user-management',
+  'role-management',
+  'billing-cycle',
+] as const;
 
-export class CreateAttributeDto {
-  @ApiProperty({ enum: AttributeScope })
-  @IsEnum(AttributeScope)
-  scope!: AttributeScope;
-
-  @ApiPropertyOptional({ enum: ATTRIBUTE_MODULE_KEYS, description: 'Required when scope=module' })
-  @ValidateIf((o) => o.scope === AttributeScope.MODULE)
-  @IsIn(ATTRIBUTE_MODULE_KEYS)
-  module?: string;
-
-  @ApiPropertyOptional({ description: 'Groups module attributes into one card; required when scope=module' })
-  @ValidateIf((o) => o.scope === AttributeScope.MODULE)
-  @IsString()
-  @IsNotEmpty()
-  groupKey?: string;
-
-  @ApiPropertyOptional()
-  @ValidateIf((o) => o.scope === AttributeScope.MODULE)
-  @IsString()
-  @IsNotEmpty()
-  groupLabel?: string;
-
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsString()
-  groupDescription?: string;
-
-  @ApiProperty({ description: 'Machine name, unique within its scope/module/group' })
-  @IsString()
-  @IsNotEmpty()
-  key!: string;
-
-  @ApiProperty()
-  @IsString()
-  @IsNotEmpty()
-  label!: string;
-
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsString()
-  description?: string;
-
-  @ApiProperty({ enum: AttributeValueType })
-  @IsEnum(AttributeValueType)
-  valueType!: AttributeValueType;
-
-  @ApiProperty()
-  @IsString()
-  value!: string;
-
-  @ApiPropertyOptional({ description: 'Label shown when value is true (valueType=boolean only)' })
-  @ValidateIf((o) => o.valueType === AttributeValueType.BOOLEAN)
-  @IsString()
-  @IsNotEmpty()
-  trueLabel?: string;
-
-  @ApiPropertyOptional({ description: 'Label shown when value is false (valueType=boolean only)' })
-  @ValidateIf((o) => o.valueType === AttributeValueType.BOOLEAN)
-  @IsString()
-  @IsNotEmpty()
-  falseLabel?: string;
-
-  @ApiPropertyOptional({ description: 'Display suffix, e.g. "%", "minutes", "hours"' })
-  @IsOptional()
-  @IsString()
-  unit?: string;
-
-  @ApiPropertyOptional({ default: true })
-  @IsOptional()
-  @IsBoolean()
-  editable?: boolean;
-
-  @ApiPropertyOptional({ default: 1 })
-  @IsOptional()
-  @IsInt()
-  @Min(1)
-  @Type(() => Number)
-  displayOrder?: number;
+// Attribute.value is stored as text regardless of valueType. Attributes are
+// developer-defined and seeded (see AttributeService.buildAttributeSeed) —
+// there is no runtime attribute creation, so this only ever validates a
+// value being written to an attribute that already exists, against its
+// already-persisted valueType.
+export function isValueValidForType(value: string, valueType: AttributeValueType | undefined): boolean {
+  if (typeof value !== 'string') return false;
+  if (valueType === AttributeValueType.NUMBER) {
+    return value.trim() !== '' && Number.isFinite(Number(value));
+  }
+  if (valueType === AttributeValueType.BOOLEAN) {
+    return value === 'true' || value === 'false';
+  }
+  return true;
 }
 
-export class UpdateAttributeDto extends PartialType(
-  OmitType(CreateAttributeDto, ['scope', 'module', 'groupKey', 'key', 'valueType'] as const),
-) {
+export function attributeValueErrorMessage(valueType: AttributeValueType | undefined): string {
+  if (valueType === AttributeValueType.NUMBER) return 'value must be a valid number';
+  if (valueType === AttributeValueType.BOOLEAN) return 'value must be "true" or "false"';
+  return 'value must be a non-empty string';
+}
+
+// Admins configure the VALUE of a predefined attribute only — label, type,
+// grouping, and editability are set by the developer at seed time and are
+// intentionally not part of this payload.
+export class UpdateAttributeDto {
+  @ApiPropertyOptional({ description: 'New value to persist for this attribute' })
+  @IsOptional()
+  @IsString()
+  value?: string;
+
   @ApiPropertyOptional({ description: 'Required when editing a cycle-sensitive parameter' })
   @IsOptional()
   @IsString()
@@ -121,4 +66,9 @@ export class AttributeQueryDto extends BasePaginationDto {
   @IsOptional()
   @IsString()
   groupKey?: string;
+
+  @ApiPropertyOptional({ description: 'Exact key match — used to fetch a single named attribute' })
+  @IsOptional()
+  @IsString()
+  key?: string;
 }

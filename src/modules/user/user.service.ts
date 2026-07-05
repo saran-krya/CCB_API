@@ -1,4 +1,4 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import * as bcrypt from 'bcryptjs';
 import { Repository } from 'typeorm';
@@ -10,6 +10,7 @@ import { CreateUserDto, UpdateUserDto } from './dto/create-user.dto';
 import { User } from './entities/user.entity';
 import { BusinessRole } from '../business-role/entities/business-role.entity';
 import { RolePermissionsService } from '../role-permissions/role-permissions.service';
+import { AttributeService } from '../attribute/attribute.service';
 
 @Injectable()
 export class UserService {
@@ -25,6 +26,8 @@ export class UserService {
     private readonly roles: RoleService,
 
     private readonly audit: AuditService,
+
+    private readonly attributes: AttributeService,
   ) { }
 
   async create(
@@ -32,6 +35,12 @@ export class UserService {
     actorId?: number,
   ) {
     await this.validateUniqueFields(dto);
+
+    const reportingManagerMandatory =
+      (await this.attributes.getValueByKey('REPORTING_MANAGER_MANDATORY')) === 'true';
+    if (reportingManagerMandatory && !dto.reportingManagerId) {
+      throw new BadRequestException('Reporting Manager is mandatory');
+    }
 
     const role =
       await this.roles.findOne(
