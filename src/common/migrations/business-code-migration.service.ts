@@ -7,6 +7,7 @@ const BACKFILL_TABLES = [
   { table: 'properties',     prefix: 'PRP' },
   { table: 'units',          prefix: 'UNT' },
   { table: 'billing_cycles', prefix: 'ILCY' },
+  { table: 'tariffs',        prefix: 'TAR' },
 ] as const;
 
 @Injectable()

@@ -20,6 +20,7 @@ import { BillingCycleModule } from './modules/billing-cycle/billing-cycle.module
 import { LovModule } from './modules/lov/lov.module';
 import { AttributeModule } from './modules/attribute/attribute.module';
 import { BusinessCodeMigrationModule } from './common/migrations/business-code-migration.module';
+import { TariffModule } from './modules/tariff/tariff.module';
 
 @Module({
   imports: [
@@ -39,6 +40,7 @@ import { BusinessCodeMigrationModule } from './common/migrations/business-code-m
     RolePermissionsModule,
     ScreensModule,
     BillingCycleModule,
+    TariffModule,
     LovModule,
     AttributeModule,
     BusinessCodeMigrationModule,
