@@ -5,6 +5,7 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 import { CreateUserDto, UpdateUserDto } from './dto/create-user.dto';
+import { UpdatePreferencesDto } from './dto/update-preferences.dto';
 import { UserService } from './user.service';
 import { ROLES } from '@app/common/constants/global';
 
@@ -37,6 +38,16 @@ export class UserController {
   @Get("reporting-managers")
   getReportingManagers() {
     return this.users.getReportingManagers();
+  }
+
+  // Self-service — any authenticated user manages their own appearance
+  // preferences, regardless of role.
+  @Patch("me/preferences")
+  updateOwnPreferences(
+    @Body() dto: UpdatePreferencesDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.users.updateOwnPreferences(user.sub, dto);
   }
 
   @Get("dashboard-summary")

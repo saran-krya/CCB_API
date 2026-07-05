@@ -139,4 +139,20 @@ export class User extends BaseEntity {
   })
   ssoSubject?: string | null;
 
+  @Column({
+    name: "theme_mode",
+    type: "varchar",
+    length: 10,
+    nullable: true,
+  })
+  themeMode?: string | null;
+
+  @Column({
+    name: "nav_theme",
+    type: "varchar",
+    length: 20,
+    nullable: true,
+  })
+  navTheme?: string | null;
+
 }

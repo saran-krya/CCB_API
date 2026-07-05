@@ -7,6 +7,7 @@ import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 import { paginate } from '../../common/utils/pagination.util';
 import { RoleService } from '../role/role.service';
 import { CreateUserDto, UpdateUserDto } from './dto/create-user.dto';
+import { UpdatePreferencesDto } from './dto/update-preferences.dto';
 import { User } from './entities/user.entity';
 import { BusinessRole } from '../business-role/entities/business-role.entity';
 import { RolePermissionsService } from '../role-permissions/role-permissions.service';
@@ -324,9 +325,27 @@ export class UserService {
         name: user.role.roleName,
       },
 
+      themeMode: user.themeMode ?? null,
+      navTheme: user.navTheme ?? null,
+
       permissions,
     };
   }
+
+  async updateOwnPreferences(id: number, dto: UpdatePreferencesDto) {
+    const user = await this.findOne(id);
+
+    if (dto.themeMode !== undefined) user.themeMode = dto.themeMode;
+    if (dto.navTheme !== undefined) user.navTheme = dto.navTheme;
+
+    await this.users.save(user);
+
+    return {
+      themeMode: user.themeMode ?? null,
+      navTheme: user.navTheme ?? null,
+    };
+  }
+
   findByEmailWithRole(email: string) {
     return this.users
       .createQueryBuilder('user')
