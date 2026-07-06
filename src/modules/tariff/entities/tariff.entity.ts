@@ -36,6 +36,11 @@ export enum TariffApplicability {
   UNIT = 'unit',
 }
 
+export enum TariffPenaltyType {
+  FLAT = 'flat',
+  PERCENTAGE = 'percentage',
+}
+
 @Entity('tariffs')
 export class Tariff extends BaseEntity {
   @Column({ name: 'business_code', type: 'varchar', length: 20, unique: true, nullable: true })
@@ -73,6 +78,14 @@ export class Tariff extends BaseEntity {
   @Column({ name: 'security_deposit', type: 'decimal', precision: 10, scale: 2, default: 0 })
   securityDeposit!: number;
 
+  @Column({
+    name: 'late_payment_penalty_type',
+    type: 'enum',
+    enum: TariffPenaltyType,
+    default: TariffPenaltyType.FLAT,
+  })
+  latePaymentPenaltyType!: TariffPenaltyType;
+
   @Column({ name: 'late_payment_penalty', type: 'decimal', precision: 10, scale: 2, default: 0 })
   latePaymentPenalty!: number;
 
@@ -85,14 +98,32 @@ export class Tariff extends BaseEntity {
   @Column({ name: 'tampering_penalty', type: 'decimal', precision: 10, scale: 2, default: 0 })
   tamperingPenalty!: number;
 
+  @Column({ name: 'bounced_cheque_fee', type: 'decimal', precision: 10, scale: 2, default: 0 })
+  bouncedChequeFee!: number;
+
   @Column({ name: 'noc_fee', type: 'decimal', precision: 10, scale: 2, default: 0 })
   nocFee!: number;
 
   @Column({ name: 'move_out_fee', type: 'decimal', precision: 10, scale: 2, default: 0 })
   moveOutFee!: number;
 
+  @Column({ name: 'meter_verification_fee', type: 'decimal', precision: 10, scale: 2, default: 0 })
+  meterVerificationFee!: number;
+
+  @Column({ name: 'meter_rental_enabled', type: 'boolean', default: false })
+  meterRentalEnabled!: boolean;
+
+  @Column({ name: 'meter_rental_fee', type: 'decimal', precision: 10, scale: 2, default: 0 })
+  meterRentalFee!: number;
+
   @Column({ name: 'vat', type: 'decimal', precision: 5, scale: 2, default: 5 })
   vat!: number;
+
+  @Column({ name: 'vat_registration_number', type: 'varchar', length: 15, nullable: true })
+  vatRegistrationNumber?: string | null;
+
+  @Column({ name: 'vat_applicable_fees', type: 'simple-json', nullable: true })
+  vatApplicableFees?: string[] | null;
 
   @Column({ name: 'effective_from', type: 'date', nullable: true })
   effectiveFrom?: string | null;

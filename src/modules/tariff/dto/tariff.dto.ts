@@ -1,13 +1,16 @@
 import { PartialType } from '@nestjs/mapped-types';
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
   IsArray,
+  IsBoolean,
   IsEnum,
   IsInt,
   IsNumber,
   IsOptional,
   IsString,
+  Length,
   Max,
   MaxLength,
   Min,
@@ -17,10 +20,20 @@ import {
 import { BasePaginationDto } from '../../../common/dto/base-pagination.dto';
 import {
   TariffApplicability,
+  TariffPenaltyType,
   TariffPropertyType,
   TariffRateType,
   TariffStatus,
 } from '../entities/tariff.entity';
+
+export enum VatApplicableFeeKey {
+  ACTIVATION_FEE = 'activationFee',
+  MOVE_OUT_FEE = 'moveOutFee',
+  NOC_FEE = 'nocFee',
+  METER_VERIFICATION_FEE = 'meterVerificationFee',
+  BILLING_SERVICE_FEE = 'billingServiceFee',
+  METER_RENTAL_FEE = 'meterRentalFee',
+}
 
 export class TariffTierDto {
   @IsNumber()
@@ -75,13 +88,34 @@ export class CreateTariffDto {
   @IsOptional() @IsNumber() @Min(0) billingServiceFee?: number = 0;
   @IsOptional() @IsNumber() @Min(0) activationFee?: number = 0;
   @IsOptional() @IsNumber() @Min(0) securityDeposit?: number = 0;
-  @IsOptional() @IsNumber() @Min(0) latePaymentPenalty?: number = 0;
+
+  @IsOptional() @IsEnum(TariffPenaltyType) latePaymentPenaltyType?: TariffPenaltyType = TariffPenaltyType.FLAT;
+  @IsOptional() @IsNumber() @Min(0)
+  @ValidateIf((o) => o.latePaymentPenaltyType === TariffPenaltyType.PERCENTAGE)
+  @Max(100)
+  latePaymentPenalty?: number = 0;
+
   @IsOptional() @IsNumber() @Min(0) disconnectionFee?: number = 0;
   @IsOptional() @IsNumber() @Min(0) reconnectionFee?: number = 0;
   @IsOptional() @IsNumber() @Min(0) tamperingPenalty?: number = 0;
+  @IsOptional() @IsNumber() @Min(0) bouncedChequeFee?: number = 0;
   @IsOptional() @IsNumber() @Min(0) nocFee?: number = 0;
   @IsOptional() @IsNumber() @Min(0) moveOutFee?: number = 0;
+  @IsOptional() @IsNumber() @Min(0) meterVerificationFee?: number = 0;
+
+  @IsOptional() @IsBoolean() meterRentalEnabled?: boolean = false;
+  @IsOptional() @IsNumber() @Min(0) meterRentalFee?: number = 0;
+
   @IsOptional() @IsNumber() @Min(0) @Max(100) vat?: number = 5;
+
+  @IsOptional() @IsString() @Length(15, 15) vatRegistrationNumber?: string;
+
+  @ApiPropertyOptional({ enum: VatApplicableFeeKey, isArray: true })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(Object.values(VatApplicableFeeKey).length)
+  @IsEnum(VatApplicableFeeKey, { each: true })
+  vatApplicableFees?: string[];
 
   @IsOptional() @IsString() effectiveFrom?: string;
   @IsOptional() @IsString() effectiveTo?: string;
@@ -120,4 +154,37 @@ export class TariffQueryDto extends BasePaginationDto {
   @IsOptional()
   @IsEnum(TariffApplicability)
   applicability?: TariffApplicability;
+}
+
+export class TariffConflictQueryDto {
+  @ApiPropertyOptional({ enum: TariffPropertyType })
+  @IsEnum(TariffPropertyType)
+  propertyType!: TariffPropertyType;
+
+  @ApiPropertyOptional({ enum: TariffApplicability })
+  @IsEnum(TariffApplicability)
+  applicability!: TariffApplicability;
+
+  @ApiPropertyOptional({ type: [Number] })
+  @IsOptional()
+  @Transform(({ value }) => (Array.isArray(value) ? value.map(Number) : [Number(value)]))
+  @IsArray()
+  @IsInt({ each: true })
+  propertyIds?: number[];
+
+  @ApiPropertyOptional({ type: [Number] })
+  @IsOptional()
+  @Transform(({ value }) => (Array.isArray(value) ? value.map(Number) : [Number(value)]))
+  @IsArray()
+  @IsInt({ each: true })
+  unitIds?: number[];
+
+  @IsOptional() @IsString() effectiveFrom?: string;
+  @IsOptional() @IsString() effectiveTo?: string;
+
+  @ApiPropertyOptional({ description: 'Exclude this tariff id from the conflict check (edit mode)' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  excludeId?: number;
 }
