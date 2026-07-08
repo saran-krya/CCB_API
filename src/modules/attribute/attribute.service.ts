@@ -78,6 +78,13 @@ function buildAttributeSeed(sessionTimeoutMinutes: number): AttributeSeedRow[] {
     groupDescription: 'Default behavior and change controls for billing cycle records',
   };
 
+  const tariffGroup = {
+    module: 'tariff',
+    groupKey: 'tariff_config_rules',
+    groupLabel: 'Tariff Configuration Rules',
+    groupDescription: 'Defaults and guardrails applied to the tariff creation, approval, and versioning workflow',
+  };
+
   return [
     // ── General Attributes ──────────────────────────────────────────────────
     {
@@ -161,6 +168,44 @@ function buildAttributeSeed(sessionTimeoutMinutes: number): AttributeSeedRow[] {
       description: 'Whether a reason is mandatory when saving changes to an existing billing cycle',
       trueLabel: 'Required', falseLabel: 'Optional', displayOrder: 1,
     },
+    {
+      ...billingCycleGroup, scope: AttributeScope.MODULE, key: 'BILLING_CYCLE_DEFAULT_BILL_GENERATION_DAYS',
+      label: 'Default Bill Generation Days', valueType: AttributeValueType.NUMBER, value: '3',
+      description: 'Days after reading end pre-filled on the create-cycle form for when a bill is generated internally',
+      unit: 'days', displayOrder: 2,
+    },
+    {
+      ...billingCycleGroup, scope: AttributeScope.MODULE, key: 'BILLING_CYCLE_DEFAULT_BILL_ISSUE_DAYS',
+      label: 'Default Bill Issue Days', valueType: AttributeValueType.NUMBER, value: '7',
+      description: 'Days after reading end pre-filled on the create-cycle form for when a bill is issued to the customer',
+      unit: 'days', displayOrder: 3,
+    },
+    {
+      ...billingCycleGroup, scope: AttributeScope.MODULE, key: 'BILLING_CYCLE_DEFAULT_BILL_DUE_DAYS',
+      label: 'Default Payment Due Days', valueType: AttributeValueType.NUMBER, value: '14',
+      description: 'Days after bill issue pre-filled on the create-cycle form for when payment is due',
+      unit: 'days', displayOrder: 4,
+    },
+
+    // ── Module Attributes: Tariff Configuration → Tariff Configuration Rules ─
+    {
+      ...tariffGroup, scope: AttributeScope.MODULE, key: 'TARIFF_DEFAULT_VAT_RATE',
+      label: 'Default VAT Rate', valueType: AttributeValueType.NUMBER, value: '5',
+      description: 'VAT percentage pre-filled on a new tariff when none is specified',
+      unit: '%', displayOrder: 1,
+    },
+    {
+      ...tariffGroup, scope: AttributeScope.MODULE, key: 'TARIFF_APPROVAL_SLA_HOURS',
+      label: 'Finance Approval SLA', valueType: AttributeValueType.NUMBER, value: '48',
+      description: 'Target turnaround time shown to submitters for how long Finance review should take',
+      unit: 'hours', displayOrder: 2,
+    },
+    {
+      ...tariffGroup, scope: AttributeScope.MODULE, key: 'TARIFF_REACTIVATION_CONFLICT_CHECK',
+      label: 'Conflict Check on Reactivation', valueType: AttributeValueType.BOOLEAN, value: 'true',
+      description: 'Whether reactivating an inactive tariff re-checks for scope/date conflicts with other tariffs',
+      trueLabel: 'Required', falseLabel: 'Skipped', displayOrder: 3,
+    },
   ];
 }
 
@@ -212,6 +257,14 @@ export class AttributeService {
   async getValueByKey(key: string): Promise<string | null> {
     const attribute = await this.attributes.findOne({ where: { key } });
     return attribute?.value ?? null;
+  }
+
+  // Centralizes the boolean-attribute convention ('true'/'false' string
+  // value) so callers checking "is this field mandatory?" don't each
+  // re-derive the comparison — used by any module-attribute-driven
+  // conditionally-required field (see UserService.DYNAMIC_FIELD_REQUIREMENTS).
+  async isMandatory(key: string): Promise<boolean> {
+    return (await this.getValueByKey(key)) === 'true';
   }
 
   async update(id: number, dto: UpdateAttributeDto, actorId?: number, actorRoleName?: string): Promise<Attribute> {
@@ -296,6 +349,12 @@ export class AttributeService {
       'REPORTING_MANAGER_MANDATORY',
       'PERMISSION_TREE_CASCADE_ENABLED',
       'REQUIRE_CHANGE_REASON_ON_EDIT',
+      'TARIFF_DEFAULT_VAT_RATE',
+      'TARIFF_APPROVAL_SLA_HOURS',
+      'TARIFF_REACTIVATION_CONFLICT_CHECK',
+      'BILLING_CYCLE_DEFAULT_BILL_GENERATION_DAYS',
+      'BILLING_CYCLE_DEFAULT_BILL_ISSUE_DAYS',
+      'BILLING_CYCLE_DEFAULT_BILL_DUE_DAYS',
     ];
 
     await this.attributes.delete({ key: In(RETIRED_ATTRIBUTE_KEYS) });

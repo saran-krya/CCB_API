@@ -1,8 +1,11 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, In, Repository } from 'typeorm';
+import { AttributeService } from '../attribute/attribute.service';
 import { AuditService } from '../../audit/audit.service';
+import { ROLES } from '../../common/constants/global';
 import { paginate } from '../../common/utils/pagination.util';
+import { LovService } from '../lov/lov.service';
 import { Property } from '../property/entities/property.entity';
 import { Unit } from '../unit/entities/unit.entity';
 import {
@@ -17,32 +20,24 @@ import {
   Tariff,
   TariffApplicability,
   TariffPenaltyType,
-  TariffPropertyType,
   TariffRateType,
   TariffStatus,
 } from './entities/tariff.entity';
-
-const SORTABLE = new Set([
-  'name',
-  'businessCode',
-  'status',
-  'propertyType',
-  'rateType',
-  'applicability',
-  'effectiveFrom',
-  'createdAt',
-]);
-
-const SORT_COLUMN_MAP: Record<string, string> = {
-  businessCode: 'tariff.businessCode',
-  name: 'tariff.name',
-  status: 'tariff.status',
-  propertyType: 'tariff.propertyType',
-  rateType: 'tariff.rateType',
-  applicability: 'tariff.applicability',
-  effectiveFrom: 'tariff.effectiveFrom',
-  createdAt: 'tariff.createdAt',
-};
+import {
+  ACTIVE_LOCKED_TARIFF_FIELDS,
+  DEFAULT_VAT_RATE_FALLBACK,
+  EDITABLE_TARIFF_STATUSES,
+  SORTABLE_TARIFF_FIELDS,
+  SUBMITTABLE_TARIFF_STATUSES,
+  TARIFF_AUDIT_MODULE_NAME,
+  TARIFF_CODE_PAD_WIDTH,
+  TARIFF_CODE_PREFIX,
+  TARIFF_SORT_COLUMN_MAP,
+  TARIFF_UNIT_TYPE_COMMERCIAL,
+  TARIFF_UNIT_TYPE_LOV_CATEGORY,
+  TARIFF_UNIT_TYPE_RESIDENTIAL,
+  TariffAuditAction,
+} from './tariff.constants';
 
 @Injectable()
 export class TariffService {
@@ -52,6 +47,8 @@ export class TariffService {
     @InjectRepository(Unit) private readonly unitRepo: Repository<Unit>,
     private readonly dataSource: DataSource,
     private readonly auditService: AuditService,
+    private readonly attributeService: AttributeService,
+    private readonly lovService: LovService,
   ) {}
 
   async checkConflict(query: TariffConflictQueryDto) {
@@ -61,7 +58,7 @@ export class TariffService {
       .leftJoinAndSelect('tariff.units', 'units')
       .where('tariff.propertyType = :propertyType', { propertyType: query.propertyType })
       .andWhere('tariff.status IN (:...statuses)', {
-        statuses: [TariffStatus.ACTIVE, TariffStatus.PENDING],
+        statuses: [TariffStatus.ACTIVE, TariffStatus.PENDING, TariffStatus.REQUEST_FOR_CORRECTION],
       });
 
     if (query.excludeId) {
@@ -133,14 +130,17 @@ export class TariffService {
   }
 
   async getFilterMetadata() {
-    const properties = await this.propertyRepo.find({
-      relations: ['community'],
-      order: { name: 'ASC' },
-    });
+    const [properties, unitTypes] = await Promise.all([
+      this.propertyRepo.find({
+        relations: ['community'],
+        order: { name: 'ASC' },
+      }),
+      this.lovService.findByCategory(TARIFF_UNIT_TYPE_LOV_CATEGORY),
+    ]);
 
     return {
       statuses: Object.values(TariffStatus).map((value) => ({ value, label: this.labelize(value) })),
-      propertyTypes: Object.values(TariffPropertyType).map((value) => ({ value, label: this.labelize(value) })),
+      propertyTypes: unitTypes.map((v) => ({ value: v.code, label: v.label })),
       rateTypes: Object.values(TariffRateType).map((value) => ({ value, label: this.labelize(value) })),
       applicabilities: Object.values(TariffApplicability).map((value) => ({ value, label: this.labelize(value) })),
       properties: properties.map((property) => ({
@@ -152,13 +152,24 @@ export class TariffService {
   }
 
   async getStats() {
-    const [total, active, pending, inactive, rejected] = await Promise.all([
+    const [statusCounts, total] = await Promise.all([
+      this.tariffs
+        .createQueryBuilder('tariff')
+        .select('tariff.status', 'status')
+        .addSelect('COUNT(*)', 'count')
+        .groupBy('tariff.status')
+        .getRawMany<{ status: TariffStatus; count: string }>(),
       this.tariffs.count(),
-      this.tariffs.count({ where: { status: TariffStatus.ACTIVE } }),
-      this.tariffs.count({ where: { status: TariffStatus.PENDING } }),
-      this.tariffs.count({ where: { status: TariffStatus.INACTIVE } }),
-      this.tariffs.count({ where: { status: TariffStatus.REJECTED } }),
     ]);
+    const countFor = (status: TariffStatus) => Number(statusCounts.find((row) => row.status === status)?.count ?? 0);
+    const active = countFor(TariffStatus.ACTIVE);
+    const pending = countFor(TariffStatus.PENDING);
+    const inactive = countFor(TariffStatus.INACTIVE);
+    const rejected = countFor(TariffStatus.REJECTED);
+    const draft = countFor(TariffStatus.DRAFT);
+    const requestForCorrection = countFor(TariffStatus.REQUEST_FOR_CORRECTION);
+    const deprecated = countFor(TariffStatus.DEPRECATED);
+    const expired = countFor(TariffStatus.EXPIRED);
 
     const rawBreakdown = await this.tariffs
       .createQueryBuilder('tariff')
@@ -175,8 +186,8 @@ export class TariffService {
       rawBreakdown
         .filter((entry) => entry.applicability === applicability)
         .forEach((entry) => {
-          if (entry.propertyType === TariffPropertyType.RESIDENTIAL) row.residential = Number(entry.count);
-          if (entry.propertyType === TariffPropertyType.COMMERCIAL) row.commercial = Number(entry.count);
+          if (entry.propertyType === TARIFF_UNIT_TYPE_RESIDENTIAL) row.residential = Number(entry.count);
+          if (entry.propertyType === TARIFF_UNIT_TYPE_COMMERCIAL) row.commercial = Number(entry.count);
         });
       return row;
     });
@@ -187,10 +198,18 @@ export class TariffService {
       pending,
       inactive,
       rejected,
+      draft,
+      requestForCorrection,
+      deprecated,
+      expired,
       statusDistribution: [
-        { key: 'active', label: 'Active', value: active },
+        { key: 'draft', label: 'Draft', value: draft },
         { key: 'pending', label: 'Pending', value: pending },
+        { key: 'requestForCorrection', label: 'Request for Correction', value: requestForCorrection },
+        { key: 'active', label: 'Active', value: active },
         { key: 'inactive', label: 'Inactive', value: inactive },
+        { key: 'deprecated', label: 'Deprecated', value: deprecated },
+        { key: 'expired', label: 'Expired', value: expired },
         { key: 'rejected', label: 'Rejected', value: rejected },
       ],
       applicabilityBreakdown,
@@ -218,8 +237,8 @@ export class TariffService {
       qb.andWhere('tariff.applicability = :applicability', { applicability: query.applicability });
     }
 
-    const sortBy = query.sortBy && SORTABLE.has(query.sortBy) ? query.sortBy : 'createdAt';
-    qb.orderBy(SORT_COLUMN_MAP[sortBy], query.sortOrder ?? 'DESC');
+    const sortBy = query.sortBy && SORTABLE_TARIFF_FIELDS.has(query.sortBy) ? query.sortBy : 'createdAt';
+    qb.orderBy(TARIFF_SORT_COLUMN_MAP[sortBy], query.sortOrder ?? 'DESC');
 
     const result = await paginate(qb, query);
     return {
@@ -231,19 +250,40 @@ export class TariffService {
   async findOne(id: number) {
     const tariff = await this.tariffs.findOne({
       where: { id },
-      relations: ['submittedBy', 'approvedBy', 'tiers', 'properties', 'properties.community', 'units'],
+      relations: ['submittedBy', 'approvedBy', 'tiers', 'properties', 'properties.community', 'units', 'parentTariff'],
     });
     if (!tariff) throw new NotFoundException('Tariff not found');
     return this.mapToResponse(tariff, true);
   }
 
+  // The DTO only checks propertyType is a non-empty string (it's dynamic, not
+  // a fixed enum) — this confirms it's actually an active code in the
+  // Lookup Field Master's TARIFF_UNIT_TYPE category, the same source the
+  // create-form dropdown and list filter both read from.
+  private async assertValidUnitType(propertyType: string): Promise<void> {
+    const validValues = await this.lovService.findByCategory(TARIFF_UNIT_TYPE_LOV_CATEGORY);
+    if (!validValues.some((v) => v.code === propertyType)) {
+      throw new BadRequestException(
+        `"${propertyType}" is not a configured unit type. Add it under Lookup Field Master (TARIFF_UNIT_TYPE) first.`,
+      );
+    }
+  }
+
+  // Rate/scope shape is intentionally NOT validated here — a tariff can be
+  // created as an incomplete draft (e.g. the wizard creates it right after
+  // Step 1, before Step 2's rate values exist). submit() re-validates the
+  // full persisted entity via validateRateShapeForEntity before it's allowed
+  // into the approval queue, which is the point completeness actually matters.
   async create(dto: CreateTariffDto, actorId?: number) {
-    this.validateRateShape(dto);
+    await this.assertValidUnitType(dto.propertyType);
+
+    const defaultVat = await this.getDefaultVat();
 
     const savedId = await this.dataSource.transaction(async (manager) => {
       const tariff = manager.create(Tariff, {
         name: dto.name,
-        status: TariffStatus.PENDING,
+        status: TariffStatus.DRAFT,
+        version: '1.0',
         propertyType: dto.propertyType,
         rateType: dto.rateType,
         applicability: dto.applicability,
@@ -262,15 +302,13 @@ export class TariffService {
         meterVerificationFee: dto.meterVerificationFee ?? 0,
         meterRentalEnabled: dto.meterRentalEnabled ?? false,
         meterRentalFee: dto.meterRentalFee ?? 0,
-        vat: dto.vat ?? 5,
+        vat: dto.vat ?? defaultVat,
         vatRegistrationNumber: dto.vatRegistrationNumber ?? null,
         vatApplicableFees: dto.vatApplicableFees ?? null,
         effectiveFrom: dto.effectiveFrom ?? null,
         effectiveTo: dto.effectiveTo ?? null,
         description: dto.description ?? null,
-        submittedOn: new Date().toISOString().slice(0, 10),
       });
-      if (actorId) tariff.submittedBy = { id: actorId } as any;
 
       if (dto.applicability === TariffApplicability.PROPERTY && dto.propertyIds?.length) {
         tariff.properties = await this.findPropertiesOrFail(manager, dto.propertyIds);
@@ -280,7 +318,7 @@ export class TariffService {
       }
 
       const saved = await manager.save(Tariff, tariff);
-      saved.businessCode = `TAR-${String(saved.id).padStart(6, '0')}`;
+      saved.businessCode = `${TARIFF_CODE_PREFIX}${String(saved.id).padStart(TARIFF_CODE_PAD_WIDTH, '0')}`;
       await manager.update(Tariff, saved.id, { businessCode: saved.businessCode });
 
       if (dto.rateType === TariffRateType.TIERED && dto.tiers?.length) {
@@ -296,14 +334,7 @@ export class TariffService {
         await manager.save(TariffTier, tierRows);
       }
 
-      await this.auditService.record({
-        moduleName: 'Tariff',
-        entityId: saved.id,
-        action: 'CREATE',
-        oldValue: null,
-        newValue: saved,
-        performedBy: actorId,
-      });
+      await this.audit(TariffAuditAction.CREATE, saved.id, null, saved, actorId);
 
       return saved.id;
     });
@@ -317,10 +348,25 @@ export class TariffService {
       relations: ['tiers', 'properties', 'units'],
     });
     if (!tariff) throw new NotFoundException('Tariff not found');
-    if (tariff.status !== TariffStatus.PENDING && tariff.status !== TariffStatus.INACTIVE) {
-      throw new BadRequestException('Only pending or inactive tariffs can be edited');
+
+    if (!EDITABLE_TARIFF_STATUSES.has(tariff.status)) {
+      throw new BadRequestException(
+        `A tariff with status "${this.labelize(tariff.status)}" is read-only and cannot be edited.`,
+      );
     }
 
+    if (tariff.status === TariffStatus.ACTIVE) {
+      this.assertActiveEditAllowed(dto);
+    }
+
+    if (dto.propertyType) {
+      await this.assertValidUnitType(dto.propertyType);
+    }
+
+    // Editing a Pending or Request-for-Correction tariff has no special
+    // requirement or side effect — Business Admin can freely revise it while
+    // Finance review is in progress (or after a correction request), and it
+    // simply stays in whatever status it was already in.
     const oldValue = { ...tariff };
 
     await this.dataSource.transaction(async (manager) => {
@@ -384,48 +430,63 @@ export class TariffService {
         await manager.delete(TariffTier, { tariff: { id } });
       }
 
-      await this.auditService.record({
-        moduleName: 'Tariff',
-        entityId: id,
-        action: 'UPDATE',
-        oldValue,
-        newValue: saved,
-        performedBy: actorId,
-      });
+      await this.audit(TariffAuditAction.UPDATE, id, oldValue, { ...saved, changeReason: dto.changeReason ?? null }, actorId);
     });
 
     return this.findOne(id);
   }
 
-  async approve(id: number, actorId?: number) {
+  // Business Admin action — moves a Draft, corrected, or rejected tariff
+  // into the Finance approval queue. Distinct from create() so a tariff can
+  // be saved and refined before ever entering the queue (PDF Scenario 1).
+  async submit(id: number, actorId?: number) {
+    const tariff = await this.tariffs.findOne({
+      where: { id },
+      relations: ['tiers', 'properties', 'units'],
+    });
+    if (!tariff) throw new NotFoundException('Tariff not found');
+    if (!SUBMITTABLE_TARIFF_STATUSES.has(tariff.status)) {
+      throw new BadRequestException('Only a draft, corrected, or rejected tariff can be submitted for approval');
+    }
+
+    this.validateRateShapeForEntity(tariff);
+
+    const oldValue = { ...tariff };
+    tariff.status = TariffStatus.PENDING;
+    tariff.submittedOn = new Date().toISOString().slice(0, 10);
+    if (actorId) tariff.submittedBy = { id: actorId } as any;
+    tariff.rejectionReason = null;
+    tariff.rejectionNotes = null;
+    const saved = await this.tariffs.save(tariff);
+
+    await this.audit(TariffAuditAction.SUBMIT, id, oldValue, saved, actorId);
+    return this.findOne(id);
+  }
+
+  async approve(id: number, actorId?: number, actorRole?: string) {
     const tariff = await this.tariffs.findOne({ where: { id }, relations: ['submittedBy'] });
     if (!tariff) throw new NotFoundException('Tariff not found');
     if (tariff.status !== TariffStatus.PENDING) {
       throw new BadRequestException('Only pending tariffs can be approved');
     }
+    this.assertOnlyFinanceMayReview(actorRole, 'approve');
     this.assertNotSelfReview(tariff, actorId, 'approved');
     const oldValue = { ...tariff };
     tariff.status = TariffStatus.ACTIVE;
     if (actorId) tariff.approvedBy = { id: actorId } as any;
     tariff.approvalDate = new Date().toISOString().slice(0, 10);
     const saved = await this.tariffs.save(tariff);
-    await this.auditService.record({
-      moduleName: 'Tariff',
-      entityId: id,
-      action: 'APPROVE',
-      oldValue,
-      newValue: saved,
-      performedBy: actorId,
-    });
+    await this.audit(TariffAuditAction.APPROVE, id, oldValue, saved, actorId);
     return this.findOne(id);
   }
 
-  async reject(id: number, dto: RejectTariffDto, actorId?: number) {
+  async reject(id: number, dto: RejectTariffDto, actorId?: number, actorRole?: string) {
     const tariff = await this.tariffs.findOne({ where: { id }, relations: ['submittedBy'] });
     if (!tariff) throw new NotFoundException('Tariff not found');
     if (tariff.status !== TariffStatus.PENDING) {
       throw new BadRequestException('Only pending tariffs can be rejected');
     }
+    this.assertOnlyFinanceMayReview(actorRole, 'reject');
     this.assertNotSelfReview(tariff, actorId, 'rejected');
     const oldValue = { ...tariff };
     tariff.status = TariffStatus.REJECTED;
@@ -434,14 +495,7 @@ export class TariffService {
     if (actorId) tariff.approvedBy = { id: actorId } as any;
     tariff.approvalDate = new Date().toISOString().slice(0, 10);
     const saved = await this.tariffs.save(tariff);
-    await this.auditService.record({
-      moduleName: 'Tariff',
-      entityId: id,
-      action: 'REJECT',
-      oldValue,
-      newValue: saved,
-      performedBy: actorId,
-    });
+    await this.audit(TariffAuditAction.REJECT, id, oldValue, saved, actorId);
     return this.findOne(id);
   }
 
@@ -454,15 +508,169 @@ export class TariffService {
     const oldValue = { ...tariff };
     tariff.status = TariffStatus.INACTIVE;
     const saved = await this.tariffs.save(tariff);
+    await this.audit(TariffAuditAction.DEACTIVATE, id, oldValue, saved, actorId);
+    return this.findOne(id);
+  }
+
+  // Business rule chosen for this gap (PDF doesn't specify one): reactivating
+  // resumes a previously-approved tariff without a second Finance review,
+  // but re-runs the same scope/date conflict check used at creation time, in
+  // case another tariff has since taken its exact scope. Gated behind the
+  // TARIFF_REACTIVATION_CONFLICT_CHECK module attribute so it can be relaxed
+  // per deployment.
+  async reactivate(id: number, actorId?: number) {
+    const tariff = await this.tariffs.findOne({ where: { id }, relations: ['properties', 'units'] });
+    if (!tariff) throw new NotFoundException('Tariff not found');
+    if (tariff.status !== TariffStatus.INACTIVE) {
+      throw new BadRequestException('Only inactive tariffs can be reactivated');
+    }
+
+    const conflictCheckEnabled = (await this.attributeService.getValueByKey('TARIFF_REACTIVATION_CONFLICT_CHECK')) !== 'false';
+    if (conflictCheckEnabled) {
+      const result = await this.checkConflict({
+        propertyType: tariff.propertyType,
+        applicability: tariff.applicability,
+        propertyIds: tariff.properties?.map((p) => p.id),
+        unitIds: tariff.units?.map((u) => u.id),
+        effectiveFrom: tariff.effectiveFrom ?? undefined,
+        effectiveTo: tariff.effectiveTo ?? undefined,
+        excludeId: tariff.id,
+      } as TariffConflictQueryDto);
+      if (result.status === 'exact-conflict') {
+        throw new BadRequestException(
+          `Cannot reactivate — "${result.conflictingTariff?.name}" already covers this exact scope and date range.`,
+        );
+      }
+    }
+
+    const oldValue = { ...tariff };
+    tariff.status = TariffStatus.ACTIVE;
+    const saved = await this.tariffs.save(tariff);
+    await this.audit(TariffAuditAction.REACTIVATE, id, oldValue, saved, actorId);
+    return this.findOne(id);
+  }
+
+  // Manual deprecation — PDF: "Manual deprecation by Super Admin". The
+  // PDF's companion guard ("cannot deprecate if active billing cycle uses
+  // it") is not enforced here since there is no Billing Engine to check
+  // against yet.
+  async deprecate(id: number, actorId?: number) {
+    const tariff = await this.tariffs.findOne({ where: { id } });
+    if (!tariff) throw new NotFoundException('Tariff not found');
+    if (tariff.status !== TariffStatus.ACTIVE) {
+      throw new BadRequestException('Only active tariffs can be deprecated');
+    }
+    const oldValue = { ...tariff };
+    tariff.status = TariffStatus.DEPRECATED;
+    const saved = await this.tariffs.save(tariff);
+    await this.audit(TariffAuditAction.DEPRECATE, id, oldValue, saved, actorId);
+    return this.findOne(id);
+  }
+
+  // Scenario 5 — the only way to change a locked (ACTIVE_LOCKED_TARIFF_FIELDS)
+  // field on an active tariff: clone it into a new editable Draft that
+  // shares the same business code and links back via parentTariff.
+  async newVersion(id: number, actorId?: number) {
+    const source = await this.tariffs.findOne({
+      where: { id },
+      relations: ['tiers', 'properties', 'units'],
+    });
+    if (!source) throw new NotFoundException('Tariff not found');
+    if (source.status !== TariffStatus.ACTIVE) {
+      throw new BadRequestException('A new version can only be created from an active tariff');
+    }
+
+    const newId = await this.dataSource.transaction(async (manager) => {
+      const clone = manager.create(Tariff, {
+        businessCode: source.businessCode,
+        name: source.name,
+        status: TariffStatus.DRAFT,
+        version: this.nextMajorVersion(source.version),
+        parentTariff: { id: source.id } as Tariff,
+        propertyType: source.propertyType,
+        rateType: source.rateType,
+        applicability: source.applicability,
+        flatRate: source.flatRate,
+        billingServiceFee: source.billingServiceFee,
+        activationFee: source.activationFee,
+        securityDeposit: source.securityDeposit,
+        latePaymentPenaltyType: source.latePaymentPenaltyType,
+        latePaymentPenalty: source.latePaymentPenalty,
+        disconnectionFee: source.disconnectionFee,
+        reconnectionFee: source.reconnectionFee,
+        tamperingPenalty: source.tamperingPenalty,
+        bouncedChequeFee: source.bouncedChequeFee,
+        nocFee: source.nocFee,
+        moveOutFee: source.moveOutFee,
+        meterVerificationFee: source.meterVerificationFee,
+        meterRentalEnabled: source.meterRentalEnabled,
+        meterRentalFee: source.meterRentalFee,
+        vat: source.vat,
+        vatRegistrationNumber: source.vatRegistrationNumber,
+        vatApplicableFees: source.vatApplicableFees,
+        effectiveFrom: null,
+        effectiveTo: source.effectiveTo,
+        description: source.description,
+        properties: source.properties,
+        units: source.units,
+      });
+
+      const saved = await manager.save(Tariff, clone);
+
+      if (source.rateType === TariffRateType.TIERED && source.tiers?.length) {
+        const tierRows = source.tiers.map((tier) =>
+          manager.create(TariffTier, {
+            tariff: saved,
+            tierOrder: tier.tierOrder,
+            minKwh: tier.minKwh,
+            maxKwh: tier.maxKwh,
+            ratePerKwh: tier.ratePerKwh,
+          }),
+        );
+        await manager.save(TariffTier, tierRows);
+      }
+
+      await this.audit(
+        TariffAuditAction.CREATE_VERSION,
+        saved.id,
+        { sourceId: source.id, sourceVersion: source.version },
+        saved,
+        actorId,
+      );
+
+      return saved.id;
+    });
+
+    return this.findOne(newId);
+  }
+
+  // Business rule (explicit, not derivable from the guard): approval belongs
+  // ONLY to Finance. RolesGuard globally lets Super Admin bypass every
+  // @Roles() check ("Full system access... Bypasses permission checks" —
+  // see the FINANCE/SUPER_ADMIN seed descriptions), so @Roles(FINANCE) alone
+  // on the controller is not enough to keep Super Admin out. This re-checks
+  // the actor's role directly, inside the service, where nothing bypasses it.
+  private async audit(
+    action: TariffAuditAction,
+    entityId: number,
+    oldValue: unknown,
+    newValue: unknown,
+    actorId?: number,
+  ): Promise<void> {
     await this.auditService.record({
-      moduleName: 'Tariff',
-      entityId: id,
-      action: 'DEACTIVATE',
+      moduleName: TARIFF_AUDIT_MODULE_NAME,
+      entityId,
+      action,
       oldValue,
-      newValue: saved,
+      newValue,
       performedBy: actorId,
     });
-    return this.findOne(id);
+  }
+
+  private assertOnlyFinanceMayReview(actorRole: string | undefined, action: 'approve' | 'reject') {
+    if (actorRole !== ROLES.FINANCE) {
+      throw new ForbiddenException(`Only the Finance role can ${action} a tariff — Super Admin and Admin are excluded by design.`);
+    }
   }
 
   private assertNotSelfReview(tariff: Tariff, actorId: number | undefined, action: 'approved' | 'rejected') {
@@ -471,6 +679,26 @@ export class TariffService {
         `A tariff cannot be ${action} by the same user who submitted it. Ask another reviewer to action it.`,
       );
     }
+  }
+
+  private assertActiveEditAllowed(dto: UpdateTariffDto) {
+    const locked = ACTIVE_LOCKED_TARIFF_FIELDS.filter((field) => dto[field] !== undefined);
+    if (locked.length) {
+      throw new BadRequestException(
+        `Cannot change ${locked.join(', ')} on an active tariff — these require creating a new version first.`,
+      );
+    }
+  }
+
+  private async getDefaultVat(): Promise<number> {
+    const value = await this.attributeService.getValueByKey('TARIFF_DEFAULT_VAT_RATE');
+    const parsed = value !== null ? Number(value) : NaN;
+    return Number.isFinite(parsed) ? parsed : DEFAULT_VAT_RATE_FALLBACK;
+  }
+
+  private nextMajorVersion(current: string): string {
+    const major = parseInt(current.split('.')[0], 10);
+    return `${Number.isFinite(major) ? major + 1 : 2}.0`;
   }
 
   private async findPropertiesOrFail(manager: EntityManager, propertyIds: number[]): Promise<Property[]> {
@@ -493,19 +721,40 @@ export class TariffService {
     return units;
   }
 
-  private validateRateShape(dto: CreateTariffDto) {
-    if (dto.rateType === TariffRateType.FLAT && (dto.flatRate === undefined || dto.flatRate === null)) {
+  // Shared by validateRateShape (DTO, at create time) and
+  // validateRateShapeForEntity (persisted entity, at submit time — that
+  // endpoint has no request body to validate against).
+  private assertRateShapeValid(shape: {
+    rateType: TariffRateType;
+    hasFlatRate: boolean;
+    hasTiers: boolean;
+    applicability: TariffApplicability;
+    hasPropertyIds: boolean;
+    hasUnitIds: boolean;
+  }) {
+    if (shape.rateType === TariffRateType.FLAT && !shape.hasFlatRate) {
       throw new BadRequestException('flatRate is required for flat-rate tariffs');
     }
-    if (dto.rateType === TariffRateType.TIERED && (!dto.tiers || dto.tiers.length === 0)) {
+    if (shape.rateType === TariffRateType.TIERED && !shape.hasTiers) {
       throw new BadRequestException('At least one tier is required for tiered tariffs');
     }
-    if (dto.applicability === TariffApplicability.PROPERTY && (!dto.propertyIds || dto.propertyIds.length === 0)) {
+    if (shape.applicability === TariffApplicability.PROPERTY && !shape.hasPropertyIds) {
       throw new BadRequestException('At least one property is required for property-scoped tariffs');
     }
-    if (dto.applicability === TariffApplicability.UNIT && (!dto.unitIds || dto.unitIds.length === 0)) {
+    if (shape.applicability === TariffApplicability.UNIT && !shape.hasUnitIds) {
       throw new BadRequestException('At least one unit is required for unit-scoped tariffs');
     }
+  }
+
+  private validateRateShapeForEntity(tariff: Tariff) {
+    this.assertRateShapeValid({
+      rateType: tariff.rateType,
+      hasFlatRate: tariff.flatRate !== undefined && tariff.flatRate !== null,
+      hasTiers: !!tariff.tiers?.length,
+      applicability: tariff.applicability,
+      hasPropertyIds: !!tariff.properties?.length,
+      hasUnitIds: !!tariff.units?.length,
+    });
   }
 
   private labelize(value: string) {
@@ -524,6 +773,8 @@ export class TariffService {
       code: tariff.businessCode,
       name: tariff.name,
       status: tariff.status,
+      version: tariff.version,
+      parentTariffId: tariff.parentTariff?.id ?? null,
       propertyType: tariff.propertyType,
       rateType: tariff.rateType,
       applicability: tariff.applicability,

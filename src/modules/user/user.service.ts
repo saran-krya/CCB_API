@@ -13,6 +13,22 @@ import { BusinessRole } from '../business-role/entities/business-role.entity';
 import { RolePermissionsService } from '../role-permissions/role-permissions.service';
 import { AttributeService } from '../attribute/attribute.service';
 
+// User Creation Rules (Module Attributes > User Management) that make a
+// field conditionally mandatory. Add an entry here — plus the matching
+// boolean attribute in AttributeService's seed — to make any other user
+// field (Department, Designation, Phone, Employee ID, ...) dynamically
+// required the same way, with no other code changes. The frontend mirrors
+// this exact list in components/validation/dynamic-field-requirements.ts.
+interface DynamicFieldRequirement {
+  field: keyof CreateUserDto;
+  attributeKey: string;
+  label: string;
+}
+
+const DYNAMIC_FIELD_REQUIREMENTS: DynamicFieldRequirement[] = [
+  { field: 'reportingManagerId', attributeKey: 'REPORTING_MANAGER_MANDATORY', label: 'Reporting Manager' },
+];
+
 @Injectable()
 export class UserService {
   constructor(
@@ -31,17 +47,26 @@ export class UserService {
     private readonly attributes: AttributeService,
   ) { }
 
+  // Checks every field in DYNAMIC_FIELD_REQUIREMENTS that's present on this
+  // dto against its Module Attribute — only fields actually being set are
+  // validated, so a partial update() that doesn't touch a given field
+  // doesn't force it to be (re)filled.
+  private async assertDynamicRequiredFields(dto: CreateUserDto | UpdateUserDto): Promise<void> {
+    for (const spec of DYNAMIC_FIELD_REQUIREMENTS) {
+      if (!(spec.field in dto)) continue;
+      const isMandatory = await this.attributes.isMandatory(spec.attributeKey);
+      if (isMandatory && !dto[spec.field]) {
+        throw new BadRequestException(`${spec.label} is mandatory`);
+      }
+    }
+  }
+
   async create(
     dto: CreateUserDto,
     actorId?: number,
   ) {
     await this.validateUniqueFields(dto);
-
-    const reportingManagerMandatory =
-      (await this.attributes.getValueByKey('REPORTING_MANAGER_MANDATORY')) === 'true';
-    if (reportingManagerMandatory && !dto.reportingManagerId) {
-      throw new BadRequestException('Reporting Manager is mandatory');
-    }
+    await this.assertDynamicRequiredFields(dto);
 
     const role =
       await this.roles.findOne(
@@ -375,6 +400,7 @@ export class UserService {
       dto,
       id,
     );
+    await this.assertDynamicRequiredFields(dto);
     if (dto.roleId) {
       user.role = await this.roles.findOne(dto.roleId);
     }
@@ -393,19 +419,15 @@ export class UserService {
     }
 
 
-    // if (dto.reportingManagerId) {
-    //   const reportingManager =
-    //     await this.users.findOne({
-    //       where: {
-    //         id: dto.reportingManagerId,
-    //       },
-    //     });
-
-    //   if (reportingManager) {
-    //     user.reportingManager =
-    //       reportingManager;
-    //   }
-    // }
+    // Was previously commented out entirely, meaning an edit could never
+    // actually change (or clear) a user's Reporting Manager. Checks
+    // "in dto" rather than truthiness so an explicit null (clear the
+    // manager) is honored, not just ignored as "not provided".
+    if ('reportingManagerId' in dto) {
+      user.reportingManager = dto.reportingManagerId
+        ? (await this.users.findOne({ where: { id: dto.reportingManagerId } })) ?? undefined
+        : undefined;
+    }
     Object.assign(user, {
       firstName:
         dto.firstName ??

@@ -14,15 +14,14 @@ import { User } from '../../user/entities/user.entity';
 import { TariffTier } from './tariff-tier.entity';
 
 export enum TariffStatus {
+  DRAFT = 'draft',
   PENDING = 'pending',
+  REQUEST_FOR_CORRECTION = 'request_for_correction',
   ACTIVE = 'active',
   INACTIVE = 'inactive',
+  DEPRECATED = 'deprecated',
+  EXPIRED = 'expired',
   REJECTED = 'rejected',
-}
-
-export enum TariffPropertyType {
-  RESIDENTIAL = 'residential',
-  COMMERCIAL = 'commercial',
 }
 
 export enum TariffRateType {
@@ -43,17 +42,33 @@ export enum TariffPenaltyType {
 
 @Entity('tariffs')
 export class Tariff extends BaseEntity {
-  @Column({ name: 'business_code', type: 'varchar', length: 20, unique: true, nullable: true })
+  // Shared across every version of the same tariff (TAR-001 v1.0, v2.0, ...)
+  // — no longer unique, since cloning a new version deliberately reuses it.
+  @Column({ name: 'business_code', type: 'varchar', length: 20, nullable: true })
   businessCode?: string | null;
 
   @Column({ name: 'name', type: 'varchar', length: 160 })
   name!: string;
 
-  @Column({ name: 'status', type: 'enum', enum: TariffStatus, default: TariffStatus.PENDING })
+  @Column({ name: 'status', type: 'enum', enum: TariffStatus, default: TariffStatus.DRAFT })
   status!: TariffStatus;
 
-  @Column({ name: 'property_type', type: 'enum', enum: TariffPropertyType })
-  propertyType!: TariffPropertyType;
+  @Column({ name: 'version', type: 'varchar', length: 10, default: '1.0' })
+  version!: string;
+
+  // Self-reference to the version this one was cloned from via the
+  // new-version flow (Scenario 5). Null for a tariff's first version.
+  @ManyToOne(() => Tariff, { nullable: true, eager: false })
+  @JoinColumn({ name: 'parent_tariff_id' })
+  parentTariff?: Tariff | null;
+
+  @OneToMany(() => Tariff, (tariff) => tariff.parentTariff)
+  childVersions!: Tariff[];
+
+  // Code from the LOV category TARIFF_UNIT_TYPE (Lookup Field Master) —
+  // not a native enum, so admins can add unit types without a code change.
+  @Column({ name: 'property_type', type: 'varchar', length: 100 })
+  propertyType!: string;
 
   @Column({ name: 'rate_type', type: 'enum', enum: TariffRateType })
   rateType!: TariffRateType;

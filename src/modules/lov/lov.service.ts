@@ -13,15 +13,39 @@ const LOV_SEED: { category: string; code: string; label: string; displayOrder: n
   { category: 'USER_CATEGORY',     code: 'external',  label: 'External',  displayOrder: 2 },
   { category: 'USER_TYPE',         code: 'employee',  label: 'Employee',  displayOrder: 1 },
   { category: 'USER_TYPE',         code: 'customer',  label: 'Customer',  displayOrder: 2 },
+  { category: 'TARIFF_UNIT_TYPE',  code: 'residential', label: 'Residential', displayOrder: 1 },
+  { category: 'TARIFF_UNIT_TYPE',  code: 'commercial',  label: 'Commercial',  displayOrder: 2 },
+  { category: 'TARIFF_REJECTION_REASON', code: 'incomplete',     label: 'Incomplete Information',      displayOrder: 1 },
+  { category: 'TARIFF_REJECTION_REASON', code: 'rate-incorrect', label: 'Rate Configuration Incorrect', displayOrder: 2 },
+  { category: 'TARIFF_REJECTION_REASON', code: 'applicability',  label: 'Applicability Scope Issue',    displayOrder: 3 },
+  { category: 'TARIFF_REJECTION_REASON', code: 'scope',          label: 'Scope Reduction Conflict',     displayOrder: 4 },
+  { category: 'TARIFF_REJECTION_REASON', code: 'other',          label: 'Other',                        displayOrder: 5 },
+  { category: 'BILLING_CYCLE_CHANGE_REASON', code: 'dewa-realign',        label: 'DEWA Billing Realignment',        displayOrder: 1 },
+  { category: 'BILLING_CYCLE_CHANGE_REASON', code: 'building-handover',   label: 'Building Handover',                displayOrder: 2 },
+  { category: 'BILLING_CYCLE_CHANGE_REASON', code: 'finance-period',      label: 'Finance Period Change',            displayOrder: 3 },
+  { category: 'BILLING_CYCLE_CHANGE_REASON', code: 'correction',          label: 'Data Correction',                  displayOrder: 4 },
+  { category: 'BILLING_CYCLE_CHANGE_REASON', code: 'operational',         label: 'Operational Requirement',          displayOrder: 5 },
+  { category: 'BILLING_CYCLE_CHANGE_REASON', code: 'regulatory',          label: 'Regulatory Requirement',           displayOrder: 6 },
+  { category: 'BILLING_CYCLE_CHANGE_REASON', code: 'other',               label: 'Other',                            displayOrder: 7 },
+  { category: 'BILLING_CYCLE_DEPRECATION_REASON', code: 'dewa-realign',          label: 'DEWA Billing Realignment',    displayOrder: 1 },
+  { category: 'BILLING_CYCLE_DEPRECATION_REASON', code: 'building-decommission', label: 'Building Decommissioned',     displayOrder: 2 },
+  { category: 'BILLING_CYCLE_DEPRECATION_REASON', code: 'replaced-by-new-version', label: 'Replaced by New Version',   displayOrder: 3 },
+  { category: 'BILLING_CYCLE_DEPRECATION_REASON', code: 'regulatory',            label: 'Regulatory Requirement',      displayOrder: 4 },
+  { category: 'BILLING_CYCLE_DEPRECATION_REASON', code: 'other',                 label: 'Other',                       displayOrder: 5 },
 ];
 
-// Module assignment for the Lookup Field Master "Module Lookup" tab — keeps each
-// category grouped under the screen that actually consumes it instead of
-// defaulting to "General".
+// Module assignment for the Lookup Field Master "Module Lookup" tab — keeps
+// each category grouped under the screen that actually consumes it instead
+// of defaulting to "General". Keys match lib/constants/app-modules.ts
+// (CCB_Web) — the same canonical list also used by the Attributes screen.
 const LOV_CATEGORY_MODULES: Record<string, string> = {
-  BILLING_FREQUENCY: 'admin-business', // Billing Cycle Config (Admin > Business Admin)
-  USER_CATEGORY: 'admin-system',       // User & Role Management (Admin > System Admin)
-  USER_TYPE: 'admin-system',
+  BILLING_FREQUENCY: 'billing-cycle',      // Billing Cycle Configuration
+  USER_CATEGORY: 'user-management',
+  USER_TYPE: 'user-management',
+  TARIFF_UNIT_TYPE: 'tariff',              // Tariff Configuration
+  TARIFF_REJECTION_REASON: 'tariff',
+  BILLING_CYCLE_CHANGE_REASON: 'billing-cycle',
+  BILLING_CYCLE_DEPRECATION_REASON: 'billing-cycle',
 };
 
 @Injectable()
@@ -113,6 +137,32 @@ export class LovService {
     const entity = await this.lovValues.findOne({ where: { id } });
     if (!entity) throw new NotFoundException(`LOV value #${id} not found`);
     await this.lovValues.softRemove(entity);
+  }
+
+  // Self-heals databases that were initialized before a given LOV category
+  // existed in LOV_SEED — e.g. TARIFF_UNIT_TYPE, added after this
+  // deployment's users table was already populated, so the one-time
+  // bootstrap seed (seedValues, above) never ran again to pick it up. Only
+  // called for the "database already initialized" branch of bootstrap — a
+  // fresh database gets these from seedValues() instead, so calling both
+  // would insert duplicate rows.
+  async ensureCriticalDefaults(): Promise<void> {
+    const criticalCategories = [
+      'TARIFF_UNIT_TYPE',
+      'TARIFF_REJECTION_REASON',
+      'BILLING_CYCLE_CHANGE_REASON',
+      'BILLING_CYCLE_DEPRECATION_REASON',
+    ];
+    for (const category of criticalCategories) {
+      const existing = await this.lovValues.count({ where: { category } });
+      if (existing > 0) continue;
+
+      for (const seed of LOV_SEED.filter((v) => v.category === category)) {
+        await this.lovValues.save(this.lovValues.create({ ...seed, isActive: true }));
+      }
+      const module = LOV_CATEGORY_MODULES[category];
+      if (module) await this.setCategoryModule(category, module);
+    }
   }
 
   async seedValues(manager: EntityManager): Promise<Map<string, number>> {

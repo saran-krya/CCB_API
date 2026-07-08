@@ -36,11 +36,12 @@ export class BootstrapService implements OnApplicationBootstrap {
 
     if (userCount > 0) {
       this.logger.log('Bootstrap skipped — database already initialized')
-      // Fresh databases get every General Attribute from seedValues() below.
-      // Already-initialized ones only get attributes that existed in
-      // buildAttributeSeed() at the time they were first bootstrapped — this
-      // backfills any added since, e.g. Session Timeout.
+      // Fresh databases get every General Attribute / LOV category from
+      // seedValues() below. Already-initialized ones only get what existed
+      // at the time they were first bootstrapped — this backfills anything
+      // added since, e.g. Session Timeout, TARIFF_UNIT_TYPE.
       await this.attributeService.ensureCriticalDefaults()
+      await this.lovService.ensureCriticalDefaults()
       return
     }
 

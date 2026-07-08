@@ -7,6 +7,7 @@ import {
   IsBoolean,
   IsEnum,
   IsInt,
+  IsNotEmpty,
   IsNumber,
   IsOptional,
   IsString,
@@ -21,7 +22,6 @@ import { BasePaginationDto } from '../../../common/dto/base-pagination.dto';
 import {
   TariffApplicability,
   TariffPenaltyType,
-  TariffPropertyType,
   TariffRateType,
   TariffStatus,
 } from '../entities/tariff.entity';
@@ -55,8 +55,10 @@ export class CreateTariffDto {
   @MaxLength(160)
   name!: string;
 
-  @IsEnum(TariffPropertyType)
-  propertyType!: TariffPropertyType;
+  // Code from LOV category TARIFF_UNIT_TYPE (Lookup Field Master).
+  @IsString()
+  @IsNotEmpty()
+  propertyType!: string;
 
   @IsEnum(TariffRateType)
   rateType!: TariffRateType;
@@ -64,12 +66,19 @@ export class CreateTariffDto {
   @IsEnum(TariffApplicability)
   applicability!: TariffApplicability;
 
+  // Optional at create time — the wizard creates the draft record after
+  // Step 1 (before rate values are entered in Step 2), so the entity itself
+  // can serve as the draft from the earliest possible point instead of
+  // browser storage. Completeness is enforced later, at submit() time,
+  // against the persisted entity (see validateRateShapeForEntity).
   @ValidateIf((o) => o.rateType === TariffRateType.FLAT)
+  @IsOptional()
   @IsNumber()
   @Min(0)
   flatRate?: number;
 
   @ValidateIf((o) => o.rateType === TariffRateType.TIERED)
+  @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => TariffTierDto)
@@ -122,7 +131,15 @@ export class CreateTariffDto {
   @IsOptional() @IsString() @MaxLength(1000) description?: string;
 }
 
-export class UpdateTariffDto extends PartialType(CreateTariffDto) {}
+export class UpdateTariffDto extends PartialType(CreateTariffDto) {
+  // Mandatory only when editing a tariff that is currently PENDING or
+  // REQUEST_FOR_CORRECTION — see TariffService.update() (PDF Scenario 2:
+  // "Audit log: Yes — change reason mandatory").
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  changeReason?: string;
+}
 
 export class RejectTariffDto {
   @IsString()
@@ -140,10 +157,10 @@ export class TariffQueryDto extends BasePaginationDto {
   @IsEnum(TariffStatus)
   status?: TariffStatus;
 
-  @ApiPropertyOptional({ enum: TariffPropertyType })
+  @ApiPropertyOptional({ description: 'Unit type code from LOV category TARIFF_UNIT_TYPE' })
   @IsOptional()
-  @IsEnum(TariffPropertyType)
-  propertyType?: TariffPropertyType;
+  @IsString()
+  propertyType?: string;
 
   @ApiPropertyOptional({ enum: TariffRateType })
   @IsOptional()
@@ -157,9 +174,10 @@ export class TariffQueryDto extends BasePaginationDto {
 }
 
 export class TariffConflictQueryDto {
-  @ApiPropertyOptional({ enum: TariffPropertyType })
-  @IsEnum(TariffPropertyType)
-  propertyType!: TariffPropertyType;
+  @ApiPropertyOptional({ description: 'Unit type code from LOV category TARIFF_UNIT_TYPE' })
+  @IsString()
+  @IsNotEmpty()
+  propertyType!: string;
 
   @ApiPropertyOptional({ enum: TariffApplicability })
   @IsEnum(TariffApplicability)
