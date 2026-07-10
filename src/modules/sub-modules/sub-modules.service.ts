@@ -1,6 +1,7 @@
 import {
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 
@@ -17,9 +18,12 @@ import {
 
 import { SubModule } from './entities/sub-module.entity';
 import { PModule } from '../pmodules/entities/pmodule.entity';
+import { SUB_MODULES } from '../../bootstrap/seed-data';
 
 @Injectable()
 export class SubModulesService {
+  private readonly logger = new Logger(SubModulesService.name);
+
   constructor(
     @InjectRepository(SubModule)
     private readonly subModuleRepository: Repository<SubModule>,
@@ -203,5 +207,42 @@ export class SubModulesService {
       message:
         'Sub module deleted successfully',
     };
+  }
+
+  // Backfills any SUB_MODULES seed row missing from an already-initialized
+  // database — mirrors ScreensService/ActionsService/PModulesService's
+  // ensureCriticalDefaults() pattern. Matched by code OR name (SubModule
+  // has no DB-level unique constraint on name, but create()'s own duplicate
+  // check treats the pair as effectively unique — same defensive lookup
+  // used elsewhere for this reason) so this never creates a duplicate row.
+  async ensureCriticalDefaults(): Promise<void> {
+    for (const sm of SUB_MODULES) {
+      try {
+        const exists = await this.subModuleRepository.findOne({
+          where: [{ code: sm.code }, { name: sm.name }],
+        });
+        if (exists) continue;
+
+        const pModule = await this.pModuleRepository.findOne({ where: { code: sm.pModuleCode } });
+        if (!pModule) {
+          this.logger.warn(`SubModule "${sm.code}" skipped — PModule "${sm.pModuleCode}" not found`);
+          continue;
+        }
+
+        const entity = this.subModuleRepository.create({
+          pModuleId: pModule.id,
+          name: sm.name,
+          code: sm.code,
+          icon: sm.icon,
+          url: sm.url,
+          displayOrder: sm.displayOrder,
+          isActive: true,
+        });
+        await this.subModuleRepository.save(entity);
+        this.logger.debug(`Backfilled sub-module "${sm.code}"`);
+      } catch (err) {
+        this.logger.error(`Failed to backfill sub-module "${sm.code}" — skipping`, err as Error);
+      }
+    }
   }
 }

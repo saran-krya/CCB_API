@@ -1,4 +1,4 @@
-import { BillingCycleStatus } from './entities/billing-cycle.entity';
+import { BillingCycleStatus } from './entities/billing-cycle-version.entity';
 import { UpdateBillingCycleDto } from './dto/billing-cycle.dto';
 
 // Kept as 'billing_cycles' (not 'BillingCycle') to match every audit row
@@ -24,9 +24,6 @@ export enum BillingCycleAuditAction {
   AUTO_ACTIVATE = 'AUTO_ACTIVATE',
   AUTO_DEPRECATE = 'AUTO_DEPRECATE',
 }
-
-export const BILLING_CYCLE_CODE_PREFIX = 'ILCY-';
-export const BILLING_CYCLE_CODE_PAD_WIDTH = 6;
 
 // Module Attribute keys — pre-fill the create-form's day offsets. These are
 // defaults only (per-cycle values remain freely overridable), the same

@@ -1,8 +1,7 @@
 import { Column, Entity, JoinColumn, ManyToOne, OneToMany } from 'typeorm';
 import { BaseEntity } from '../../../common/entities/base.entity';
-import { Community } from '../../community/entities/community.entity';
-import { Property } from '../../property/entities/property.entity';
 import { User } from '../../user/entities/user.entity';
+import { BillingCycleMaster } from './billing-cycle-master.entity';
 
 export enum BillingCycleStatus {
   ACTIVE = 'active',
@@ -12,21 +11,19 @@ export enum BillingCycleStatus {
   DEPRECATED = 'deprecated',
 }
 
-@Entity('billing_cycles')
-export class BillingCycle extends BaseEntity {
-  @ManyToOne(() => Community)
-  @JoinColumn({ name: 'community_id' })
-  community!: Community;
+// One row per version (v1.0, v2.0, ...) of a property's billing cycle.
+// Everything that actually varies by version lives here; everything that
+// identifies WHICH property this is lives on BillingCycleMaster instead —
+// see that entity's comment for why (stable external reference point,
+// O(1) "current version" lookup instead of a filtered scan).
+@Entity('billing_cycle_versions')
+export class BillingCycleVersion extends BaseEntity {
+  @ManyToOne(() => BillingCycleMaster, (master) => master.versions, { nullable: false })
+  @JoinColumn({ name: 'master_id' })
+  master!: BillingCycleMaster;
 
-  @Column({ name: 'community_id' })
-  communityId!: number;
-
-  @ManyToOne(() => Property)
-  @JoinColumn({ name: 'property_id' })
-  property!: Property;
-
-  @Column({ name: 'property_id' })
-  propertyId!: number;
+  @Column({ name: 'master_id' })
+  masterId!: number;
 
   @Column({ name: 'frequency', type: 'varchar', length: 50, default: 'monthly' })
   frequency!: string;
@@ -50,7 +47,7 @@ export class BillingCycle extends BaseEntity {
     name: 'status',
     type: 'enum',
     enum: BillingCycleStatus,
-    default: BillingCycleStatus.INACTIVE,
+    default: BillingCycleStatus.ACTIVE,
   })
   status!: BillingCycleStatus;
 
@@ -61,22 +58,18 @@ export class BillingCycle extends BaseEntity {
   @Column({ name: 'change_reason_code', type: 'varchar', length: 50, nullable: true })
   changeReasonCode?: string | null;
 
-  // Shared across every version of the same property's cycle (v1.0, v2.0,
-  // ...) — no longer unique, since a new version deliberately reuses it.
-  @Column({ name: 'business_code', type: 'varchar', length: 20, nullable: true })
-  businessCode?: string | null;
-
   @Column({ name: 'version', type: 'varchar', length: 10, default: '1.0' })
   version!: string;
 
   // Self-reference to the version this one was cloned from via newVersion().
-  // Null for a property's first (v1.0) cycle.
-  @ManyToOne(() => BillingCycle, { nullable: true, eager: false })
-  @JoinColumn({ name: 'parent_billing_cycle_id' })
-  parentBillingCycle?: BillingCycle | null;
+  // Scoped purely to version lineage now — never points across masters.
+  // Null for a property's first (v1.0) version.
+  @ManyToOne(() => BillingCycleVersion, { nullable: true, eager: false })
+  @JoinColumn({ name: 'parent_version_id' })
+  parentVersion?: BillingCycleVersion | null;
 
-  @OneToMany(() => BillingCycle, (cycle) => cycle.parentBillingCycle)
-  childVersions!: BillingCycle[];
+  @OneToMany(() => BillingCycleVersion, (version) => version.parentVersion)
+  childVersions!: BillingCycleVersion[];
 
   // Date this version should take over as the governing cycle for its
   // property. Set on newVersion(), consumed by the scheduler (or

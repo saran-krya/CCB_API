@@ -18,8 +18,7 @@ import {
 } from '@nestjs/swagger';
 import { AuthenticatedUser } from '../../auth/interfaces/authenticated-user.interface';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
-import { Roles } from '../../common/decorators/roles.decorator';
-import { ROLES } from '../../common/constants/global';
+import { Permission } from '../../common/decorators/permission.decorator';
 import {
   CreatePropertyDto,
   PropertyQueryDto,
@@ -29,14 +28,17 @@ import {
 import { PropertyDetailDto, PropertyListDto } from './dto/property-response.dto';
 import { PropertyService } from './property.service';
 
+// Route-level @Permission() — gates business routes by Screen Action
+// (PROPERTY screen) instead of hardcoded roles, so access is controlled
+// entirely through Role Permissions per role, not role names.
 @ApiBearerAuth()
 @ApiTags('Properties')
-@Roles(ROLES.ADMIN, ROLES.OPERATIONS)
 @Controller({ path: 'properties', version: '1' })
 export class PropertyController {
   constructor(private readonly properties: PropertyService) {}
 
   @Post()
+  @Permission('CREATE_PROPERTY')
   @ApiOperation({ summary: 'Create a property' })
   create(
     @Body() dto: CreatePropertyDto,
@@ -46,6 +48,7 @@ export class PropertyController {
   }
 
   @Get()
+  @Permission('VIEW_PROPERTY')
   @ApiOperation({ summary: 'List all properties with pagination and filters' })
   @ApiOkResponse({ type: PropertyListDto, isArray: true, description: 'Paginated list of properties' })
   findAll(@Query() query: PropertyQueryDto) {
@@ -53,6 +56,7 @@ export class PropertyController {
   }
 
   @Get(':id')
+  @Permission('VIEW_PROPERTY')
   @ApiOperation({ summary: 'Get property detail with stats and units' })
   @ApiOkResponse({ type: PropertyDetailDto })
   @ApiParam({ name: 'id', type: Number })
@@ -61,6 +65,7 @@ export class PropertyController {
   }
 
   @Patch(':id')
+  @Permission('EDIT_PROPERTY')
   @ApiOperation({ summary: 'Update property' })
   @ApiParam({ name: 'id', type: Number })
   update(
@@ -72,6 +77,7 @@ export class PropertyController {
   }
 
   @Patch(':id/status')
+  @Permission('PROPERTY_STATUS')
   @ApiOperation({ summary: 'Update property status' })
   @ApiParam({ name: 'id', type: Number })
   updateStatus(
@@ -83,6 +89,7 @@ export class PropertyController {
   }
 
   @Delete(':id')
+  @Permission('DELETE_PROPERTY')
   @ApiOperation({ summary: 'Soft-delete a property' })
   @ApiParam({ name: 'id', type: Number })
   remove(

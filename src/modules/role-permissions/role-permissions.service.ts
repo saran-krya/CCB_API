@@ -1,12 +1,11 @@
 import {
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
-import { paginate } from '@app/common/utils/pagination.util';
-import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
+import { IsNull, Repository } from 'typeorm';
 import {
   CreateRolePermissionDto,
 
@@ -21,6 +20,8 @@ import { SaveRoleWithPermissionsDto } from './dto/save-role-with-permissions.dto
 
 @Injectable()
 export class RolePermissionsService {
+  private readonly logger = new Logger(RolePermissionsService.name);
+
   constructor(
     @InjectRepository(RolePermission)
     private readonly rolePermissionRepository: Repository<RolePermission>,
@@ -179,16 +180,30 @@ export class RolePermissionsService {
           }
 
           for (const action of screen.actions ?? []) {
-            if (!action.hasAccess) continue;
-            permissions.push(
-              this.rolePermissionRepository.create({
-                roleId: role.id,
-                moduleId: module.moduleId,
-                subModuleId: subModule.subModuleId,
-                screenId: screen.screenId,
-                actionId: action.actionId,
-              }),
-            );
+            if (action.hasAccess) {
+              permissions.push(
+                this.rolePermissionRepository.create({
+                  roleId: role.id,
+                  moduleId: module.moduleId,
+                  subModuleId: subModule.subModuleId,
+                  screenId: screen.screenId,
+                  actionId: action.actionId,
+                }),
+              );
+            }
+
+            for (const child of action.children ?? []) {
+              if (!child.hasAccess) continue;
+              permissions.push(
+                this.rolePermissionRepository.create({
+                  roleId: role.id,
+                  moduleId: module.moduleId,
+                  subModuleId: subModule.subModuleId,
+                  screenId: screen.screenId,
+                  actionId: child.actionId,
+                }),
+              );
+            }
           }
         }
       }
@@ -206,15 +221,28 @@ export class RolePermissionsService {
         }
 
         for (const action of screen.actions ?? []) {
-          if (!action.hasAccess) continue;
-          permissions.push(
-            this.rolePermissionRepository.create({
-              roleId: role.id,
-              moduleId: module.moduleId,
-              screenId: screen.screenId,
-              actionId: action.actionId,
-            }),
-          );
+          if (action.hasAccess) {
+            permissions.push(
+              this.rolePermissionRepository.create({
+                roleId: role.id,
+                moduleId: module.moduleId,
+                screenId: screen.screenId,
+                actionId: action.actionId,
+              }),
+            );
+          }
+
+          for (const child of action.children ?? []) {
+            if (!child.hasAccess) continue;
+            permissions.push(
+              this.rolePermissionRepository.create({
+                roleId: role.id,
+                moduleId: module.moduleId,
+                screenId: screen.screenId,
+                actionId: child.actionId,
+              }),
+            );
+          }
         }
       }
     }
@@ -282,7 +310,7 @@ export class RolePermissionsService {
   async getUserPermissions(roleId: number) {
     const tree = await this.getPermissionTree(roleId);
 
-    return tree.screenPermissionList
+    const pruned = tree.screenPermissionList
       .filter((module) => module.hasAccess)
       .map((module) => ({
         ...module,
@@ -296,7 +324,12 @@ export class RolePermissionsService {
               .filter((screen) => screen.hasAccess)
               .map((screen) => ({
                 ...screen,
-                actions: screen.actions.filter((action) => action.hasAccess),
+                actions: screen.actions
+                  .filter((action) => action.hasAccess)
+                  .map((action) => ({
+                    ...action,
+                    children: (action.children ?? []).filter((c) => c.hasAccess),
+                  })),
               })),
           })),
 
@@ -305,9 +338,16 @@ export class RolePermissionsService {
           .filter((screen) => screen.hasAccess)
           .map((screen) => ({
             ...screen,
-            actions: screen.actions.filter((action) => action.hasAccess),
+            actions: screen.actions
+              .filter((action) => action.hasAccess)
+              .map((action) => ({
+                ...action,
+                children: (action.children ?? []).filter((c) => c.hasAccess),
+              })),
           })),
       }));
+
+    return pruned;
   }
 
   async getAllMenus() {
@@ -333,6 +373,145 @@ export class RolePermissionsService {
     }));
   }
 
+  // Purpose-built for PermissionGuard — runs on every @Permission()-guarded
+  // request, so unlike getPermissionTree()/getUserPermissions() (which load
+  // all PModules/SubModules/Screens/Actions into memory to build the full
+  // tree for the Role Management UI), this is a single indexed COUNT query
+  // against exactly the (roleId, actionCode) pair being checked.
+  async roleHasAction(roleId: number, actionCode: string): Promise<boolean> {
+    const count = await this.rolePermissionRepository
+      .createQueryBuilder('rp')
+      .innerJoin(Action, 'a', 'a.id = rp.actionId')
+      .where('rp.roleId = :roleId', { roleId })
+      .andWhere('a.code = :actionCode', { actionCode })
+      .getCount();
+    return count > 0;
+  }
+
+  // Grants SUPER_ADMIN and ADMIN real RolePermission rows for every active
+  // Action except the ones a business rule deliberately excludes them from
+  // (Tariff/Billing-Cycle approve+reject — see PermissionGuard's header
+  // comment: there is no role bypass, so without this seeding neither role
+  // could do anything at all once PermissionGuard starts checking real
+  // rows). Idempotent — checks (roleId, actionId) before inserting, safe to
+  // call on every bootstrap run (fresh DB or backfill) as new actions are
+  // added over time.
+  async ensureAdminGrants(excludedActionCodes: string[] = []): Promise<void> {
+    const adminRoles = await this.roleRepository.find({
+      where: [{ roleName: 'SUPER_ADMIN' }, { roleName: 'ADMIN' }],
+    });
+    if (!adminRoles.length) return;
+
+    const actions = await this.actionRepository.find({
+      where: { isActive: true },
+      relations: { screen: { subModule: true, pModule: true } },
+    });
+
+    for (const role of adminRoles) {
+      for (const action of actions) {
+        try {
+          if (excludedActionCodes.includes(action.code)) continue;
+
+          const screen = action.screen;
+          if (!screen) continue;
+
+          const moduleId = screen.subModule?.pModuleId ?? screen.pModuleId;
+          if (!moduleId) continue;
+
+          const exists = await this.rolePermissionRepository.findOne({
+            where: { roleId: role.id, actionId: action.id },
+          });
+          if (exists) continue;
+
+          const grant = this.rolePermissionRepository.create({
+            roleId: role.id,
+            moduleId,
+            subModuleId: screen.subModuleId ?? null,
+            screenId: screen.id,
+            actionId: action.id,
+          });
+          await this.rolePermissionRepository.save(grant);
+        } catch (err) {
+          // One unexpected row must not abort the whole grant-seeding loop
+          // or crash server startup — log it and keep going.
+          this.logger.error(`Failed to grant action "${action.code}" to role "${role.roleName}" — skipping`, err as Error);
+        }
+      }
+    }
+
+    await this.ensureLeafModuleGrants(adminRoles);
+  }
+
+  // A handful of nav entries (Dashboard, Billing Dashboard) are leaves with
+  // no Screen/Action beneath them at all — they exist purely to be a link.
+  // The loop above can only ever grant rows derived from an Action, so a
+  // screen-less/action-less module or sub-module can never receive a grant
+  // through it, no matter how complete the Action-driven pass is. Sidebar
+  // visibility (buildMenuItems in CCB_Web) gates purely on
+  // module.hasAccess/subModule.hasAccess, computed from
+  // RolePermission.moduleId/subModuleId — so a module-only (screenId/
+  // actionId null) row is enough. Grant one per screen-less leaf, same
+  // idempotency and per-row error handling as the Action-driven pass above.
+  private async ensureLeafModuleGrants(adminRoles: Role[]): Promise<void> {
+    const modules = await this.pModuleRepository.find({ where: { isActive: true } });
+    const subModules = await this.subModuleRepository.find({ where: { isActive: true } });
+    const screens = await this.screenRepository.find({ where: { isActive: true } });
+
+    const subModulesWithScreens = new Set(screens.map((s) => s.subModuleId).filter(Boolean));
+    const modulesWithScreens = new Set(screens.map((s) => s.pModuleId).filter(Boolean));
+    const modulesWithSubModules = new Set(subModules.map((s) => s.pModuleId));
+
+    for (const role of adminRoles) {
+      for (const module of modules) {
+        try {
+          if (modulesWithScreens.has(module.id) || modulesWithSubModules.has(module.id)) continue;
+
+          const exists = await this.rolePermissionRepository.findOne({
+            where: {
+              roleId: role.id,
+              moduleId: module.id,
+              subModuleId: IsNull(),
+              screenId: IsNull(),
+            },
+          });
+          if (exists) continue;
+
+          const grant = this.rolePermissionRepository.create({
+            roleId: role.id,
+            moduleId: module.id,
+          });
+          await this.rolePermissionRepository.save(grant);
+        } catch (err) {
+          this.logger.error(`Failed to grant leaf module "${module.code}" to role "${role.roleName}" — skipping`, err as Error);
+        }
+      }
+
+      for (const subModule of subModules) {
+        try {
+          if (subModulesWithScreens.has(subModule.id)) continue;
+
+          const exists = await this.rolePermissionRepository.findOne({
+            where: {
+              roleId: role.id,
+              subModuleId: subModule.id,
+              screenId: IsNull(),
+            },
+          });
+          if (exists) continue;
+
+          const grant = this.rolePermissionRepository.create({
+            roleId: role.id,
+            moduleId: subModule.pModuleId,
+            subModuleId: subModule.id,
+          });
+          await this.rolePermissionRepository.save(grant);
+        } catch (err) {
+          this.logger.error(`Failed to grant leaf sub-module "${subModule.code}" to role "${role.roleName}" — skipping`, err as Error);
+        }
+      }
+    }
+  }
+
   async getPermissionTree(roleId?: number) {
     const role = roleId
       ? await this.roleRepository.findOne({ where: { id: roleId } })
@@ -351,12 +530,26 @@ export class RolePermissionsService {
 
     const buildActions = (screenId: number) =>
       actions
-        .filter((a) => a.screenId === screenId)
+        .filter((a) => a.screenId === screenId && a.parentActionId == null)
+        .sort((a, b) => (a.displayOrder ?? 0) - (b.displayOrder ?? 0))
         .map((a) => ({
           actionId: a.id,
           actionName: a.name,
           code: a.code,
+          displayOrder: a.displayOrder,
           hasAccess: permissions.some((p) => p.actionId === a.id),
+          // One level of nesting only — a child action's own children is
+          // always empty (see Action.parentActionId's header comment).
+          children: actions
+            .filter((c) => c.parentActionId === a.id)
+            .sort((c1, c2) => (c1.displayOrder ?? 0) - (c2.displayOrder ?? 0))
+            .map((c) => ({
+              actionId: c.id,
+              actionName: c.name,
+              code: c.code,
+              displayOrder: c.displayOrder,
+              hasAccess: permissions.some((p) => p.actionId === c.id),
+            })),
         }));
 
     const buildScreen = (screen: typeof screens[0]) => ({
@@ -368,7 +561,7 @@ export class RolePermissionsService {
       actions: buildActions(screen.id),
     });
 
-    return {
+    const result = {
       roleId: role?.id ?? null,
       roleName: role?.roleName ?? null,
       roleDescription: null,
@@ -409,6 +602,8 @@ export class RolePermissionsService {
           .map(buildScreen),
       })),
     };
+
+    return result;
   }
 
   async updateRolePermissions(
@@ -483,16 +678,30 @@ export class RolePermissionsService {
           }
 
           for (const action of screen.actions ?? []) {
-            if (!action.hasAccess) continue;
-            permissions.push(
-              this.rolePermissionRepository.create({
-                roleId,
-                moduleId: module.moduleId,
-                subModuleId: subModule.subModuleId,
-                screenId: screen.screenId,
-                actionId: action.actionId,
-              }),
-            );
+            if (action.hasAccess) {
+              permissions.push(
+                this.rolePermissionRepository.create({
+                  roleId,
+                  moduleId: module.moduleId,
+                  subModuleId: subModule.subModuleId,
+                  screenId: screen.screenId,
+                  actionId: action.actionId,
+                }),
+              );
+            }
+
+            for (const child of action.children ?? []) {
+              if (!child.hasAccess) continue;
+              permissions.push(
+                this.rolePermissionRepository.create({
+                  roleId,
+                  moduleId: module.moduleId,
+                  subModuleId: subModule.subModuleId,
+                  screenId: screen.screenId,
+                  actionId: child.actionId,
+                }),
+              );
+            }
           }
         }
       }
@@ -510,15 +719,28 @@ export class RolePermissionsService {
         }
 
         for (const action of screen.actions ?? []) {
-          if (!action.hasAccess) continue;
-          permissions.push(
-            this.rolePermissionRepository.create({
-              roleId,
-              moduleId: module.moduleId,
-              screenId: screen.screenId,
-              actionId: action.actionId,
-            }),
-          );
+          if (action.hasAccess) {
+            permissions.push(
+              this.rolePermissionRepository.create({
+                roleId,
+                moduleId: module.moduleId,
+                screenId: screen.screenId,
+                actionId: action.actionId,
+              }),
+            );
+          }
+
+          for (const child of action.children ?? []) {
+            if (!child.hasAccess) continue;
+            permissions.push(
+              this.rolePermissionRepository.create({
+                roleId,
+                moduleId: module.moduleId,
+                screenId: screen.screenId,
+                actionId: child.actionId,
+              }),
+            );
+          }
         }
       }
     }

@@ -206,6 +206,13 @@ function buildAttributeSeed(sessionTimeoutMinutes: number): AttributeSeedRow[] {
       description: 'Whether reactivating an inactive tariff re-checks for scope/date conflicts with other tariffs',
       trueLabel: 'Required', falseLabel: 'Skipped', displayOrder: 3,
     },
+    {
+      ...tariffGroup, scope: AttributeScope.MODULE, key: 'TARIFF_ACTIVE_LOCKED_FIELDS',
+      label: 'Fields Requiring a New Version', valueType: AttributeValueType.TEXT,
+      value: 'propertyType,rateType,flatRate,tiers,applicability,propertyIds,unitIds,billingServiceFee,vat,effectiveFrom',
+      description: 'Comma-separated field names that cannot be edited on an active tariff — changing any of them requires creating a new version instead',
+      displayOrder: 4,
+    },
   ];
 }
 
@@ -352,6 +359,7 @@ export class AttributeService {
       'TARIFF_DEFAULT_VAT_RATE',
       'TARIFF_APPROVAL_SLA_HOURS',
       'TARIFF_REACTIVATION_CONFLICT_CHECK',
+      'TARIFF_ACTIVE_LOCKED_FIELDS',
       'BILLING_CYCLE_DEFAULT_BILL_GENERATION_DAYS',
       'BILLING_CYCLE_DEFAULT_BILL_ISSUE_DAYS',
       'BILLING_CYCLE_DEFAULT_BILL_DUE_DAYS',

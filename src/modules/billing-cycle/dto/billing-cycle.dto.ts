@@ -12,7 +12,7 @@ import {
   Min,
 } from 'class-validator';
 import { BasePaginationDto } from '../../../common/dto/base-pagination.dto';
-import { BillingCycleStatus } from '../entities/billing-cycle.entity';
+import { BillingCycleStatus } from '../entities/billing-cycle-version.entity';
 
 export class CreateBillingCycleDto {
   @ApiProperty()

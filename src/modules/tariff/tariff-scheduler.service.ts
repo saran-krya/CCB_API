@@ -3,19 +3,20 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { AuditService } from '../../audit/audit.service';
-import { Tariff, TariffStatus } from './entities/tariff.entity';
+import { TariffStatus, TariffVersion } from './entities/tariff-version.entity';
 import { TARIFF_AUDIT_MODULE_NAME, TariffAuditAction } from './tariff.constants';
 
 // Date-only transitions the Tariff module can own without a Billing Engine:
 // deprecating a version once its successor's effective date arrives, and
 // expiring a tariff once its own effective-to date has passed. Both are pure
-// functions of columns already on `tariffs` — no invoice/billing data needed.
+// functions of columns already on `tariff_versions` — no invoice/billing
+// data needed.
 @Injectable()
 export class TariffSchedulerService {
   private readonly logger = new Logger(TariffSchedulerService.name);
 
   constructor(
-    @InjectRepository(Tariff) private readonly tariffs: Repository<Tariff>,
+    @InjectRepository(TariffVersion) private readonly versions: Repository<TariffVersion>,
     private readonly auditService: AuditService,
   ) {}
 
@@ -30,9 +31,10 @@ export class TariffSchedulerService {
   async autoDeprecateSupersededVersions(): Promise<number> {
     const today = new Date().toISOString().slice(0, 10);
 
-    const children = await this.tariffs
+    const children = await this.versions
       .createQueryBuilder('child')
-      .innerJoinAndSelect('child.parentTariff', 'parent')
+      .innerJoinAndSelect('child.parentVersion', 'parent')
+      .leftJoinAndSelect('parent.master', 'parentMaster')
       .where('child.status = :active', { active: TariffStatus.ACTIVE })
       .andWhere('parent.status = :active', { active: TariffStatus.ACTIVE })
       .andWhere('child.effective_from IS NOT NULL')
@@ -40,10 +42,10 @@ export class TariffSchedulerService {
       .getMany();
 
     for (const child of children) {
-      const parent = child.parentTariff!;
+      const parent = child.parentVersion!;
       const oldValue = { ...parent };
       parent.status = TariffStatus.DEPRECATED;
-      const saved = await this.tariffs.save(parent);
+      const saved = await this.versions.save(parent);
       await this.auditService.record({
         moduleName: TARIFF_AUDIT_MODULE_NAME,
         entityId: parent.id,
@@ -53,7 +55,7 @@ export class TariffSchedulerService {
         performedBy: null,
       });
       this.logger.log(
-        `Auto-deprecated tariff #${parent.id} (${parent.businessCode} v${parent.version}) — superseded by #${child.id} v${child.version}, effective ${child.effectiveFrom}`,
+        `Auto-deprecated tariff #${parent.id} (${parent.master?.businessCode} v${parent.version}) — superseded by #${child.id} v${child.version}, effective ${child.effectiveFrom}`,
       );
     }
 
@@ -65,26 +67,29 @@ export class TariffSchedulerService {
   async autoExpirePastEffectiveTo(): Promise<number> {
     const today = new Date().toISOString().slice(0, 10);
 
-    const expiring = await this.tariffs
-      .createQueryBuilder('tariff')
-      .where('tariff.status = :active', { active: TariffStatus.ACTIVE })
-      .andWhere('tariff.effective_to IS NOT NULL')
-      .andWhere('tariff.effective_to <= :today', { today })
+    const expiring = await this.versions
+      .createQueryBuilder('version')
+      .leftJoinAndSelect('version.master', 'master')
+      .where('version.status = :active', { active: TariffStatus.ACTIVE })
+      .andWhere('version.effective_to IS NOT NULL')
+      .andWhere('version.effective_to <= :today', { today })
       .getMany();
 
-    for (const tariff of expiring) {
-      const oldValue = { ...tariff };
-      tariff.status = TariffStatus.EXPIRED;
-      const saved = await this.tariffs.save(tariff);
+    for (const version of expiring) {
+      const oldValue = { ...version };
+      version.status = TariffStatus.EXPIRED;
+      const saved = await this.versions.save(version);
       await this.auditService.record({
         moduleName: TARIFF_AUDIT_MODULE_NAME,
-        entityId: tariff.id,
+        entityId: version.id,
         action: TariffAuditAction.AUTO_EXPIRE,
         oldValue,
         newValue: saved,
         performedBy: null,
       });
-      this.logger.log(`Auto-expired tariff #${tariff.id} (${tariff.businessCode} v${tariff.version}) — effective-to ${tariff.effectiveTo} passed`);
+      this.logger.log(
+        `Auto-expired tariff #${version.id} (${version.master?.businessCode} v${version.version}) — effective-to ${version.effectiveTo} passed`,
+      );
     }
 
     return expiring.length;

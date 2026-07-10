@@ -1,15 +1,15 @@
 import {
   BadRequestException,
   ConflictException,
-  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Not, Repository } from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
 import { AuditService } from '../../audit/audit.service';
-import { ROLES } from '../../common/constants/global';
 import { paginate } from '../../common/utils/pagination.util';
+import { BUSINESS_CODE_PREFIXES, generateBusinessCode } from '../../common/utils/business-code.util';
+import { assertNotSelfReview, nextMajorVersion } from '../../common/utils/versioning.util';
 import { Community } from '../community/entities/community.entity';
 import { Property } from '../property/entities/property.entity';
 import { LovService } from '../lov/lov.service';
@@ -22,12 +22,11 @@ import {
   RejectBillingCycleDto,
   UpdateBillingCycleDto,
 } from './dto/billing-cycle.dto';
-import { BillingCycle, BillingCycleStatus } from './entities/billing-cycle.entity';
+import { BillingCycleMaster } from './entities/billing-cycle-master.entity';
+import { BillingCycleVersion, BillingCycleStatus } from './entities/billing-cycle-version.entity';
 import {
   BILLING_CYCLE_AUDIT_MODULE_NAME,
   BILLING_CYCLE_CHANGE_REASON_LOV_CATEGORY,
-  BILLING_CYCLE_CODE_PAD_WIDTH,
-  BILLING_CYCLE_CODE_PREFIX,
   BILLING_CYCLE_DEPRECATION_REASON_LOV_CATEGORY,
   BillingCycleAuditAction,
   EDITABLE_BILLING_CYCLE_STATUSES,
@@ -36,11 +35,15 @@ import {
   REQUIRE_CHANGE_REASON_ON_EDIT_ATTRIBUTE_KEY,
 } from './billing-cycle.constants';
 
+const VERSION_RESPONSE_RELATIONS = ['master', 'master.community', 'master.property', 'submittedBy', 'approvedBy', 'parentVersion'];
+
 @Injectable()
 export class BillingCycleService {
   constructor(
-    @InjectRepository(BillingCycle)
-    private readonly billingCycles: Repository<BillingCycle>,
+    @InjectRepository(BillingCycleMaster)
+    private readonly masters: Repository<BillingCycleMaster>,
+    @InjectRepository(BillingCycleVersion)
+    private readonly versions: Repository<BillingCycleVersion>,
     @InjectRepository(Community)
     private readonly communities: Repository<Community>,
     @InjectRepository(Property)
@@ -78,15 +81,16 @@ export class BillingCycleService {
   async getStats() {
     const rows = await this.dataSource.query<any[]>(`
       SELECT
-        COUNT(DISTINCT bc.community_id)                                              AS totalCommunities,
-        COUNT(DISTINCT bc.property_id)                                               AS totalProperties,
-        SUM(CASE WHEN bc.status = 'active'     THEN 1 ELSE 0 END)                   AS activeCycles,
-        SUM(CASE WHEN bc.status = 'inactive'   THEN 1 ELSE 0 END)                   AS inactiveCycles,
-        SUM(CASE WHEN bc.status = 'pending'    THEN 1 ELSE 0 END)                   AS pendingCycles,
-        SUM(CASE WHEN bc.status = 'deprecated' THEN 1 ELSE 0 END)                   AS deprecatedCycles,
-        SUM(CASE WHEN bc.status != 'deprecated' THEN 1 ELSE 0 END)                  AS totalCycles
-      FROM billing_cycles bc
-      WHERE bc.deleted_at IS NULL
+        COUNT(DISTINCT m.community_id)                                              AS totalCommunities,
+        COUNT(DISTINCT m.property_id)                                               AS totalProperties,
+        SUM(CASE WHEN v.status = 'active'     THEN 1 ELSE 0 END)                   AS activeCycles,
+        SUM(CASE WHEN v.status = 'inactive'   THEN 1 ELSE 0 END)                   AS inactiveCycles,
+        SUM(CASE WHEN v.status = 'pending'    THEN 1 ELSE 0 END)                   AS pendingCycles,
+        SUM(CASE WHEN v.status = 'deprecated' THEN 1 ELSE 0 END)                   AS deprecatedCycles,
+        SUM(CASE WHEN v.status != 'deprecated' THEN 1 ELSE 0 END)                  AS totalCycles
+      FROM billing_cycle_versions v
+      JOIN billing_cycle_masters m ON m.id = v.master_id
+      WHERE v.deleted_at IS NULL AND m.deleted_at IS NULL
     `);
 
     const billsDueThisWeek = await this.countBillsDueThisWeek();
@@ -105,7 +109,7 @@ export class BillingCycleService {
   }
 
   private async countBillsDueThisWeek(): Promise<number> {
-    const cycles = await this.billingCycles.find({
+    const cycles = await this.versions.find({
       select: ['readingEndDay', 'billIssueDays', 'billDueDays'],
       where: { status: BillingCycleStatus.ACTIVE },
     });
@@ -122,7 +126,7 @@ export class BillingCycleService {
     return count;
   }
 
-  private computeBillDueDateObj(cycle: Pick<BillingCycle, 'readingEndDay' | 'billIssueDays' | 'billDueDays'>): Date | null {
+  private computeBillDueDateObj(cycle: Pick<BillingCycleVersion, 'readingEndDay' | 'billIssueDays' | 'billDueDays'>): Date | null {
     if (!cycle.readingEndDay) return null;
     const now = new Date();
     const year = now.getFullYear();
@@ -135,7 +139,7 @@ export class BillingCycleService {
     return billDueDate;
   }
 
-  private formatBillDueDate(cycle: Pick<BillingCycle, 'readingEndDay' | 'billIssueDays' | 'billDueDays'>): string | null {
+  private formatBillDueDate(cycle: Pick<BillingCycleVersion, 'readingEndDay' | 'billIssueDays' | 'billDueDays'>): string | null {
     const d = this.computeBillDueDateObj(cycle);
     if (!d) return null;
     const y = d.getFullYear();
@@ -148,59 +152,58 @@ export class BillingCycleService {
     return `BCY-${String(id).padStart(3, '0')}`;
   }
 
-  private mapToResponse(bc: BillingCycle) {
+  private mapToResponse(v: BillingCycleVersion) {
     const name = (user?: { firstName: string; lastName: string } | null) =>
       user ? `${user.firstName} ${user.lastName}`.trim() : null;
+    const master = v.master;
 
     return {
-      id: bc.id,
-      billCycleId: this.formatBillCycleId(bc.id),
-      communityId: bc.communityId,
-      communityName: (bc.community as any)?.name ?? '',
-      propertyId: bc.propertyId,
-      propertyName: (bc.property as any)?.name ?? '',
-      propertyCode: (bc.property as any)?.code ?? '',
-      frequency: bc.frequency,
-      readingStartDay: bc.readingStartDay,
-      readingEndDay: bc.readingEndDay,
-      billGenerationDays: bc.billGenerationDays,
-      billIssueDays: bc.billIssueDays,
-      billDueDays: bc.billDueDays,
-      billDueDate: this.formatBillDueDate(bc),
-      status: bc.status,
-      version: bc.version,
-      parentBillingCycleId: bc.parentBillingCycle?.id ?? null,
-      effectiveFrom: bc.effectiveFrom ?? null,
-      lastChangeReason: bc.lastChangeReason ?? null,
-      changeReasonCode: bc.changeReasonCode ?? null,
-      businessCode: bc.businessCode ?? null,
-      submittedBy: name(bc.submittedBy),
-      submittedById: bc.submittedBy?.id ?? null,
-      submittedOn: bc.submittedOn ?? null,
-      approvedBy: name(bc.approvedBy),
-      approvedById: bc.approvedBy?.id ?? null,
-      approvalDate: bc.approvalDate ?? null,
-      rejectionNotes: bc.rejectionNotes ?? null,
-      deprecationReasonCode: bc.deprecationReasonCode ?? null,
-      deprecationNotes: bc.deprecationNotes ?? null,
-      deprecatedOn: bc.deprecatedOn ?? null,
-      createdAt: bc.createdAt,
-      updatedAt: bc.updatedAt,
+      id: v.id,
+      billCycleId: this.formatBillCycleId(v.id),
+      masterId: master?.id ?? null,
+      communityId: master?.communityId ?? null,
+      communityName: (master?.community as any)?.name ?? '',
+      propertyId: master?.propertyId ?? null,
+      propertyName: (master?.property as any)?.name ?? '',
+      propertyCode: (master?.property as any)?.code ?? '',
+      frequency: v.frequency,
+      readingStartDay: v.readingStartDay,
+      readingEndDay: v.readingEndDay,
+      billGenerationDays: v.billGenerationDays,
+      billIssueDays: v.billIssueDays,
+      billDueDays: v.billDueDays,
+      billDueDate: this.formatBillDueDate(v),
+      status: v.status,
+      version: v.version,
+      parentBillingCycleId: v.parentVersion?.id ?? null,
+      effectiveFrom: v.effectiveFrom ?? null,
+      lastChangeReason: v.lastChangeReason ?? null,
+      changeReasonCode: v.changeReasonCode ?? null,
+      businessCode: master?.businessCode ?? null,
+      submittedBy: name(v.submittedBy),
+      submittedById: v.submittedBy?.id ?? null,
+      submittedOn: v.submittedOn ?? null,
+      approvedBy: name(v.approvedBy),
+      approvedById: v.approvedBy?.id ?? null,
+      approvalDate: v.approvalDate ?? null,
+      rejectionNotes: v.rejectionNotes ?? null,
+      deprecationReasonCode: v.deprecationReasonCode ?? null,
+      deprecationNotes: v.deprecationNotes ?? null,
+      deprecatedOn: v.deprecatedOn ?? null,
+      createdAt: v.createdAt,
+      updatedAt: v.updatedAt,
     };
   }
 
+  // Creates the master (if this property has never had one) plus its first
+  // version — or, if this property's master already exists but nothing is
+  // currently governing it (every prior version deprecated), adds the next
+  // version onto that SAME master instead of fragmenting into a second,
+  // disconnected master for the same property.
   async create(dto: CreateBillingCycleDto, actorId?: number) {
-    // Excludes DEPRECATED — a fully retired cycle shouldn't permanently
-    // block a property from ever getting a fresh one configured again.
-    // Mirrors TariffService.checkConflict(), which likewise only treats
-    // ACTIVE/PENDING/REQUEST_FOR_CORRECTION tariffs as "live" conflicts.
-    const existing = await this.billingCycles.findOne({
-      where: { propertyId: dto.propertyId, status: Not(BillingCycleStatus.DEPRECATED) },
-    });
-    if (existing) {
-      throw new ConflictException(
-        'A billing cycle already exists for this property',
-      );
+    let master = await this.masters.findOne({ where: { propertyId: dto.propertyId } });
+    if (master?.currentVersionId) {
+      throw new ConflictException('A billing cycle already exists for this property');
     }
 
     const [community, property] = await Promise.all([
@@ -210,27 +213,57 @@ export class BillingCycleService {
     if (!community) throw new NotFoundException('Community not found');
     if (!property) throw new NotFoundException('Property not found');
 
-    const saved = await this.dataSource.transaction(async (manager) => {
-      const entity = manager.create(BillingCycle, {
-        ...dto,
-        status: dto.status ?? BillingCycleStatus.INACTIVE,
-        version: '1.0',
-      });
-      const s = await manager.save(BillingCycle, entity);
-      s.businessCode = `${BILLING_CYCLE_CODE_PREFIX}${String(s.id).padStart(BILLING_CYCLE_CODE_PAD_WIDTH, '0')}`;
-      await manager.save(BillingCycle, s);
+    let versionNumber = '1.0';
+    if (master) {
+      const lastVersion = await this.versions.findOne({ where: { masterId: master.id }, order: { id: 'DESC' } });
+      if (lastVersion) versionNumber = nextMajorVersion(lastVersion.version);
+    }
 
-      await this.recordAudit(BillingCycleAuditAction.CREATE, s.id, undefined, {
-        propertyId: s.propertyId,
-        communityId: s.communityId,
-        frequency: s.frequency,
-        status: s.status,
+    const savedVersionId = await this.dataSource.transaction(async (manager) => {
+      if (!master) {
+        const masterEntity = manager.create(BillingCycleMaster, {
+          communityId: dto.communityId,
+          propertyId: dto.propertyId,
+        });
+        master = await manager.save(BillingCycleMaster, masterEntity);
+        master.businessCode = generateBusinessCode(BUSINESS_CODE_PREFIXES.BILLING_CYCLE, master.id);
+        master = await manager.save(BillingCycleMaster, master);
+      }
+
+      const versionEntity = manager.create(BillingCycleVersion, {
+        masterId: master.id,
+        frequency: dto.frequency,
+        readingStartDay: dto.readingStartDay,
+        readingEndDay: dto.readingEndDay,
+        billGenerationDays: dto.billGenerationDays,
+        billIssueDays: dto.billIssueDays,
+        billDueDays: dto.billDueDays,
+        // A newly created cycle immediately governs its property (no
+        // approval gate applies to initial creation — that's Business Rule
+        // 4's territory, which only covers newVersion()) and Active is what
+        // getStats()/dashboard due-date calculations actually key off, so a
+        // freshly created cycle must default to Active to take effect at
+        // all rather than silently billing nothing until someone remembers
+        // to flip it on.
+        status: dto.status ?? BillingCycleStatus.ACTIVE,
+        version: versionNumber,
+      });
+      const savedVersion = await manager.save(BillingCycleVersion, versionEntity);
+
+      master.currentVersionId = savedVersion.id;
+      await manager.save(BillingCycleMaster, master);
+
+      await this.recordAudit(BillingCycleAuditAction.CREATE, savedVersion.id, undefined, {
+        propertyId: dto.propertyId,
+        communityId: dto.communityId,
+        frequency: savedVersion.frequency,
+        status: savedVersion.status,
       }, actorId);
 
-      return s;
+      return savedVersion.id;
     });
 
-    return this.findOne(saved.id);
+    return this.findOne(savedVersionId);
   }
 
   async findAll(query: BillingCycleQueryDto) {
@@ -239,17 +272,18 @@ export class BillingCycleService {
     const SORTABLE = new Set(['createdAt', 'updatedAt', 'status', 'frequency', 'readingStartDay', 'readingEndDay']);
     const orderCol = SORTABLE.has(sortBy ?? '') ? sortBy! : 'createdAt';
 
-    const qb = this.billingCycles
+    const qb = this.versions
       .createQueryBuilder('bc')
-      .leftJoinAndSelect('bc.community', 'community')
-      .leftJoinAndSelect('bc.property', 'property')
+      .leftJoinAndSelect('bc.master', 'master')
+      .leftJoinAndSelect('master.community', 'community')
+      .leftJoinAndSelect('master.property', 'property')
       .leftJoinAndSelect('bc.submittedBy', 'submittedBy')
       .leftJoinAndSelect('bc.approvedBy', 'approvedBy')
-      .leftJoinAndSelect('bc.parentBillingCycle', 'parentBillingCycle')
+      .leftJoinAndSelect('bc.parentVersion', 'parentVersion')
       .orderBy(`bc.${orderCol}`, sortOrder ?? 'DESC');
 
-    if (communityId) qb.andWhere('bc.community_id = :communityId', { communityId });
-    if (propertyId) qb.andWhere('bc.property_id = :propertyId', { propertyId });
+    if (communityId) qb.andWhere('master.community_id = :communityId', { communityId });
+    if (propertyId) qb.andWhere('master.property_id = :propertyId', { propertyId });
     if (property) qb.andWhere('property.property_name LIKE :propertyName', { propertyName: `%${property}%` });
     if (frequency) qb.andWhere('bc.frequency = :frequency', { frequency });
     if (status) qb.andWhere('bc.status = :status', { status });
@@ -257,7 +291,7 @@ export class BillingCycleService {
     if (readingEndDay) qb.andWhere('bc.reading_end_day = :readingEndDay', { readingEndDay });
     if (search) {
       qb.andWhere(
-        '(community.name LIKE :s OR property.property_name LIKE :s OR property.property_code LIKE :s OR bc.businessCode LIKE :s)',
+        '(community.name LIKE :s OR property.property_name LIKE :s OR property.property_code LIKE :s OR master.businessCode LIKE :s)',
         { s: `%${search}%` },
       );
     }
@@ -270,38 +304,30 @@ export class BillingCycleService {
   }
 
   async findOne(id: number) {
-    const bc = await this.billingCycles.findOne({
+    const bc = await this.versions.findOne({
       where: { id },
-      relations: ['community', 'property', 'submittedBy', 'approvedBy', 'parentBillingCycle'],
+      relations: VERSION_RESPONSE_RELATIONS,
     });
     if (!bc) throw new NotFoundException('Billing cycle not found');
     return this.mapToResponse(bc);
   }
 
-  // Resolves the single currently-governing (non-deprecated) row for a
-  // property — there can briefly be both an ACTIVE row and a newer PENDING
-  // one awaiting a future effectiveFrom; ACTIVE always wins as "current".
+  // Direct FK lookup to whichever version is currently governing this
+  // property — the whole reason BillingCycleMaster.currentVersionId exists.
+  // Replaces the old single-table design's "prefer ACTIVE, else most recent
+  // non-deprecated" scan with an O(1) pointer dereference.
   async findByProperty(propertyId: number) {
-    const active = await this.billingCycles.find({
-      where: { propertyId, status: BillingCycleStatus.ACTIVE },
-      relations: ['community', 'property', 'submittedBy', 'approvedBy', 'parentBillingCycle'],
-    });
-    if (active.length) return this.mapToResponse(active[0]);
-
-    const fallback = await this.billingCycles.find({
-      where: { propertyId },
-      relations: ['community', 'property', 'submittedBy', 'approvedBy', 'parentBillingCycle'],
-      order: { createdAt: 'DESC' },
-    });
-    const governing = fallback.find((r) => r.status !== BillingCycleStatus.DEPRECATED) ?? fallback[0];
-    if (!governing) throw new NotFoundException('Billing cycle not found for this property');
-    return this.mapToResponse(governing);
+    const master = await this.masters.findOne({ where: { propertyId } });
+    if (!master?.currentVersionId) {
+      throw new NotFoundException('Billing cycle not found for this property');
+    }
+    return this.findOne(master.currentVersionId);
   }
 
   async update(id: number, dto: UpdateBillingCycleDto, actorId?: number) {
-    const bc = await this.billingCycles.findOne({
+    const bc = await this.versions.findOne({
       where: { id },
-      relations: ['community', 'property'],
+      relations: VERSION_RESPONSE_RELATIONS,
     });
     if (!bc) throw new NotFoundException('Billing cycle not found');
 
@@ -338,7 +364,7 @@ export class BillingCycleService {
     if (reasonForChange) bc.lastChangeReason = reasonForChange;
     if (reasonCode) bc.changeReasonCode = reasonCode;
 
-    const saved = await this.billingCycles.save(bc);
+    const saved = await this.versions.save(bc);
 
     await this.recordAudit(BillingCycleAuditAction.UPDATE, id, oldValue, { ...fields, reasonForChange, reasonCode }, actorId);
 
@@ -346,10 +372,11 @@ export class BillingCycleService {
   }
 
   // Business Rule 3/5 — the only way to change the reading window: clone the
-  // property's current governing cycle into a new PENDING version awaiting
-  // Finance approval, effective from a not-yet-reached date.
+  // property's current governing version into a new PENDING version awaiting
+  // Finance approval, effective from a not-yet-reached date. Always lands
+  // under the SAME master as its source — never creates a new master.
   async newVersion(id: number, dto: NewVersionBillingCycleDto, actorId?: number) {
-    const source = await this.billingCycles.findOne({
+    const source = await this.versions.findOne({
       where: { id },
       relations: ['childVersions'],
     });
@@ -372,10 +399,8 @@ export class BillingCycleService {
     this.assertNotesRequiredForOtherReason(dto.reasonCode, dto.notes);
 
     const saved = await this.dataSource.transaction(async (manager) => {
-      const clone = manager.create(BillingCycle, {
-        communityId: source.communityId,
-        propertyId: source.propertyId,
-        businessCode: source.businessCode,
+      const clone = manager.create(BillingCycleVersion, {
+        masterId: source.masterId,
         frequency: source.frequency,
         readingStartDay: dto.readingStartDay,
         readingEndDay: dto.readingEndDay,
@@ -383,15 +408,15 @@ export class BillingCycleService {
         billIssueDays: source.billIssueDays,
         billDueDays: source.billDueDays,
         status: BillingCycleStatus.PENDING,
-        version: this.nextMajorVersion(source.version),
-        parentBillingCycle: { id: source.id } as BillingCycle,
+        version: nextMajorVersion(source.version),
+        parentVersion: { id: source.id } as BillingCycleVersion,
         effectiveFrom: dto.effectiveFrom,
         changeReasonCode: dto.reasonCode,
         lastChangeReason: dto.notes ?? null,
         submittedBy: actorId ? ({ id: actorId } as any) : null,
         submittedOn: today,
       });
-      return manager.save(BillingCycle, clone);
+      return manager.save(BillingCycleVersion, clone);
     });
 
     await this.recordAudit(
@@ -404,17 +429,21 @@ export class BillingCycleService {
     return this.findOne(saved.id);
   }
 
-  async approve(id: number, actorId?: number, actorRole?: string) {
-    const cycle = await this.billingCycles.findOne({
+  async approve(id: number, actorId?: number) {
+    const cycle = await this.versions.findOne({
       where: { id },
-      relations: ['submittedBy', 'parentBillingCycle'],
+      relations: ['submittedBy', 'parentVersion'],
     });
     if (!cycle) throw new NotFoundException('Billing cycle not found');
     if (cycle.status !== BillingCycleStatus.PENDING) {
       throw new BadRequestException('Only a pending billing cycle version can be approved');
     }
-    this.assertOnlyFinanceMayReview(actorRole, 'approve');
-    this.assertNotSelfReview(cycle, actorId, 'approved');
+    // Who may approve is entirely a Role Permissions decision
+    // (BILLING_CYCLE_APPROVE grant), enforced by PermissionGuard at the
+    // route — no hardcoded role check here. assertNotSelfReview is a
+    // separate, role-independent maker-checker rule and stays regardless of
+    // who holds the grant.
+    assertNotSelfReview(cycle.submittedBy?.id, actorId, 'approved');
 
     const oldValue = { ...cycle };
     if (actorId) cycle.approvedBy = { id: actorId } as any;
@@ -426,28 +455,32 @@ export class BillingCycleService {
       // rather than leaving it stuck in PENDING until the next midnight sweep.
       await this.activateVersion(cycle, actorId);
     } else {
-      await this.billingCycles.save(cycle);
+      await this.versions.save(cycle);
     }
 
     await this.recordAudit(BillingCycleAuditAction.APPROVE, id, oldValue, cycle, actorId);
     return this.findOne(id);
   }
 
-  async reject(id: number, dto: RejectBillingCycleDto, actorId?: number, actorRole?: string) {
-    const cycle = await this.billingCycles.findOne({ where: { id }, relations: ['submittedBy'] });
+  async reject(id: number, dto: RejectBillingCycleDto, actorId?: number) {
+    const cycle = await this.versions.findOne({ where: { id }, relations: ['submittedBy'] });
     if (!cycle) throw new NotFoundException('Billing cycle not found');
     if (cycle.status !== BillingCycleStatus.PENDING) {
       throw new BadRequestException('Only a pending billing cycle version can be rejected');
     }
-    this.assertOnlyFinanceMayReview(actorRole, 'reject');
-    this.assertNotSelfReview(cycle, actorId, 'rejected');
+    // Who may reject is entirely a Role Permissions decision
+    // (BILLING_CYCLE_REJECT grant), enforced by PermissionGuard at the
+    // route — no hardcoded role check here. assertNotSelfReview is a
+    // separate, role-independent maker-checker rule and stays regardless of
+    // who holds the grant.
+    assertNotSelfReview(cycle.submittedBy?.id, actorId, 'rejected');
 
     const oldValue = { ...cycle };
     cycle.status = BillingCycleStatus.REJECTED;
     cycle.rejectionNotes = dto.notes;
     if (actorId) cycle.approvedBy = { id: actorId } as any;
     cycle.approvalDate = new Date().toISOString().slice(0, 10);
-    const saved = await this.billingCycles.save(cycle);
+    const saved = await this.versions.save(cycle);
     await this.recordAudit(BillingCycleAuditAction.REJECT, id, oldValue, saved, actorId);
     return this.findOne(id);
   }
@@ -457,7 +490,7 @@ export class BillingCycleService {
   // (via a plain update() first, then resubmit()). Without this, REJECTED
   // would be a dead end with no way back into review.
   async resubmit(id: number, actorId?: number) {
-    const cycle = await this.billingCycles.findOne({ where: { id } });
+    const cycle = await this.versions.findOne({ where: { id } });
     if (!cycle) throw new NotFoundException('Billing cycle not found');
     if (cycle.status !== BillingCycleStatus.REJECTED) {
       throw new BadRequestException('Only a rejected billing cycle version can be resubmitted');
@@ -470,21 +503,21 @@ export class BillingCycleService {
     cycle.approvalDate = null;
     if (actorId) cycle.submittedBy = { id: actorId } as any;
     cycle.submittedOn = new Date().toISOString().slice(0, 10);
-    const saved = await this.billingCycles.save(cycle);
+    const saved = await this.versions.save(cycle);
     await this.recordAudit(BillingCycleAuditAction.RESUBMIT, id, oldValue, saved, actorId);
     return this.findOne(id);
   }
 
   // Super Admin only — the intended lifecycle-end action for a billing
-  // cycle. Replaces the old unconditional soft-delete: a governing cycle
-  // should be superseded and audited, not silently removed. Per the doc,
-  // "effective deprecation date... must be after current cycle end date" —
-  // implying the cycle keeps running until then, not that it dies on
-  // request. A same-day date deprecates now; a future date only records the
-  // decision (status untouched) and BillingCycleSchedulerService applies it
-  // for real once that date arrives — see applyDeprecation()/autoDeprecateDueCycles().
+  // cycle version. Replaces the old unconditional soft-delete: a governing
+  // version should be superseded and audited, not silently removed. Per
+  // the doc, "effective deprecation date... must be after current cycle
+  // end date" — implying the version keeps running until then, not that it
+  // dies on request. A same-day date deprecates now; a future date only
+  // records the decision (status untouched) and BillingCycleSchedulerService
+  // applies it for real once that date arrives.
   async deprecate(id: number, dto: DeprecateBillingCycleDto, actorId?: number) {
-    const cycle = await this.billingCycles.findOne({ where: { id }, relations: ['childVersions'] });
+    const cycle = await this.versions.findOne({ where: { id }, relations: ['childVersions'] });
     if (!cycle) throw new NotFoundException('Billing cycle not found');
     if (cycle.status === BillingCycleStatus.DEPRECATED) {
       throw new BadRequestException('This billing cycle is already deprecated');
@@ -533,7 +566,7 @@ export class BillingCycleService {
       cycle.deprecationReasonCode = dto.reasonCode;
       cycle.deprecationNotes = dto.notes ?? null;
       cycle.deprecatedOn = effectiveDate;
-      const saved = await this.billingCycles.save(cycle);
+      const saved = await this.versions.save(cycle);
       await this.recordAudit(BillingCycleAuditAction.SCHEDULE_DEPRECATION, id, oldValue, saved, actorId);
     }
 
@@ -543,23 +576,33 @@ export class BillingCycleService {
   // The single place `status` is ever set to DEPRECATED — reused by the
   // immediate path in deprecate() above, by autoDeprecateDueCycles() below,
   // and by activateVersion()'s auto-supersede case, so there is exactly one
-  // implementation of "what deprecating a row means" in this service.
+  // implementation of "what deprecating a row means" in this service. Also
+  // the single place that clears BillingCycleMaster.currentVersionId when
+  // the version being deprecated was the one currently governing.
   private async applyDeprecation(
-    cycle: BillingCycle,
+    cycle: BillingCycleVersion,
     reasonCode: string,
     notes: string | null,
     effectiveDate: string,
-  ): Promise<BillingCycle> {
+  ): Promise<BillingCycleVersion> {
     cycle.status = BillingCycleStatus.DEPRECATED;
     cycle.deprecationReasonCode = reasonCode;
     cycle.deprecationNotes = notes;
     cycle.deprecatedOn = effectiveDate;
-    return this.billingCycles.save(cycle);
+    const saved = await this.versions.save(cycle);
+
+    const master = await this.masters.findOne({ where: { id: cycle.masterId } });
+    if (master && master.currentVersionId === cycle.id) {
+      master.currentVersionId = null;
+      await this.masters.save(master);
+    }
+
+    return saved;
   }
 
   // True once deprecate() has recorded a future-dated decision that hasn't
   // been applied yet — blocks a second, conflicting deprecate() call.
-  private hasScheduledDeprecation(cycle: BillingCycle): boolean {
+  private hasScheduledDeprecation(cycle: BillingCycleVersion): boolean {
     const today = new Date().toISOString().slice(0, 10);
     return !!cycle.deprecatedOn && cycle.deprecatedOn > today && cycle.status !== BillingCycleStatus.DEPRECATED;
   }
@@ -568,7 +611,7 @@ export class BillingCycleService {
   // recorded with a future effectiveDeprecationDate which has now arrived.
   async autoDeprecateDueCycles(): Promise<number> {
     const today = new Date().toISOString().slice(0, 10);
-    const due = await this.billingCycles
+    const due = await this.versions
       .createQueryBuilder('bc')
       .where('bc.status != :deprecated', { deprecated: BillingCycleStatus.DEPRECATED })
       .andWhere('bc.deprecated_on IS NOT NULL')
@@ -590,16 +633,28 @@ export class BillingCycleService {
   }
 
   // Shared by approve() (same-day case) and the scheduler (future-date
-  // catch-up): activates a pending version and deprecates the version it
-  // replaces, if any. `actorId` is undefined when called by the scheduler,
-  // which the audit trail then records as system-initiated.
-  private async activateVersion(cycle: BillingCycle, actorId?: number): Promise<BillingCycle> {
+  // catch-up): activates a pending version, points its master's
+  // currentVersionId at it, and deprecates the version it replaces, if any.
+  // `actorId` is undefined when called by the scheduler, which the audit
+  // trail then records as system-initiated.
+  //
+  // Order matters here: the master's pointer is moved to the NEW version
+  // before the OLD one is deprecated, so applyDeprecation()'s "clear the
+  // pointer if it still points at me" check on the old version correctly
+  // finds it already pointing elsewhere and leaves it alone.
+  private async activateVersion(cycle: BillingCycleVersion, actorId?: number): Promise<BillingCycleVersion> {
     cycle.status = BillingCycleStatus.ACTIVE;
-    const saved = await this.billingCycles.save(cycle);
+    const saved = await this.versions.save(cycle);
 
-    const parentId = cycle.parentBillingCycle?.id;
+    const master = await this.masters.findOne({ where: { id: cycle.masterId } });
+    if (master) {
+      master.currentVersionId = cycle.id;
+      await this.masters.save(master);
+    }
+
+    const parentId = cycle.parentVersion?.id;
     if (parentId) {
-      const parent = await this.billingCycles.findOne({ where: { id: parentId } });
+      const parent = await this.versions.findOne({ where: { id: parentId } });
       if (parent && parent.status !== BillingCycleStatus.DEPRECATED) {
         const parentOldValue = { ...parent };
         const savedParent = await this.applyDeprecation(
@@ -625,9 +680,9 @@ export class BillingCycleService {
   // version whose effectiveFrom date has arrived.
   async autoActivateDueVersions(): Promise<number> {
     const today = new Date().toISOString().slice(0, 10);
-    const due = await this.billingCycles
+    const due = await this.versions
       .createQueryBuilder('bc')
-      .leftJoinAndSelect('bc.parentBillingCycle', 'parentBillingCycle')
+      .leftJoinAndSelect('bc.parentVersion', 'parentVersion')
       .where('bc.status = :pending', { pending: BillingCycleStatus.PENDING })
       .andWhere('bc.approved_by_id IS NOT NULL')
       .andWhere('bc.effective_from IS NOT NULL')
@@ -672,7 +727,7 @@ export class BillingCycleService {
   // ACTIVE (that's approve()'s job) or to DEPRECATED (that's deprecate()'s,
   // with its own reason-code and no-alternative-cycle checks). Without this,
   // Business Rule 4's Finance approval gate could be bypassed entirely.
-  private assertToggleOnlyStatusChange(bc: BillingCycle, dto: UpdateBillingCycleDto): void {
+  private assertToggleOnlyStatusChange(bc: BillingCycleVersion, dto: UpdateBillingCycleDto): void {
     if (dto.status === undefined) return;
     const isToggle = dto.status === BillingCycleStatus.ACTIVE || dto.status === BillingCycleStatus.INACTIVE;
     const currentIsToggleable = bc.status === BillingCycleStatus.ACTIVE || bc.status === BillingCycleStatus.INACTIVE;
@@ -681,25 +736,6 @@ export class BillingCycleService {
         'Status can only be toggled between active and inactive on an already active or inactive billing cycle — use approve, reject, or deprecate for other transitions.',
       );
     }
-  }
-
-  private assertOnlyFinanceMayReview(actorRole: string | undefined, action: 'approve' | 'reject'): void {
-    if (actorRole !== ROLES.FINANCE) {
-      throw new ForbiddenException(`Only the Finance role can ${action} a billing cycle version — Super Admin and Admin are excluded by design.`);
-    }
-  }
-
-  private assertNotSelfReview(cycle: BillingCycle, actorId: number | undefined, action: 'approved' | 'rejected'): void {
-    if (actorId && cycle.submittedBy?.id === actorId) {
-      throw new BadRequestException(
-        `A billing cycle version cannot be ${action} by the same user who submitted it. Ask another reviewer to action it.`,
-      );
-    }
-  }
-
-  private nextMajorVersion(current: string): string {
-    const major = parseInt(current.split('.')[0], 10);
-    return `${Number.isFinite(major) ? major + 1 : 2}.0`;
   }
 
   private async recordAudit(

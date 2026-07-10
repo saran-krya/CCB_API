@@ -8,12 +8,18 @@ import { Action } from '../modules/actions/entities/action.entity'
 import { AttributeService } from '../modules/attribute/attribute.service'
 import { LovService } from '../modules/lov/lov.service'
 import { PModule } from '../modules/pmodules/entities/pmodule.entity'
+import { PModulesService } from '../modules/pmodules/pmodules.service'
 import { Role } from '../modules/role/entities/role.entity'
 import { Screen } from '../modules/screens/entities/screen.entity'
+import { ScreensService } from '../modules/screens/screens.service'
+import { ActionsService } from '../modules/actions/actions.service'
+import { RolePermissionsService } from '../modules/role-permissions/role-permissions.service'
 import { SubModule } from '../modules/sub-modules/entities/sub-module.entity'
+import { SubModulesService } from '../modules/sub-modules/sub-modules.service'
 import { User } from '../modules/user/entities/user.entity'
 import {
   ACTIONS,
+  ADMIN_GRANT_EXCLUDED_ACTION_CODES,
   PMODULES,
   ROLES,
   SCREENS,
@@ -29,6 +35,11 @@ export class BootstrapService implements OnApplicationBootstrap {
     private readonly config: ConfigService,
     private readonly lovService: LovService,
     private readonly attributeService: AttributeService,
+    private readonly pModulesService: PModulesService,
+    private readonly subModulesService: SubModulesService,
+    private readonly screensService: ScreensService,
+    private readonly actionsService: ActionsService,
+    private readonly rolePermissionsService: RolePermissionsService,
   ) {}
 
   async onApplicationBootstrap(): Promise<void> {
@@ -36,12 +47,32 @@ export class BootstrapService implements OnApplicationBootstrap {
 
     if (userCount > 0) {
       this.logger.log('Bootstrap skipped — database already initialized')
-      // Fresh databases get every General Attribute / LOV category from
-      // seedValues() below. Already-initialized ones only get what existed
-      // at the time they were first bootstrapped — this backfills anything
-      // added since, e.g. Session Timeout, TARIFF_UNIT_TYPE.
-      await this.attributeService.ensureCriticalDefaults()
-      await this.lovService.ensureCriticalDefaults()
+      // Fresh databases get every General Attribute / LOV category / Module /
+      // SubModule / Screen / Action from seedValues()/seed() below. Already-
+      // initialized ones only get what existed at the time they were first
+      // bootstrapped — this backfills anything added since, e.g. Session
+      // Timeout, TARIFF_UNIT_TYPE, or (for the permission migration) new
+      // Screen/Action rows like the LFM/Attributes/Tariff screens' actions,
+      // plus the one-time PModule code correction (see
+      // PModulesService.MODULE_NAME_CODE_FIXES). Modules must backfill
+      // before SubModules before Screens before Actions before Admin
+      // grants — each step's FK lookups depend on the previous one already
+      // existing. A failure here must never crash startup of an already-
+      // running system — each service's own ensureCriticalDefaults()/
+      // ensureAdminGrants() already catches per-row errors internally, but
+      // this outer guard covers anything unexpected escaping one of them
+      // anyway.
+      try {
+        await this.attributeService.ensureCriticalDefaults()
+        await this.lovService.ensureCriticalDefaults()
+        await this.pModulesService.ensureCriticalDefaults()
+        await this.subModulesService.ensureCriticalDefaults()
+        await this.screensService.ensureCriticalDefaults()
+        await this.actionsService.ensureCriticalDefaults()
+        await this.rolePermissionsService.ensureAdminGrants(ADMIN_GRANT_EXCLUDED_ACTION_CODES)
+      } catch (err) {
+        this.logger.error('Backfill of critical defaults failed — server will still start', err as Error)
+      }
       return
     }
 
@@ -49,6 +80,12 @@ export class BootstrapService implements OnApplicationBootstrap {
 
     try {
       await this.dataSource.transaction((manager) => this.seed(manager))
+
+      // Runs after the seed transaction commits, not inside it —
+      // ensureAdminGrants() reads through the service's own repositories
+      // (a separate connection from the transaction's EntityManager), so it
+      // would see nothing yet if run before commit.
+      await this.rolePermissionsService.ensureAdminGrants(ADMIN_GRANT_EXCLUDED_ACTION_CODES)
 
       const adminEmail = this.config.get<string>(
         'DEFAULT_ADMIN_EMAIL',
@@ -202,8 +239,11 @@ export class BootstrapService implements OnApplicationBootstrap {
     screenMap: Map<string, Screen>,
   ): Promise<void> {
     let count = 0
+    const actionMap = new Map<string, Action>()
 
-    for (const ac of ACTIONS) {
+    // Pass 1 — top-level actions (no parentActionCode). Builds actionMap so
+    // pass 2 can resolve each child's real parentActionId.
+    for (const ac of ACTIONS.filter((a) => !a.parentActionCode)) {
       const screen = screenMap.get(ac.screenCode)
       if (!screen) {
         this.logger.warn(`Action "${ac.code}" skipped — Screen "${ac.screenCode}" not found`)
@@ -216,8 +256,38 @@ export class BootstrapService implements OnApplicationBootstrap {
         code: ac.code,
         description: ac.description,
         isActive: true,
+        displayOrder: ac.displayOrder ?? 0,
       })
-      await manager.save(entity)
+      const saved = await manager.save(entity)
+      actionMap.set(ac.code, saved)
+      count++
+    }
+
+    // Pass 2 — child actions, resolved against actionMap from pass 1.
+    for (const ac of ACTIONS.filter((a) => a.parentActionCode)) {
+      const screen = screenMap.get(ac.screenCode)
+      if (!screen) {
+        this.logger.warn(`Action "${ac.code}" skipped — Screen "${ac.screenCode}" not found`)
+        continue
+      }
+
+      const parent = actionMap.get(ac.parentActionCode!)
+      if (!parent) {
+        this.logger.warn(`Action "${ac.code}" skipped — parent action "${ac.parentActionCode}" not found`)
+        continue
+      }
+
+      const entity = manager.create(Action, {
+        screenId: screen.id,
+        name: ac.name,
+        code: ac.code,
+        description: ac.description,
+        isActive: true,
+        parentActionId: parent.id,
+        displayOrder: ac.displayOrder ?? 0,
+      })
+      const saved = await manager.save(entity)
+      actionMap.set(ac.code, saved)
       count++
     }
 

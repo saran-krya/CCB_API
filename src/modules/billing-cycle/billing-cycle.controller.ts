@@ -17,6 +17,7 @@ import {
 import { AuthenticatedUser } from '../../auth/interfaces/authenticated-user.interface';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
+import { Permission } from '../../common/decorators/permission.decorator';
 import { ROLES } from '../../common/constants/global';
 import { BillingCycleService } from './billing-cycle.service';
 import { BillingCycleSchedulerService } from './billing-cycle-scheduler.service';
@@ -29,12 +30,16 @@ import {
   UpdateBillingCycleDto,
 } from './dto/billing-cycle.dto';
 
-// Route-level @Roles() only — deliberately no controller-level guard.
-// Super Admin/Admin create, edit, and initiate new versions; Finance
-// approves/rejects; Super Admin alone deprecates. Approve/reject are a
-// deliberate exception to this app's "Super Admin bypasses every @Roles()
-// check" convention, re-enforced inside BillingCycleService itself
-// (assertOnlyFinanceMayReview), the same pattern TariffService uses.
+// Route-level @Permission() — gates business routes by Screen Action
+// (BILLING_CYCLE screen) instead of hardcoded roles, so access is
+// controlled entirely through Role Permissions per role, not role names.
+// PermissionGuard has no role bypass of any kind — approve/reject are
+// gated exactly like every other action, purely by whether the caller's
+// role holds the BILLING_CYCLE_APPROVE/BILLING_CYCLE_REJECT grant (seeded
+// to every role except SUPER_ADMIN/ADMIN by default; assign it to FINANCE
+// via Role Management to restore today's behavior). run-scheduler stays on
+// @Roles(SUPER_ADMIN) — it's an ops/testing utility, not a business action
+// a role would be granted.
 @ApiBearerAuth()
 @ApiTags('Billing Cycles')
 @Controller({ path: 'billing-cycles', version: '1' })
@@ -45,28 +50,28 @@ export class BillingCycleController {
   ) {}
 
   @Get('stats')
-  @Roles(ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.OPERATIONS, ROLES.FINANCE)
+  @Permission('VIEW_BILLING_CYCLE')
   @ApiOperation({ summary: 'Get billing cycle dashboard stats' })
   getStats() {
     return this.billingCycles.getStats();
   }
 
   @Get('metaFilters')
-  @Roles(ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.OPERATIONS, ROLES.FINANCE)
+  @Permission('VIEW_BILLING_CYCLE')
   @ApiOperation({ summary: 'Get filter metadata for the billing cycle list UI' })
   getFilterMetadata() {
     return this.billingCycles.getFilterMetadata();
   }
 
   @Get()
-  @Roles(ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.OPERATIONS, ROLES.FINANCE)
+  @Permission('VIEW_BILLING_CYCLE')
   @ApiOperation({ summary: 'List billing cycles with pagination and filters' })
   findAll(@Query() query: BillingCycleQueryDto) {
     return this.billingCycles.findAll(query);
   }
 
   @Get('property/:propertyId')
-  @Roles(ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.OPERATIONS, ROLES.FINANCE)
+  @Permission('VIEW_BILLING_CYCLE')
   @ApiOperation({ summary: "Get the property's currently-governing billing cycle" })
   @ApiParam({ name: 'propertyId', type: Number })
   findByProperty(@Param('propertyId', ParseIntPipe) propertyId: number) {
@@ -74,7 +79,7 @@ export class BillingCycleController {
   }
 
   @Get(':id')
-  @Roles(ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.OPERATIONS, ROLES.FINANCE)
+  @Permission('VIEW_BILLING_CYCLE')
   @ApiOperation({ summary: 'Get billing cycle by ID' })
   @ApiParam({ name: 'id', type: Number })
   findOne(@Param('id', ParseIntPipe) id: number) {
@@ -82,7 +87,7 @@ export class BillingCycleController {
   }
 
   @Post()
-  @Roles(ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.OPERATIONS)
+  @Permission('CREATE_BILLING_CYCLE')
   @ApiOperation({ summary: 'Create the first billing cycle for a property' })
   create(
     @Body() dto: CreateBillingCycleDto,
@@ -92,7 +97,7 @@ export class BillingCycleController {
   }
 
   @Patch(':id')
-  @Roles(ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.OPERATIONS)
+  @Permission('EDIT_BILLING_CYCLE')
   @ApiOperation({ summary: 'Update a billing cycle (reading-window fields are locked — use new-version instead)' })
   @ApiParam({ name: 'id', type: Number })
   update(
@@ -104,7 +109,7 @@ export class BillingCycleController {
   }
 
   @Post(':id/new-version')
-  @Roles(ROLES.SUPER_ADMIN, ROLES.ADMIN)
+  @Permission('BILLING_CYCLE_NEW_VERSION')
   @ApiOperation({ summary: "Clone a property's billing cycle into a new pending version with a changed reading window" })
   @ApiParam({ name: 'id', type: Number })
   newVersion(
@@ -116,27 +121,27 @@ export class BillingCycleController {
   }
 
   @Patch(':id/approve')
-  @Roles(ROLES.FINANCE)
-  @ApiOperation({ summary: 'Approve a pending billing cycle version (Finance only)' })
+  @Permission('BILLING_CYCLE_APPROVE')
+  @ApiOperation({ summary: 'Approve a pending billing cycle version (requires the BILLING_CYCLE_APPROVE grant)' })
   @ApiParam({ name: 'id', type: Number })
   approve(@Param('id', ParseIntPipe) id: number, @CurrentUser() user?: AuthenticatedUser) {
-    return this.billingCycles.approve(id, user?.sub, user?.roleName);
+    return this.billingCycles.approve(id, user?.sub);
   }
 
   @Patch(':id/reject')
-  @Roles(ROLES.FINANCE)
-  @ApiOperation({ summary: 'Reject a pending billing cycle version (Finance only)' })
+  @Permission('BILLING_CYCLE_REJECT')
+  @ApiOperation({ summary: 'Reject a pending billing cycle version (requires the BILLING_CYCLE_REJECT grant)' })
   @ApiParam({ name: 'id', type: Number })
   reject(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: RejectBillingCycleDto,
     @CurrentUser() user?: AuthenticatedUser,
   ) {
-    return this.billingCycles.reject(id, dto, user?.sub, user?.roleName);
+    return this.billingCycles.reject(id, dto, user?.sub);
   }
 
   @Patch(':id/resubmit')
-  @Roles(ROLES.SUPER_ADMIN, ROLES.ADMIN)
+  @Permission('BILLING_CYCLE_RESUBMIT')
   @ApiOperation({ summary: 'Resubmit a rejected billing cycle version back into the Finance approval queue' })
   @ApiParam({ name: 'id', type: Number })
   resubmit(@Param('id', ParseIntPipe) id: number, @CurrentUser() user?: AuthenticatedUser) {
@@ -144,7 +149,7 @@ export class BillingCycleController {
   }
 
   @Patch(':id/deprecate')
-  @Roles(ROLES.SUPER_ADMIN)
+  @Permission('BILLING_CYCLE_DEPRECATE')
   @ApiOperation({ summary: 'Deprecate a billing cycle version (Super Admin only)' })
   @ApiParam({ name: 'id', type: Number })
   deprecate(

@@ -11,6 +11,7 @@ import { BaseEntity } from '../../../common/entities/base.entity';
 import { Property } from '../../property/entities/property.entity';
 import { Unit } from '../../unit/entities/unit.entity';
 import { User } from '../../user/entities/user.entity';
+import { TariffMaster } from './tariff-master.entity';
 import { TariffTier } from './tariff-tier.entity';
 
 export enum TariffStatus {
@@ -40,12 +41,21 @@ export enum TariffPenaltyType {
   PERCENTAGE = 'percentage',
 }
 
-@Entity('tariffs')
-export class Tariff extends BaseEntity {
-  // Shared across every version of the same tariff (TAR-001 v1.0, v2.0, ...)
-  // — no longer unique, since cloning a new version deliberately reuses it.
-  @Column({ name: 'business_code', type: 'varchar', length: 20, nullable: true })
-  businessCode?: string | null;
+// One row per version (v1.0, v2.0, ...) of a tariff lineage. Everything that
+// actually varies by version lives here, including name/description (PDF:
+// "edit in place allowed", so it's ordinary version content, not identity)
+// — only the business code and the "current version" pointer live on
+// TariffMaster. tiers/properties/units are version-scoped: newVersion()
+// clones them, matching the PDF's "all fields copied from v1.0 as starting
+// point" (Scenario 5).
+@Entity('tariff_versions')
+export class TariffVersion extends BaseEntity {
+  @ManyToOne(() => TariffMaster, (master) => master.versions, { nullable: false })
+  @JoinColumn({ name: 'master_id' })
+  master!: TariffMaster;
+
+  @Column({ name: 'master_id' })
+  masterId!: number;
 
   @Column({ name: 'name', type: 'varchar', length: 160 })
   name!: string;
@@ -57,13 +67,14 @@ export class Tariff extends BaseEntity {
   version!: string;
 
   // Self-reference to the version this one was cloned from via the
-  // new-version flow (Scenario 5). Null for a tariff's first version.
-  @ManyToOne(() => Tariff, { nullable: true, eager: false })
-  @JoinColumn({ name: 'parent_tariff_id' })
-  parentTariff?: Tariff | null;
+  // new-version flow (Scenario 5). Scoped purely to version lineage now —
+  // never points across masters. Null for a tariff's first version.
+  @ManyToOne(() => TariffVersion, { nullable: true, eager: false })
+  @JoinColumn({ name: 'parent_version_id' })
+  parentVersion?: TariffVersion | null;
 
-  @OneToMany(() => Tariff, (tariff) => tariff.parentTariff)
-  childVersions!: Tariff[];
+  @OneToMany(() => TariffVersion, (version) => version.parentVersion)
+  childVersions!: TariffVersion[];
 
   // Code from the LOV category TARIFF_UNIT_TYPE (Lookup Field Master) —
   // not a native enum, so admins can add unit types without a code change.
@@ -169,9 +180,13 @@ export class Tariff extends BaseEntity {
   @Column({ name: 'rejection_notes', type: 'text', nullable: true })
   rejectionNotes?: string | null;
 
-  @OneToMany(() => TariffTier, (tier) => tier.tariff, { cascade: true })
+  @OneToMany(() => TariffTier, (tier) => tier.version, { cascade: true })
   tiers!: TariffTier[];
 
+  // Physical join-table column is still named tariff_id (see migration
+  // notes) — only its FK target moved, from tariffs(id) to
+  // tariff_versions(id). Row values are unchanged since version IDs equal
+  // the legacy tariff IDs exactly.
   @ManyToMany(() => Property)
   @JoinTable({
     name: 'tariff_properties',

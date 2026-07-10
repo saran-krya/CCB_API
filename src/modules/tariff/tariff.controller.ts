@@ -4,6 +4,7 @@ import { AuthenticatedUser } from '../../auth/interfaces/authenticated-user.inte
 import { ROLES } from '../../common/constants/global';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
+import { Permission } from '../../common/decorators/permission.decorator';
 import {
   CreateTariffDto,
   RejectTariffDto,
@@ -14,14 +15,16 @@ import {
 import { TariffSchedulerService } from './tariff-scheduler.service';
 import { TariffService } from './tariff.service';
 
-// Route-level @Roles() only — deliberately no controller-level guard.
-// Business Admin (SUPER_ADMIN/ADMIN) creates and edits; Finance Team reviews
-// and decides. Approve/reject are a deliberate exception to this app's
-// otherwise-global "Super Admin bypasses every @Roles() check" convention
-// (RolesGuard.canActivate short-circuits on roleName === SUPER_ADMIN) — per
-// explicit business rule, Super Admin and Admin must NOT be able to approve
-// or reject a tariff, so that check is re-enforced inside TariffService
-// itself (assertOnlyFinanceMayReview), not just at the guard.
+// Route-level @Permission() — gates business routes by Screen Action
+// (TARIFF_MANAGEMENT screen) instead of hardcoded roles, so access is
+// controlled entirely through Role Permissions per role, not role names.
+// PermissionGuard has no role bypass of any kind — approve/reject are
+// gated exactly like every other action, purely by whether the caller's
+// role holds the TARIFF_APPROVE/TARIFF_REJECT grant (seeded to every role
+// except SUPER_ADMIN/ADMIN by default; assign it to FINANCE via Role
+// Management to restore today's behavior). run-scheduler stays on
+// @Roles(SUPER_ADMIN) — it's an ops/testing utility, not a business action
+// a role would be granted, so it's excluded from this migration.
 
 @ApiBearerAuth()
 @ApiTags('Tariffs')
@@ -33,51 +36,59 @@ export class TariffController {
   ) {}
 
   @Get('stats')
-  @Roles(ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.FINANCE)
+  @Permission('TARIFF_VIEW')
   @ApiOperation({ summary: 'Get tariff dashboard stats' })
   getStats() {
     return this.tariffs.getStats();
   }
 
   @Get('metaFilters')
-  @Roles(ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.FINANCE)
+  @Permission('TARIFF_VIEW')
   @ApiOperation({ summary: 'Get filter metadata for the tariff list and create-form UI' })
   getFilterMetadata() {
     return this.tariffs.getFilterMetadata();
   }
 
   @Get('check-conflict')
-  @Roles(ROLES.SUPER_ADMIN, ROLES.ADMIN)
+  @Permission('TARIFF_CREATE', 'TARIFF_EDIT')
   @ApiOperation({ summary: 'Check whether a proposed tariff scope/date range conflicts with an existing tariff' })
   checkConflict(@Query() query: TariffConflictQueryDto) {
     return this.tariffs.checkConflict(query);
   }
 
   @Get()
-  @Roles(ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.FINANCE)
+  @Permission('TARIFF_VIEW')
   @ApiOperation({ summary: 'List tariffs with pagination, search, sort and filters' })
   findAll(@Query() query: TariffQueryDto) {
     return this.tariffs.findAll(query);
   }
 
   @Get(':id')
-  @Roles(ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.FINANCE)
+  @Permission('TARIFF_VIEW')
   @ApiOperation({ summary: 'Get tariff detail by ID' })
   @ApiParam({ name: 'id', type: Number })
   findOne(@Param('id', ParseIntPipe) id: number) {
     return this.tariffs.findOne(id);
   }
 
+  @Get(':id/versions')
+  @Permission('TARIFF_VIEW')
+  @ApiOperation({ summary: "Get every version of this tariff's lineage, oldest first" })
+  @ApiParam({ name: 'id', type: Number })
+  getVersionHistory(@Param('id', ParseIntPipe) id: number) {
+    return this.tariffs.getVersionHistory(id);
+  }
+
   @Post()
-  @Roles(ROLES.SUPER_ADMIN, ROLES.ADMIN)
+  @Permission('TARIFF_CREATE')
   @ApiOperation({ summary: 'Create a tariff (submitted for approval)' })
   create(@Body() dto: CreateTariffDto, @CurrentUser() user?: AuthenticatedUser) {
     return this.tariffs.create(dto, user?.sub);
   }
 
   @Patch(':id')
-  @Roles(ROLES.SUPER_ADMIN, ROLES.ADMIN)
-  @ApiOperation({ summary: 'Update a pending or inactive tariff' })
+  @Permission('TARIFF_EDIT')
+  @ApiOperation({ summary: 'Update a draft, corrected, rejected, inactive, or active tariff (pending is locked until Finance decides)' })
   @ApiParam({ name: 'id', type: Number })
   update(
     @Param('id', ParseIntPipe) id: number,
@@ -88,7 +99,7 @@ export class TariffController {
   }
 
   @Patch(':id/submit')
-  @Roles(ROLES.SUPER_ADMIN, ROLES.ADMIN)
+  @Permission('TARIFF_SUBMIT')
   @ApiOperation({ summary: 'Submit a draft, corrected, or rejected tariff for Finance approval' })
   @ApiParam({ name: 'id', type: Number })
   submit(@Param('id', ParseIntPipe) id: number, @CurrentUser() user?: AuthenticatedUser) {
@@ -96,35 +107,35 @@ export class TariffController {
   }
 
   @Patch(':id/approve')
-  @Roles(ROLES.FINANCE)
-  @ApiOperation({ summary: 'Approve a pending tariff (Finance only — Super Admin and Admin are explicitly excluded)' })
+  @Permission('TARIFF_APPROVE')
+  @ApiOperation({ summary: 'Approve a pending tariff (requires the TARIFF_APPROVE grant)' })
   @ApiParam({ name: 'id', type: Number })
   approve(@Param('id', ParseIntPipe) id: number, @CurrentUser() user?: AuthenticatedUser) {
-    return this.tariffs.approve(id, user?.sub, user?.roleName);
+    return this.tariffs.approve(id, user?.sub);
   }
 
   @Patch(':id/reject')
-  @Roles(ROLES.FINANCE)
-  @ApiOperation({ summary: 'Reject a pending tariff (Finance only — Super Admin and Admin are explicitly excluded)' })
+  @Permission('TARIFF_REJECT')
+  @ApiOperation({ summary: 'Reject a pending tariff (requires the TARIFF_REJECT grant)' })
   @ApiParam({ name: 'id', type: Number })
   reject(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: RejectTariffDto,
     @CurrentUser() user?: AuthenticatedUser,
   ) {
-    return this.tariffs.reject(id, dto, user?.sub, user?.roleName);
+    return this.tariffs.reject(id, dto, user?.sub);
   }
 
   @Patch(':id/deactivate')
-  @Roles(ROLES.SUPER_ADMIN, ROLES.ADMIN)
-  @ApiOperation({ summary: 'Deactivate an active or pending tariff' })
+  @Permission('TARIFF_DEACTIVATE')
+  @ApiOperation({ summary: 'Deactivate an active tariff' })
   @ApiParam({ name: 'id', type: Number })
   deactivate(@Param('id', ParseIntPipe) id: number, @CurrentUser() user?: AuthenticatedUser) {
     return this.tariffs.deactivate(id, user?.sub);
   }
 
   @Patch(':id/reactivate')
-  @Roles(ROLES.SUPER_ADMIN, ROLES.ADMIN)
+  @Permission('TARIFF_REACTIVATE')
   @ApiOperation({ summary: 'Reactivate an inactive tariff back to active' })
   @ApiParam({ name: 'id', type: Number })
   reactivate(@Param('id', ParseIntPipe) id: number, @CurrentUser() user?: AuthenticatedUser) {
@@ -132,7 +143,7 @@ export class TariffController {
   }
 
   @Patch(':id/deprecate')
-  @Roles(ROLES.SUPER_ADMIN)
+  @Permission('TARIFF_DEPRECATE')
   @ApiOperation({ summary: 'Manually deprecate an active tariff (Super Admin only)' })
   @ApiParam({ name: 'id', type: Number })
   deprecate(@Param('id', ParseIntPipe) id: number, @CurrentUser() user?: AuthenticatedUser) {
@@ -140,7 +151,7 @@ export class TariffController {
   }
 
   @Post(':id/new-version')
-  @Roles(ROLES.SUPER_ADMIN, ROLES.ADMIN)
+  @Permission('TARIFF_NEW_VERSION')
   @ApiOperation({ summary: 'Clone an active tariff into a new editable draft version' })
   @ApiParam({ name: 'id', type: Number })
   newVersion(@Param('id', ParseIntPipe) id: number, @CurrentUser() user?: AuthenticatedUser) {

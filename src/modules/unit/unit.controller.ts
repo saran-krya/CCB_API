@@ -18,8 +18,7 @@ import {
 } from '@nestjs/swagger';
 import { AuthenticatedUser } from '../../auth/interfaces/authenticated-user.interface';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
-import { Roles } from '../../common/decorators/roles.decorator';
-import { ROLES } from '../../common/constants/global';
+import { Permission } from '../../common/decorators/permission.decorator';
 import {
   CreateUnitDto,
   UnitQueryDto,
@@ -29,14 +28,17 @@ import {
 import { UnitDetailDto, UnitListDto } from './dto/unit-response.dto';
 import { UnitService } from './unit.service';
 
+// Route-level @Permission() — gates business routes by Screen Action
+// (UNIT screen) instead of hardcoded roles, so access is controlled
+// entirely through Role Permissions per role, not role names.
 @ApiBearerAuth()
 @ApiTags('Units')
-@Roles(ROLES.ADMIN, ROLES.OPERATIONS)
 @Controller({ path: 'units', version: '1' })
 export class UnitController {
   constructor(private readonly units: UnitService) {}
 
   @Post()
+  @Permission('CREATE_UNIT')
   @ApiOperation({ summary: 'Create a unit' })
   create(
     @Body() dto: CreateUnitDto,
@@ -46,6 +48,7 @@ export class UnitController {
   }
 
   @Get()
+  @Permission('VIEW_UNIT')
   @ApiOperation({ summary: 'List all units with pagination and filters' })
   @ApiOkResponse({ type: UnitListDto, isArray: true, description: 'Paginated list of units' })
   findAll(@Query() query: UnitQueryDto) {
@@ -53,6 +56,7 @@ export class UnitController {
   }
 
   @Get(':id')
+  @Permission('VIEW_UNIT')
   @ApiOperation({ summary: 'Get unit detail' })
   @ApiOkResponse({ type: UnitDetailDto })
   @ApiParam({ name: 'id', type: Number })
@@ -61,6 +65,7 @@ export class UnitController {
   }
 
   @Patch(':id')
+  @Permission('EDIT_UNIT')
   @ApiOperation({ summary: 'Update unit' })
   @ApiParam({ name: 'id', type: Number })
   update(
@@ -72,6 +77,7 @@ export class UnitController {
   }
 
   @Patch(':id/occupancy')
+  @Permission('UNIT_OCCUPANCY')
   @ApiOperation({ summary: 'Update unit occupancy status' })
   @ApiParam({ name: 'id', type: Number })
   updateOccupancy(
@@ -83,6 +89,7 @@ export class UnitController {
   }
 
   @Delete(':id')
+  @Permission('DELETE_UNIT')
   @ApiOperation({ summary: 'Soft-delete a unit' })
   @ApiParam({ name: 'id', type: Number })
   remove(

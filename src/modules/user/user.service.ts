@@ -321,20 +321,14 @@ export class UserService {
   async getProfile(id: number) {
     const user = await this.findOne(id);
 
-    let permissions;
-
-    if (
-      user.role.roleName === "SUPER_ADMIN" ||
-      user.role.roleName === "ADMIN"
-    ) {
-      permissions =
-        await this.rolePermissionService.getAllMenus();
-    } else {
-      permissions =
-        await this.rolePermissionService.getUserPermissions(
-          user.role.id,
-        );
-    }
+    // Every role, including SUPER_ADMIN/ADMIN, gets its permission tree from
+    // real granted RolePermission rows — no role-name bypass. SUPER_ADMIN/
+    // ADMIN are seeded with grants for every action except the approve/
+    // reject exclusions (BootstrapService/RolePermissionsService's
+    // ensureAdminGrants), so their day-to-day access is unchanged; it now
+    // comes from the same rows the backend PermissionGuard checks, instead
+    // of a hardcoded "force everything true" path.
+    const permissions = await this.rolePermissionService.getUserPermissions(user.role.id);
 
     return {
       id: user.id,

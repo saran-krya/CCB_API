@@ -2,38 +2,38 @@ import { Body, Controller, Get, Param, ParseIntPipe, Patch, Query } from '@nestj
 import { ApiBearerAuth, ApiOperation, ApiParam, ApiTags } from '@nestjs/swagger';
 import { AuthenticatedUser } from '../../auth/interfaces/authenticated-user.interface';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
-import { Roles } from '../../common/decorators/roles.decorator';
-import { ROLES } from '../../common/constants/global';
+import { Permission } from '../../common/decorators/permission.decorator';
 import { AttributeService } from './attribute.service';
 import { AttributeQueryDto, UpdateAttributeDto } from './dto/attribute.dto';
 
-// SUPER_ADMIN + ADMIN (not SUPER_ADMIN-only): UserService.getProfile() grants
-// ADMIN full menu access via getAllMenus(), so ADMIN users see this screen in
-// their nav with enabled action buttons — locking the API to SUPER_ADMIN-only
-// would 403 every one of those calls.
+// Route-level @Permission() — gates business routes by Screen Action
+// (ATTRIBUTES screen) instead of hardcoded roles, so access is controlled
+// entirely through Role Permissions per role, not role names.
 //
 // Attributes are developer-defined and seeded — there is no create/delete
-// endpoint. Update is also SUPER_ADMIN + ADMIN at the controller level, but
-// AttributeService enforces a finer-grained rule underneath: only SUPER_ADMIN
-// may write scope=system (General Attributes) rows; ADMIN is allowed for
-// scope=module (Module Attributes) rows. That distinction depends on the
-// attribute's own scope, not the route, so it can't be expressed with a
-// second @Roles() decorator here — it's a single inline check in the service,
-// not a parallel authorization mechanism.
+// endpoint (CREATE_ATTRIBUTE/DELETE_ATTRIBUTE exist in the seed for a future
+// route). Update is gated on EDIT_ATTRIBUTE, but AttributeService enforces a
+// finer-grained rule underneath: only SUPER_ADMIN may write scope=system
+// (General Attributes) rows; ADMIN is allowed for scope=module (Module
+// Attributes) rows. That distinction depends on the attribute's own scope,
+// not the route, so it can't be expressed with @Permission() here — it's a
+// single inline check in the service, not a parallel authorization
+// mechanism, and is untouched by this migration.
 @ApiBearerAuth()
 @ApiTags('Attributes')
-@Roles(ROLES.SUPER_ADMIN, ROLES.ADMIN)
 @Controller({ path: 'attributes', version: '1' })
 export class AttributeController {
   constructor(private readonly attributes: AttributeService) {}
 
   @Get()
+  @Permission('VIEW_ATTRIBUTE')
   @ApiOperation({ summary: 'List attributes (system: paginated table; module: full group set)' })
   findAll(@Query() query: AttributeQueryDto) {
     return this.attributes.findAll(query);
   }
 
   @Get(':id')
+  @Permission('VIEW_ATTRIBUTE')
   @ApiOperation({ summary: 'Get attribute by ID' })
   @ApiParam({ name: 'id', type: Number })
   findOne(@Param('id', ParseIntPipe) id: number) {
@@ -41,6 +41,7 @@ export class AttributeController {
   }
 
   @Patch(':id')
+  @Permission('EDIT_ATTRIBUTE')
   @ApiOperation({ summary: "Update a predefined attribute's value" })
   @ApiParam({ name: 'id', type: Number })
   update(

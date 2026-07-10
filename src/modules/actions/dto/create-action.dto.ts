@@ -43,6 +43,23 @@ export class CreateActionDto {
   @IsBoolean()
   isActive?: boolean;
 
+  @ApiProperty({
+    required: false,
+    example: 12,
+    description: 'Parent Action id — nests this action as a child in the Role Permission tree. The parent must belong to the same screen and cannot itself already have a parent (one level of nesting only).',
+  })
+  @IsOptional()
+  @IsInt()
+  parentActionId?: number;
+
+  @ApiProperty({
+    required: false,
+    default: 0,
+  })
+  @IsOptional()
+  @IsInt()
+  displayOrder?: number;
+
 }
 
 export class UpdateActionDto extends PartialType(

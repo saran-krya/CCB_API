@@ -18,8 +18,7 @@ import {
 } from '@nestjs/swagger';
 import { AuthenticatedUser } from '../../auth/interfaces/authenticated-user.interface';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
-import { Roles } from '../../common/decorators/roles.decorator';
-import { ROLES } from '../../common/constants/global';
+import { Permission } from '../../common/decorators/permission.decorator';
 import { CommunityService } from './community.service';
 import {
   CommunityQueryDto,
@@ -29,14 +28,17 @@ import {
 } from './dto/create-community.dto';
 import { CommunityDetailDto, CommunityListDto } from './dto/community-response.dto';
 
+// Route-level @Permission() — gates business routes by Screen Action
+// (COMMUNITY screen) instead of hardcoded roles, so access is controlled
+// entirely through Role Permissions per role, not role names.
 @ApiBearerAuth()
 @ApiTags('Communities')
-@Roles(ROLES.ADMIN, ROLES.OPERATIONS)
 @Controller({ path: 'communities', version: '1' })
 export class CommunityController {
   constructor(private readonly communities: CommunityService) {}
 
   @Post()
+  @Permission('CREATE_COMMUNITY')
   @ApiOperation({ summary: 'Create a community' })
   create(
     @Body() dto: CreateCommunityDto,
@@ -46,12 +48,14 @@ export class CommunityController {
   }
 
   @Get('stats')
+  @Permission('VIEW_COMMUNITY')
   @ApiOperation({ summary: 'Get global community stats' })
   getStats() {
     return this.communities.getStats();
   }
 
   @Get()
+  @Permission('VIEW_COMMUNITY')
   @ApiOperation({ summary: 'List all communities with pagination and filters' })
   @ApiOkResponse({ type: CommunityListDto, isArray: true, description: 'Paginated list of communities' })
   findAll(@Query() query: CommunityQueryDto) {
@@ -59,6 +63,7 @@ export class CommunityController {
   }
 
   @Get(':id')
+  @Permission('VIEW_COMMUNITY')
   @ApiOperation({ summary: 'Get community detail with stats and properties' })
   @ApiOkResponse({ type: CommunityDetailDto })
   @ApiParam({ name: 'id', type: Number })
@@ -67,6 +72,7 @@ export class CommunityController {
   }
 
   @Patch(':id')
+  @Permission('EDIT_COMMUNITY')
   @ApiOperation({ summary: 'Update community' })
   @ApiParam({ name: 'id', type: Number })
   update(
@@ -78,6 +84,7 @@ export class CommunityController {
   }
 
   @Patch(':id/status')
+  @Permission('COMMUNITY_STATUS')
   @ApiOperation({ summary: 'Update community status' })
   @ApiParam({ name: 'id', type: Number })
   updateStatus(
@@ -89,6 +96,7 @@ export class CommunityController {
   }
 
   @Delete(':id')
+  @Permission('DELETE_COMMUNITY')
   @ApiOperation({ summary: 'Soft-delete a community' })
   @ApiParam({ name: 'id', type: Number })
   remove(

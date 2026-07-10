@@ -5,8 +5,10 @@ import { JwtModule } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { RolesGuard } from '../common/guards/roles.guard';
+import { PermissionGuard } from '../common/guards/permission.guard';
 import { UserModule } from '../modules/user/user.module';
 import { AttributeModule } from '../modules/attribute/attribute.module';
+import { RolePermissionsModule } from '../modules/role-permissions/role-permissions.module';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { RefreshToken } from './entities/refresh-token.entity';
@@ -30,6 +32,7 @@ import { JwtStrategy } from './strategies/jwt.strategy';
     }),
     UserModule,
     AttributeModule,
+    RolePermissionsModule,
   ],
   controllers: [AuthController],
   providers: [
@@ -37,6 +40,11 @@ import { JwtStrategy } from './strategies/jwt.strategy';
     JwtStrategy,
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: RolesGuard },
+    // Runs after JwtAuthGuard/RolesGuard (APP_GUARD providers apply in
+    // array order) — request.user is guaranteed populated by this point.
+    // Gates business routes carrying @Permission(...); routes with no
+    // such metadata pass through untouched, same as RolesGuard today.
+    { provide: APP_GUARD, useClass: PermissionGuard },
   ],
   exports: [AuthService],
 })

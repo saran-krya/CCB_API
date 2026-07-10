@@ -7,10 +7,15 @@ import { LovModule } from '../lov/lov.module';
 import { BillingCycleController } from './billing-cycle.controller';
 import { BillingCycleSchedulerService } from './billing-cycle-scheduler.service';
 import { BillingCycleService } from './billing-cycle.service';
-import { BillingCycle } from './entities/billing-cycle.entity';
+import { BillingCycleMaster } from './entities/billing-cycle-master.entity';
+import { BillingCycleVersion } from './entities/billing-cycle-version.entity';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([BillingCycle, Community, Property]), LovModule, AttributeModule],
+  imports: [
+    TypeOrmModule.forFeature([BillingCycleMaster, BillingCycleVersion, Community, Property]),
+    LovModule,
+    AttributeModule,
+  ],
   controllers: [BillingCycleController],
   providers: [BillingCycleService, BillingCycleSchedulerService],
   exports: [BillingCycleService],
