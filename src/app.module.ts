@@ -22,6 +22,7 @@ import { LovModule } from './modules/lov/lov.module';
 import { AttributeModule } from './modules/attribute/attribute.module';
 import { BusinessCodeMigrationModule } from './common/migrations/business-code-migration.module';
 import { TariffModule } from './modules/tariff/tariff.module';
+import { DashboardModule } from './modules/dashboard/dashboard.module';
 
 @Module({
   imports: [
@@ -46,6 +47,7 @@ import { TariffModule } from './modules/tariff/tariff.module';
     LovModule,
     AttributeModule,
     BusinessCodeMigrationModule,
+    DashboardModule,
     BootstrapModule,
   ],
 })

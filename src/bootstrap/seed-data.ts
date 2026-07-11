@@ -514,59 +514,80 @@ export const ACTIONS: SeedAction[] = [
   },
 
   // ── Billing Cycle Configuration ───────────────────────────────────────────
-  {
-    screenCode: 'BILLING_CYCLE',
-    name: 'View Billing Cycle',
-    code: 'VIEW_BILLING_CYCLE',
-    description: 'View billing cycle list and detail pages',
-  },
+  // Regrouped under the screen's 3 real top-level actions (Create/Edit/View)
+  // so the Role Permission tree matches the same Create/Edit/View grouping
+  // used for Tariff Configuration — each expands to reveal its related
+  // actions as independently grantable children, one level deep. No action
+  // was invented or duplicated; every code below already existed as a flat
+  // action — only parentActionCode/displayOrder are new. Export has no
+  // natural parent (it isn't a lifecycle or review action) so it stays flat.
   {
     screenCode: 'BILLING_CYCLE',
     name: 'Create Billing Cycle',
     code: 'CREATE_BILLING_CYCLE',
     description: 'Access the create-billing-cycle form',
-  },
-  {
-    screenCode: 'BILLING_CYCLE',
-    name: 'Edit Billing Cycle',
-    code: 'EDIT_BILLING_CYCLE',
-    description: 'Edit an editable billing cycle version, including the active/inactive toggle',
-  },
-  {
-    screenCode: 'BILLING_CYCLE',
-    name: 'Export Billing Cycles',
-    code: 'EXPORT_BILLING_CYCLE',
-    description: 'Export the billing cycle list',
-  },
-  {
-    screenCode: 'BILLING_CYCLE',
-    name: 'Create New Billing Cycle Version',
-    code: 'BILLING_CYCLE_NEW_VERSION',
-    description: 'Clone the current governing billing cycle into a new pending version',
-  },
-  {
-    screenCode: 'BILLING_CYCLE',
-    name: 'Approve Billing Cycle',
-    code: 'BILLING_CYCLE_APPROVE',
-    description: 'Approve a pending billing cycle version — Finance only, service-enforced regardless of this grant',
-  },
-  {
-    screenCode: 'BILLING_CYCLE',
-    name: 'Reject Billing Cycle',
-    code: 'BILLING_CYCLE_REJECT',
-    description: 'Reject a pending billing cycle version — Finance only, service-enforced regardless of this grant',
+    displayOrder: 1,
   },
   {
     screenCode: 'BILLING_CYCLE',
     name: 'Resubmit Billing Cycle',
     code: 'BILLING_CYCLE_RESUBMIT',
     description: 'Resubmit a rejected billing cycle version for Finance approval',
+    parentActionCode: 'CREATE_BILLING_CYCLE',
+    displayOrder: 1,
+  },
+  {
+    screenCode: 'BILLING_CYCLE',
+    name: 'Edit Billing Cycle',
+    code: 'EDIT_BILLING_CYCLE',
+    description: 'Edit an editable billing cycle version, including the active/inactive toggle',
+    displayOrder: 2,
+  },
+  {
+    screenCode: 'BILLING_CYCLE',
+    name: 'Create New Billing Cycle Version',
+    code: 'BILLING_CYCLE_NEW_VERSION',
+    description: 'Clone the current governing billing cycle into a new pending version',
+    parentActionCode: 'EDIT_BILLING_CYCLE',
+    displayOrder: 1,
   },
   {
     screenCode: 'BILLING_CYCLE',
     name: 'Deprecate Billing Cycle',
     code: 'BILLING_CYCLE_DEPRECATE',
     description: 'Permanently deprecate a billing cycle version, immediately or on a future date',
+    parentActionCode: 'EDIT_BILLING_CYCLE',
+    displayOrder: 2,
+  },
+  {
+    screenCode: 'BILLING_CYCLE',
+    name: 'View Billing Cycle',
+    code: 'VIEW_BILLING_CYCLE',
+    description: 'View billing cycle list and detail pages',
+    displayOrder: 3,
+  },
+  {
+    screenCode: 'BILLING_CYCLE',
+    name: 'Approve Billing Cycle',
+    code: 'BILLING_CYCLE_APPROVE',
+    description: 'Approve a pending billing cycle version — Finance only, service-enforced regardless of this grant',
+    parentActionCode: 'VIEW_BILLING_CYCLE',
+    displayOrder: 1,
+  },
+  {
+    screenCode: 'BILLING_CYCLE',
+    name: 'Reject Billing Cycle',
+    code: 'BILLING_CYCLE_REJECT',
+    description: 'Reject a pending billing cycle version — Finance only, service-enforced regardless of this grant',
+    parentActionCode: 'VIEW_BILLING_CYCLE',
+    displayOrder: 2,
+  },
+  {
+    screenCode: 'BILLING_CYCLE',
+    name: 'Export Billing Cycles',
+    code: 'EXPORT_BILLING_CYCLE',
+    description: 'Export the billing cycle list',
+    displayOrder: 4,
   },
 
   // ── Community ─────────────────────────────────────────────────────────────

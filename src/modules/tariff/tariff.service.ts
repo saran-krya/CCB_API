@@ -348,6 +348,7 @@ export class TariffService {
     }));
   }
 
+
   // The DTO only checks propertyType is a non-empty string (it's dynamic, not
   // a fixed enum) — this confirms it's actually an active code in the
   // Lookup Field Master's TARIFF_UNIT_TYPE category, the same source the
