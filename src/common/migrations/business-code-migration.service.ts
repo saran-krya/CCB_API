@@ -8,6 +8,8 @@ const BACKFILL_TABLES = [
   { table: 'units',          prefix: 'UNT' },
   { table: 'billing_cycle_masters', prefix: 'ILCY' },
   { table: 'tariff_masters', prefix: 'TAR' },
+  { table: 'master_meters', prefix: 'MMT' },
+  { table: 'sub_meters', prefix: 'SMT' },
 ] as const;
 
 @Injectable()

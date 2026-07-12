@@ -6,6 +6,8 @@ export const BUSINESS_CODE_PREFIXES = {
   BILLING_RUN: 'BLR',
   INVOICE: 'INV',
   TARIFF: 'TAR',
+  MASTER_METER: 'MMT',
+  SUB_METER: 'SMT',
 } as const;
 
 export function generateBusinessCode(prefix: string, id: number): string {

@@ -328,6 +328,15 @@ export const SCREENS: SeedScreen[] = [
     code: 'UNIT',
     displayOrder: 3,
   },
+
+  // ── Meter Management (Scenario 1 — SubModule already lives at /meters) ───
+  {
+    subModuleCode: 'METER_LIST',
+    name: 'Meter Information',
+    code: 'METER_LIST',
+    url: '/meters',
+    displayOrder: 1,
+  },
 ]
 
 // ---------------------------------------------------------------------------
@@ -716,6 +725,46 @@ export const ACTIONS: SeedAction[] = [
     name: 'Assign LOV Category Module',
     code: 'LOV_MODULE_ASSIGN',
     description: 'Reassign which module a lookup category belongs to',
+  },
+
+  // ── Meter Management ──────────────────────────────────────────────────────
+  // Same Create/Edit/View grouping convention as Tariff/Billing Cycle.
+  {
+    screenCode: 'METER_LIST',
+    name: 'View Meter Information',
+    code: 'METER_VIEW',
+    description: 'View the meter dashboard, community/property/unit drill-down, master and sub meter lists',
+    displayOrder: 1,
+  },
+  {
+    screenCode: 'METER_LIST',
+    name: 'Export Meters',
+    code: 'METER_EXPORT',
+    description: 'Export master or sub meters to Excel',
+    parentActionCode: 'METER_VIEW',
+    displayOrder: 1,
+  },
+  {
+    screenCode: 'METER_LIST',
+    name: 'Register Meter',
+    code: 'METER_CREATE',
+    description: 'Register a new master or sub meter, individually or via bulk import',
+    displayOrder: 2,
+  },
+  {
+    screenCode: 'METER_LIST',
+    name: 'Import Meters',
+    code: 'METER_IMPORT',
+    description: 'Bulk import master or sub meters from an Excel file',
+    parentActionCode: 'METER_CREATE',
+    displayOrder: 1,
+  },
+  {
+    screenCode: 'METER_LIST',
+    name: 'Edit Meter',
+    code: 'METER_EDIT',
+    description: 'Edit a master or sub meter, including status and unit mapping',
+    displayOrder: 3,
   },
 ]
 

@@ -85,6 +85,13 @@ function buildAttributeSeed(sessionTimeoutMinutes: number): AttributeSeedRow[] {
     groupDescription: 'Defaults and guardrails applied to the tariff creation, approval, and versioning workflow',
   };
 
+  const meterImportGroup = {
+    module: 'meter',
+    groupKey: 'meter_bulk_import',
+    groupLabel: 'Bulk Import',
+    groupDescription: 'Approval thresholds and column configuration for Master Meter and Sub Meter bulk import/export',
+  };
+
   return [
     // ── General Attributes ──────────────────────────────────────────────────
     {
@@ -213,13 +220,60 @@ function buildAttributeSeed(sessionTimeoutMinutes: number): AttributeSeedRow[] {
       description: 'Comma-separated field names that cannot be edited on an active tariff — changing any of them requires creating a new version instead',
       displayOrder: 4,
     },
+
+    // ── Module Attributes: Meter Management → Bulk Import ──────────────────
+    // Governs Master/Sub Meter Excel import + export. Column lists are the
+    // single source of truth for generated templates, upload validation, and
+    // export headers — add/remove/reorder a column here, not in code. Stored
+    // as a plain TEXT attribute (a JSON-stringified array) — same convention
+    // already used by TARIFF_ACTIVE_LOCKED_FIELDS for a structured value,
+    // no new Attribute value type needed.
+    {
+      ...meterImportGroup, scope: AttributeScope.MODULE, key: 'MASTER_METER_IMPORT_COLUMNS',
+      label: 'Master Meter Import Column Configuration', valueType: AttributeValueType.TEXT,
+      description: 'Configure the column headers used in the Master Meter import/export template. Locked columns are mandatory and cannot be disabled.',
+      value: JSON.stringify([
+        { internalField: 'masterMeterId', displayLabel: 'Master Meter ID', mandatory: true, locked: true, enabled: true },
+        { internalField: 'serialNumber', displayLabel: 'Serial Number', mandatory: true, locked: true, enabled: true },
+        { internalField: 'dtuId', displayLabel: 'DTU ID', mandatory: true, locked: true, enabled: true },
+        { internalField: 'community', displayLabel: 'Community', mandatory: true, locked: true, enabled: true },
+        { internalField: 'property', displayLabel: 'Property', mandatory: true, locked: true, enabled: true },
+        { internalField: 'mBusAddress', displayLabel: 'M-Bus Address', mandatory: true, locked: true, enabled: true },
+        { internalField: 'status', displayLabel: 'Status', mandatory: true, locked: true, enabled: true },
+        { internalField: 'meterMake', displayLabel: 'Meter Make', mandatory: false, locked: false, enabled: true },
+        { internalField: 'meterModel', displayLabel: 'Meter Model', mandatory: false, locked: false, enabled: true },
+        { internalField: 'installationDate', displayLabel: 'Installation Date', mandatory: false, locked: false, enabled: true },
+      ]),
+      displayOrder: 1,
+    },
+    {
+      ...meterImportGroup, scope: AttributeScope.MODULE, key: 'SUB_METER_IMPORT_COLUMNS',
+      label: 'Sub-Meter Import Column Configuration', valueType: AttributeValueType.TEXT,
+      description: 'Configure the column headers used in the Sub-Meter import/export template. Locked columns are mandatory and cannot be disabled.',
+      value: JSON.stringify([
+        { internalField: 'subMeterId', displayLabel: 'Sub-Meter ID', mandatory: true, locked: true, enabled: true },
+        { internalField: 'serialNumber', displayLabel: 'Serial Number', mandatory: true, locked: true, enabled: true },
+        { internalField: 'masterMeterId', displayLabel: 'Master Meter ID', mandatory: true, locked: true, enabled: true },
+        { internalField: 'community', displayLabel: 'Community', mandatory: true, locked: true, enabled: true },
+        { internalField: 'property', displayLabel: 'Property', mandatory: true, locked: true, enabled: true },
+        { internalField: 'unitNumber', displayLabel: 'Unit Number', mandatory: true, locked: true, enabled: true },
+        { internalField: 'mBusAddress', displayLabel: 'M-Bus Address', mandatory: true, locked: true, enabled: true },
+        { internalField: 'status', displayLabel: 'Status', mandatory: true, locked: true, enabled: true },
+        { internalField: 'floor', displayLabel: 'Floor', mandatory: false, locked: false, enabled: true },
+        { internalField: 'meterMake', displayLabel: 'Meter Make', mandatory: false, locked: false, enabled: true },
+        { internalField: 'meterModel', displayLabel: 'Meter Model', mandatory: false, locked: false, enabled: true },
+        { internalField: 'installationDate', displayLabel: 'Installation Date', mandatory: false, locked: false, enabled: true },
+        { internalField: 'customerAccountNumber', displayLabel: 'Customer Account Number', mandatory: false, locked: false, enabled: true },
+      ]),
+      displayOrder: 2,
+    },
   ];
 }
 
 // Keys that used to be seeded but have since been retired — pruned from
 // already-initialized databases on the next bootstrap so a removed attribute
 // doesn't linger just because seedValues() only ever inserts, never deletes.
-const RETIRED_ATTRIBUTE_KEYS = ['DEFAULT_CYCLE_STATUS_ACTIVE'];
+const RETIRED_ATTRIBUTE_KEYS = ['DEFAULT_CYCLE_STATUS_ACTIVE', 'METER_BULK_IMPORT_APPROVAL_THRESHOLD'];
 
 @Injectable()
 export class AttributeService {
@@ -264,6 +318,23 @@ export class AttributeService {
   async getValueByKey(key: string): Promise<string | null> {
     const attribute = await this.attributes.findOne({ where: { key } });
     return attribute?.value ?? null;
+  }
+
+  // Parses a TEXT attribute's value as a JSON array (e.g. an import/export
+  // column configuration) — the array is JSON.stringify'd into the same
+  // plain `value` column every attribute already uses, no new Attribute
+  // value type involved. Returns an empty array if the attribute is missing
+  // or fails to parse, so callers can treat "no config" the same as "no
+  // columns" rather than throwing.
+  async getJsonValueByKey<T = unknown>(key: string): Promise<T[]> {
+    const raw = await this.getValueByKey(key);
+    if (!raw) return [];
+    try {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? (parsed as T[]) : [];
+    } catch {
+      return [];
+    }
   }
 
   // Centralizes the boolean-attribute convention ('true'/'false' string
@@ -363,6 +434,8 @@ export class AttributeService {
       'BILLING_CYCLE_DEFAULT_BILL_GENERATION_DAYS',
       'BILLING_CYCLE_DEFAULT_BILL_ISSUE_DAYS',
       'BILLING_CYCLE_DEFAULT_BILL_DUE_DAYS',
+      'MASTER_METER_IMPORT_COLUMNS',
+      'SUB_METER_IMPORT_COLUMNS',
     ];
 
     await this.attributes.delete({ key: In(RETIRED_ATTRIBUTE_KEYS) });
