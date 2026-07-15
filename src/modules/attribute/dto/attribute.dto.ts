@@ -11,6 +11,7 @@ export const ATTRIBUTE_MODULE_KEYS = [
   'user-management',
   'role-management',
   'billing-cycle',
+  'tariff',
 ] as const;
 
 // Attribute.value is stored as text regardless of valueType. Attributes are

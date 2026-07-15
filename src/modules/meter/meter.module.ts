@@ -4,6 +4,7 @@ import { AttributeModule } from '../attribute/attribute.module';
 import { Community } from '../community/entities/community.entity';
 import { Property } from '../property/entities/property.entity';
 import { Unit } from '../unit/entities/unit.entity';
+import { User } from '../user/entities/user.entity';
 import { MasterMeter } from './entities/master-meter.entity';
 import { SubMeter } from './entities/sub-meter.entity';
 import { MeterController } from './meter.controller';
@@ -11,7 +12,7 @@ import { MeterService } from './meter.service';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([MasterMeter, SubMeter, Community, Property, Unit]),
+    TypeOrmModule.forFeature([MasterMeter, SubMeter, Community, Property, Unit, User]),
     AttributeModule,
   ],
   controllers: [MeterController],

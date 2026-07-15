@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
 import * as ExcelJS from 'exceljs';
 import { AttributeService } from '../attribute/attribute.service';
 import { AuditService } from '../../audit/audit.service';
@@ -9,6 +9,7 @@ import { BUSINESS_CODE_PREFIXES, generateBusinessCode } from '../../common/utils
 import { Community } from '../community/entities/community.entity';
 import { Property } from '../property/entities/property.entity';
 import { Unit } from '../unit/entities/unit.entity';
+import { User } from '../user/entities/user.entity';
 import {
   CreateMasterMeterDto,
   CreateSubMeterDto,
@@ -21,6 +22,7 @@ import { MasterMeter } from './entities/master-meter.entity';
 import { MeterImportType } from './entities/meter-import-type.enum';
 import { MeterStatus } from './entities/meter-status.enum';
 import { SubMeter } from './entities/sub-meter.entity';
+import { ImportFailedRecord, ImportFailureReason, ImportSummary } from './entities/import-result.types';
 
 // Import/export column mapping — sourced entirely from the Attributes module
 // (MASTER_METER_IMPORT_COLUMNS / SUB_METER_IMPORT_COLUMNS), never hardcoded
@@ -37,7 +39,84 @@ interface ColumnConfig {
 const MASTER_METER_COLUMNS_KEY = 'MASTER_METER_IMPORT_COLUMNS';
 const SUB_METER_COLUMNS_KEY = 'SUB_METER_IMPORT_COLUMNS';
 
+// Matches the `business_code varchar(20)` column on both master_meters and
+// sub_meters — enforced pre-commit so a too-long uploaded ID fails as a
+// clean per-row validation message instead of a raw DB error aborting the
+// whole batch.
+const BUSINESS_CODE_MAX_LENGTH = 20;
+const MAX_IMPORT_FILE_SIZE_BYTES = 10 * 1024 * 1024; // 10 MB
+const FREE_TEXT_MAX_LENGTH = 100; // matches meterMake/meterModel column length
+
+// The MIME type a browser/OS actually attaches to a .xlsx file varies by
+// platform — the official OOXML type plus two legacy/generic types seen in
+// practice (some Windows configurations and older browsers send
+// application/octet-stream for any unrecognized-by-the-OS extension).
+// Checked only when the client sent a mimetype at all (some HTTP clients
+// omit it) — see the runImport call site for why this can never be the
+// sole gate against a malicious upload.
+const ACCEPTED_IMPORT_MIME_TYPES = new Set([
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/octet-stream',
+  'application/zip',
+]);
+
 type ImportRow = Record<string, any>;
+
+// Resolves an internalField key back to its configured Excel Column Header
+// for a duplicate-value error message — falls back to the raw field name if
+// the column somehow isn't in the current config (defensive only).
+function columnLabel(columns: ColumnConfig[], internalField: string): string {
+  return columns.find((c) => c.internalField === internalField)?.displayLabel ?? internalField;
+}
+
+// Excel/Sheets treats a cell whose text begins with =, +, -, or @ as a
+// formula — the Error Report echoes back the original cell values from the
+// user's own uploaded file verbatim (so they can be fixed and re-uploaded),
+// which means an untrusted value from that file would otherwise be written
+// into a brand-new .xlsx as a LIVE formula, executing if anyone opens the
+// generated report in Excel (the well-known CSV/Excel formula-injection
+// class). Prefixing with a leading apostrophe is the standard mitigation —
+// Excel displays the value as literal text instead of evaluating it.
+function sanitizeForExcel(value: string | null): string | null {
+  if (value === null) return null;
+  return /^[=+\-@]/.test(value) ? `'${value}` : value;
+}
+
+// Excel stores dates as either a native Date (when the cell is date-
+// formatted) or a serial day-count number (when it isn't) — both are valid
+// user input for an "Installation Date" column, so both are accepted and
+// normalized to an ISO yyyy-mm-dd string the `date`-type DB column accepts.
+// Anything else (a stray string like "next Monday") is rejected as invalid
+// rather than passed through and left to fail opaquely at the DB layer.
+const EXCEL_EPOCH_MS = Date.UTC(1899, 11, 30);
+function parseExcelDateCell(cellValue: unknown): { ok: true; value: string | null } | { ok: false } {
+  if (cellValue === null || cellValue === undefined || cellValue === '') return { ok: true, value: null };
+  if (cellValue instanceof Date) {
+    if (Number.isNaN(cellValue.getTime())) return { ok: false };
+    return { ok: true, value: cellValue.toISOString().slice(0, 10) };
+  }
+  if (typeof cellValue === 'number') {
+    const ms = EXCEL_EPOCH_MS + cellValue * 86400000;
+    const date = new Date(ms);
+    if (Number.isNaN(date.getTime())) return { ok: false };
+    return { ok: true, value: date.toISOString().slice(0, 10) };
+  }
+  if (typeof cellValue === 'string') {
+    const trimmed = cellValue.trim();
+    if (!trimmed) return { ok: true, value: null };
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return { ok: false };
+    const date = new Date(`${trimmed}T00:00:00Z`);
+    if (Number.isNaN(date.getTime())) return { ok: false };
+    return { ok: true, value: trimmed };
+  }
+  return { ok: false };
+}
+
+function generateBatchId(): string {
+  const stamp = new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14);
+  const random = Math.random().toString(36).slice(2, 6).toUpperCase();
+  return `IMP-${stamp}-${random}`;
+}
 
 @Injectable()
 export class MeterService {
@@ -47,8 +126,10 @@ export class MeterService {
     @InjectRepository(Community) private readonly communities: Repository<Community>,
     @InjectRepository(Property) private readonly properties: Repository<Property>,
     @InjectRepository(Unit) private readonly units: Repository<Unit>,
+    @InjectRepository(User) private readonly users: Repository<User>,
     private readonly attributeService: AttributeService,
     private readonly auditService: AuditService,
+    private readonly dataSource: DataSource,
   ) {}
 
   // ─── Stats / dashboard (Meter Information rollup) ──────────────────────────
@@ -426,11 +507,19 @@ export class MeterService {
     return Buffer.from(buffer);
   }
 
-  private async buildMasterMeterExportRows(query: MeterQueryDto) {
+  // `ids` is used only by buildImportSuccessReport (the "Download Successful
+  // Records" report after an import) — narrows to exactly the rows just
+  // created instead of the caller's list filters, reusing this same
+  // row-mapping shape rather than a second copy of it. `query` is typed to
+  // only the 3 filter fields these builders actually read (not the full
+  // MeterQueryDto, which also requires pagination fields) so a caller with
+  // no list filters — like buildImportSuccessReport — can pass `{}`.
+  private async buildMasterMeterExportRows(query: Pick<MeterQueryDto, 'propertyId' | 'communityId' | 'status'>, ids?: number[]) {
     const qb = this.masterMeters
       .createQueryBuilder('m')
       .leftJoinAndSelect('m.property', 'property')
       .leftJoinAndSelect('property.community', 'community');
+    if (ids) qb.andWhere('m.id IN (:...ids)', { ids: ids.length ? ids : [0] });
     if (query.propertyId) qb.andWhere('property.id = :propertyId', { propertyId: query.propertyId });
     if (query.communityId) qb.andWhere('community.id = :communityId', { communityId: query.communityId });
     if (query.status) qb.andWhere('m.status = :status', { status: query.status });
@@ -449,13 +538,14 @@ export class MeterService {
     }));
   }
 
-  private async buildSubMeterExportRows(query: MeterQueryDto) {
+  private async buildSubMeterExportRows(query: Pick<MeterQueryDto, 'propertyId' | 'communityId' | 'status'>, ids?: number[]) {
     const qb = this.subMeters
       .createQueryBuilder('s')
       .leftJoinAndSelect('s.property', 'property')
       .leftJoinAndSelect('property.community', 'community')
       .leftJoinAndSelect('s.unit', 'unit')
       .leftJoinAndSelect('s.masterMeter', 'masterMeter');
+    if (ids) qb.andWhere('s.id IN (:...ids)', { ids: ids.length ? ids : [0] });
     if (query.propertyId) qb.andWhere('property.id = :propertyId', { propertyId: query.propertyId });
     if (query.communityId) qb.andWhere('community.id = :communityId', { communityId: query.communityId });
     if (query.status) qb.andWhere('s.status = :status', { status: query.status });
@@ -479,34 +569,209 @@ export class MeterService {
 
   // ─── Import (upload → parse → validate → commit) ───────────────────────────
 
-  async importMeters(meterType: MeterImportType, fileBuffer: Buffer, fileName: string, actorId?: number) {
+  // Every import attempt gets an audit entry, including ones that never
+  // reach commitRows — a rejected file (wrong type, no valid rows, too
+  // large, etc.) is still something an admin reviewing the audit trail
+  // needs to see happened, not a silent no-op. runImport() (below) does the
+  // actual work and throws on total failure same as before; this wrapper's
+  // only job is to make sure that throw still produces a FAILED audit
+  // record before propagating to the controller.
+  async importMeters(
+    meterType: MeterImportType,
+    fileBuffer: Buffer,
+    fileName: string,
+    mimeType: string | undefined,
+    actorId?: number,
+  ): Promise<ImportSummary> {
+    const batchId = generateBatchId();
+    const startedAt = Date.now();
+    try {
+      return await this.runImport(meterType, fileBuffer, fileName, mimeType, actorId, batchId, startedAt);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Import failed';
+      await this.auditService.record({
+        moduleName: 'Meter',
+        entityId: 0,
+        action: 'IMPORT_FAILED',
+        oldValue: null,
+        newValue: { batchId, fileName, importType: meterType, durationMs: Date.now() - startedAt, error: message },
+        performedBy: actorId,
+      });
+      throw err;
+    }
+  }
+
+  private async runImport(
+    meterType: MeterImportType,
+    fileBuffer: Buffer,
+    fileName: string,
+    mimeType: string | undefined,
+    actorId: number | undefined,
+    batchId: string,
+    startedAt: number,
+  ): Promise<ImportSummary> {
+    if (!fileBuffer || fileBuffer.length === 0) throw new BadRequestException('Uploaded file is empty');
+    if (fileBuffer.length > MAX_IMPORT_FILE_SIZE_BYTES) {
+      throw new BadRequestException(`Uploaded file exceeds the ${MAX_IMPORT_FILE_SIZE_BYTES / (1024 * 1024)}MB import size limit`);
+    }
+    // Both the extension AND the browser-declared MIME type must say
+    // "xlsx" — neither is trustworthy alone (both come straight from the
+    // client and are trivially spoofable), but requiring agreement between
+    // two independently-set fields rejects the common accidental case (a
+    // renamed .csv/.xls) earlier and with a clearer message, before ever
+    // reaching ExcelJS's own structural parse, which is the actual
+    // authoritative check (a file that lies about both but isn't valid
+    // OOXML still fails at workbook.xlsx.load() below).
+    if (!/\.xlsx$/i.test(fileName)) {
+      throw new BadRequestException('Only .xlsx files are accepted for import');
+    }
+    if (mimeType && !ACCEPTED_IMPORT_MIME_TYPES.has(mimeType)) {
+      throw new BadRequestException(`Unsupported file type "${mimeType}" — only .xlsx (Excel) files are accepted`);
+    }
+
     const columns = (await this.getColumns(meterType)).filter((c) => c.enabled);
     if (columns.length === 0) throw new BadRequestException('No import columns are configured for this meter type');
 
     const workbook = new ExcelJS.Workbook();
-    await workbook.xlsx.load(fileBuffer as any);
+    try {
+      await workbook.xlsx.load(fileBuffer as any);
+    } catch {
+      throw new BadRequestException('Uploaded file is not a valid Excel (.xlsx) workbook');
+    }
     const sheet = workbook.worksheets[0];
-    if (!sheet) throw new BadRequestException('Uploaded file has no worksheet');
+    if (!sheet || sheet.rowCount === 0) throw new BadRequestException('Uploaded file has no worksheet');
 
     const headerToField = new Map<string, string>();
     for (const c of columns) headerToField.set(c.displayLabel.trim().toLowerCase(), c.internalField);
 
     const fieldColumnIndex = new Map<string, number>();
+    const unrecognizedHeaders: string[] = [];
     const headerRow = sheet.getRow(1);
     headerRow.eachCell({ includeEmpty: false }, (cell, colNumber) => {
       const raw = cell.value;
       if (typeof raw !== 'string') return;
-      const field = headerToField.get(raw.trim().toLowerCase());
+      const trimmed = raw.trim();
+      if (!trimmed) return;
+      const field = headerToField.get(trimmed.toLowerCase());
       if (field) fieldColumnIndex.set(field, colNumber);
+      else unrecognizedHeaders.push(trimmed);
     });
+
+    // Every header must match a currently enabled column's Excel Column
+    // Header exactly (case-insensitive) — an unrecognized header is rejected
+    // outright rather than silently skipped, so a stray/renamed/extra column
+    // in the uploaded file surfaces immediately instead of quietly losing
+    // data. Columns disabled in the Attribute config are correctly absent
+    // from `columns` (already filtered by `.filter((c) => c.enabled)` above),
+    // so a disabled column's old header is treated the same as any other
+    // unrecognized header — reflecting that it's no longer part of the
+    // template at all.
+    if (unrecognizedHeaders.length > 0) {
+      throw new BadRequestException(
+        `Unrecognized column(s): ${unrecognizedHeaders.join(', ')}. Only columns configured in Attributes > Meter Management are accepted.`,
+      );
+    }
 
     const missingMandatory = columns.filter((c) => c.mandatory && !fieldColumnIndex.has(c.internalField));
     if (missingMandatory.length > 0) {
       throw new BadRequestException(`Missing required column(s): ${missingMandatory.map((c) => c.displayLabel).join(', ')}`);
     }
 
+    // Duplicate detection scope — matches the DB-level UNIQUE constraints
+    // added in MeterUniquenessMigrationService exactly (confirmed with the
+    // business owner):
+    //   - serialNumber: unique per table (Master Meters among themselves,
+    //     Sub Meters among themselves) — NOT shared across the two tables.
+    //   - dtuId: unique across all Master Meters (Sub Meters don't have one).
+    //   - mBusAddress: NOT global — unique per Property for Master Meters
+    //     (each Property is its own M-Bus segment), unique per Master Meter
+    //     for Sub Meters (each Master Meter is its own segment). The same
+    //     address value legitimately repeats across different
+    //     segments/properties, matching real M-Bus protocol conventions.
+    // Checked both within the uploaded file itself and against whatever's
+    // already committed — this is app-layer defense-in-depth; the DB
+    // constraints are what actually close the concurrent-import race (see
+    // toCommitFailure), this is just what gives a clean per-row message
+    // instead of a raw DB error for the common (non-racing) case.
+    const seenInFile = {
+      serialNumber: new Set<string>(),
+      dtuId: new Set<string>(),
+      businessCode: new Set<string>(),
+    };
+    // Master Meter mBusAddress is scoped per-Property; Sub Meter
+    // mBusAddress is scoped per-Master-Meter — the map key is whichever
+    // scope applies to `meterType`, never mixed.
+    const seenMBusAddressByScope = new Map<number, Set<string>>();
+
+    const existingSerialNumbers =
+      meterType === MeterImportType.MASTER
+        ? new Set((await this.masterMeters.find({ where: {}, select: ['serialNumber'] })).map((m) => m.serialNumber).filter((v): v is string => !!v))
+        : new Set((await this.subMeters.find({ where: {}, select: ['serialNumber'] })).map((s) => s.serialNumber).filter((v): v is string => !!v));
+    const existingDtuIds =
+      meterType === MeterImportType.MASTER
+        ? new Set((await this.masterMeters.find({ where: {}, select: ['dtuId'] })).map((m) => m.dtuId).filter((v): v is string => !!v))
+        : new Set<string>();
+    // Existing mBusAddress usage grouped by its scope key (property_id for
+    // Master, master_meter_id for Sub) — a Map<scopeId, Set<address>>,
+    // mirroring seenMBusAddressByScope's shape so both are checked the same
+    // way in the row loop below.
+    const existingMBusAddressByScope =
+      meterType === MeterImportType.MASTER
+        ? (await this.masterMeters.createQueryBuilder('m').select(['m.property_id AS propertyId', 'm.m_bus_address AS mBusAddress']).where('m.m_bus_address IS NOT NULL').getRawMany<{ propertyId: number; mBusAddress: string }>())
+            .reduce((map, r) => {
+              if (!map.has(r.propertyId)) map.set(r.propertyId, new Set());
+              map.get(r.propertyId)!.add(r.mBusAddress);
+              return map;
+            }, new Map<number, Set<string>>())
+        : (await this.subMeters.createQueryBuilder('s').select(['s.master_meter_id AS masterMeterId', 's.m_bus_address AS mBusAddress']).where('s.m_bus_address IS NOT NULL').getRawMany<{ masterMeterId: number; mBusAddress: string }>())
+            .reduce((map, r) => {
+              if (!map.has(r.masterMeterId)) map.set(r.masterMeterId, new Set());
+              map.get(r.masterMeterId)!.add(r.mBusAddress);
+              return map;
+            }, new Map<number, Set<string>>());
+    // The uploaded Master Meter ID / Sub-Meter ID column IS the entity's real
+    // businessCode (see importType-specific commit logic below) — both share
+    // the same physical column across both tables, so a Master Meter import
+    // must also be checked against every existing Sub Meter code and vice
+    // versa (a business_code collision across the two tables would still
+    // violate the shared naming expectation even though no single DB
+    // uniqueness constraint spans both tables).
+    const existingBusinessCodes = new Set(
+      (await this.masterMeters.find({ where: {}, select: ['businessCode'] }))
+        .map((m) => m.businessCode)
+        .concat((await this.subMeters.find({ where: {}, select: ['businessCode'] })).map((s) => s.businessCode))
+        .filter((v): v is string => !!v),
+    );
+    // Property → Master Meter is a 1:1 business rule (a tower has exactly one
+    // Master Meter) that has no DB-level uniqueness constraint on
+    // master_meters.property_id — enforced here instead, both against
+    // already-committed rows and against other rows in this same file
+    // claiming the same Property.
+    const propertiesWithMasterMeter =
+      meterType === MeterImportType.MASTER
+        ? new Set(
+            (await this.masterMeters.createQueryBuilder('m').select('m.property_id', 'propertyId').getRawMany<{ propertyId: number }>()).map(
+              (r) => r.propertyId,
+            ),
+          )
+        : new Set<number>();
+    const propertiesClaimedInFile = new Set<number>();
+    // Unit → Sub Meter mapping is similarly a 1:1 business rule (one sub
+    // meter per unit) with no DB-level uniqueness constraint on
+    // sub_meters.unit_id — see the comment on SubMeter.unit in
+    // entities/sub-meter.entity.ts.
+    const unitsAlreadyMapped =
+      meterType === MeterImportType.SUB
+        ? new Set(
+            (
+              await this.subMeters.createQueryBuilder('s').select('s.unit_id', 'unitId').where('s.unit_id IS NOT NULL').getRawMany<{ unitId: number }>()
+            ).map((r) => r.unitId),
+          )
+        : new Set<number>();
+    const unitsClaimedInFile = new Set<number>();
+
     const validRows: ImportRow[] = [];
-    const errors: Array<{ row: number; message: string }> = [];
+    const failedRecords: ImportFailedRecord[] = [];
 
     for (let rowNumber = 2; rowNumber <= sheet.rowCount; rowNumber++) {
       const row = sheet.getRow(rowNumber);
@@ -514,15 +779,85 @@ export class MeterService {
       if (isBlank) continue;
 
       const record: ImportRow = {};
+      // Each row collects (message, reasonType) pairs rather than plain
+      // strings, so the API response can report a genuine category per
+      // failure (Missing Required / Not Found / Mismatch / Duplicate) — the
+      // underlying checks below are unchanged from the original
+      // implementation, only the error accumulation is richer.
+      const rowIssues: Array<{ message: string; reasonType: ImportFailureReason }> = [];
+
       for (const col of columns) {
         const idx = fieldColumnIndex.get(col.internalField);
         const cellValue = idx !== undefined ? row.getCell(idx).value : null;
-        record[col.internalField] = cellValue !== null && cellValue !== undefined ? String(cellValue).trim() : null;
+        if (col.internalField === 'installationDate') {
+          const parsed = parseExcelDateCell(cellValue);
+          if (!parsed.ok) {
+            rowIssues.push({ message: `${col.displayLabel} is not a valid date`, reasonType: ImportFailureReason.OTHER });
+            record[col.internalField] = cellValue !== null && cellValue !== undefined ? String(cellValue).trim() : null;
+          } else {
+            record[col.internalField] = parsed.value;
+          }
+        } else {
+          record[col.internalField] = cellValue !== null && cellValue !== undefined ? String(cellValue).trim() : null;
+        }
       }
 
-      const rowErrors: string[] = [];
       for (const col of columns.filter((c) => c.mandatory)) {
-        if (!record[col.internalField]) rowErrors.push(`${col.displayLabel} is required`);
+        if (!record[col.internalField]) {
+          rowIssues.push({ message: `${col.displayLabel} is required`, reasonType: ImportFailureReason.MISSING_REQUIRED });
+        }
+      }
+
+      // Status must be one of the actual MeterStatus enum values — anything
+      // else (a typo like "Actve", or a value from an unrelated system) is
+      // rejected instead of silently defaulting to Active in commitRows().
+      if (record.status && !Object.values(MeterStatus).includes(record.status.toLowerCase())) {
+        rowIssues.push({
+          message: `Status "${record.status}" is invalid — must be one of: ${Object.values(MeterStatus).join(', ')}`,
+          reasonType: ImportFailureReason.OTHER,
+        });
+      }
+
+      // Meter Make/Model are free-text but still bounded by the DB column
+      // length (varchar(100)) — checked here so an over-length value fails
+      // as a clean per-row message instead of an opaque DB error.
+      for (const field of ['meterMake', 'meterModel'] as const) {
+        const value = record[field];
+        if (value && value.length > FREE_TEXT_MAX_LENGTH) {
+          rowIssues.push({
+            message: `${columnLabel(columns, field)} exceeds ${FREE_TEXT_MAX_LENGTH} characters`,
+            reasonType: ImportFailureReason.OTHER,
+          });
+        }
+      }
+
+      // The uploaded Master Meter ID / Sub-Meter ID becomes the entity's
+      // real businessCode (see commitRows) — bounded by the same
+      // business_code varchar(20) column both tables share.
+      const idField = meterType === MeterImportType.MASTER ? 'masterMeterId' : 'subMeterId';
+      const uploadedCode: string | null = record[idField];
+      if (uploadedCode && uploadedCode.length > BUSINESS_CODE_MAX_LENGTH) {
+        rowIssues.push({
+          message: `${columnLabel(columns, idField)} exceeds ${BUSINESS_CODE_MAX_LENGTH} characters`,
+          reasonType: ImportFailureReason.OTHER,
+        });
+      }
+
+      // Community Code is validated on its own first (so a typo'd community
+      // surfaces as its own error) and then re-checked against the resolved
+      // Property's actual community below — Community itself is never
+      // persisted on Master/Sub Meter (it's only reachable via
+      // property.community), so this column exists purely as a
+      // cross-reference to catch a Property Code typed under the wrong
+      // Community.
+      let resolvedCommunityId: number | undefined;
+      if (record.community) {
+        const community = await this.communities
+          .createQueryBuilder('c')
+          .where('c.name = :name OR c.code = :name', { name: record.community })
+          .getOne();
+        if (!community) rowIssues.push({ message: `Community "${record.community}" not found`, reasonType: ImportFailureReason.NOT_FOUND });
+        else resolvedCommunityId = community.id;
       }
 
       if (record.property) {
@@ -531,91 +866,495 @@ export class MeterService {
           .leftJoinAndSelect('p.community', 'community')
           .where('p.name = :name OR p.code = :name', { name: record.property })
           .getOne();
-        if (!property) rowErrors.push(`Property "${record.property}" not found`);
-        else record._resolvedPropertyId = property.id;
+        if (!property) {
+          rowIssues.push({ message: `Property "${record.property}" not found`, reasonType: ImportFailureReason.NOT_FOUND });
+        } else if (resolvedCommunityId !== undefined && property.community.id !== resolvedCommunityId) {
+          rowIssues.push({
+            message: `Property "${record.property}" does not belong to Community "${record.community}"`,
+            reasonType: ImportFailureReason.MISMATCH,
+          });
+        } else {
+          record._resolvedPropertyId = property.id;
+        }
+      }
+
+      if (meterType === MeterImportType.MASTER && record._resolvedPropertyId !== undefined) {
+        // One Master Meter per Property — see propertiesWithMasterMeter/
+        // propertiesClaimedInFile above for why this needs both a DB check
+        // and an in-file check.
+        if (propertiesWithMasterMeter.has(record._resolvedPropertyId)) {
+          rowIssues.push({
+            message: `Property "${record.property}" already has a Master Meter`,
+            reasonType: ImportFailureReason.DUPLICATE,
+          });
+        } else if (propertiesClaimedInFile.has(record._resolvedPropertyId)) {
+          rowIssues.push({
+            message: `Property "${record.property}" is claimed by more than one row in this file`,
+            reasonType: ImportFailureReason.DUPLICATE,
+          });
+        } else {
+          propertiesClaimedInFile.add(record._resolvedPropertyId);
+        }
       }
 
       if (meterType === MeterImportType.SUB) {
         if (record.masterMeterId) {
-          const master = await this.masterMeters.findOne({ where: { businessCode: record.masterMeterId } });
-          if (!master) rowErrors.push(`Master Meter "${record.masterMeterId}" not found`);
-          else record._resolvedMasterMeterId = master.id;
+          const master = await this.masterMeters
+            .createQueryBuilder('m')
+            .leftJoinAndSelect('m.property', 'property')
+            .where('m.businessCode = :code', { code: record.masterMeterId })
+            .getOne();
+          if (!master) {
+            rowIssues.push({ message: `Master Meter "${record.masterMeterId}" not found`, reasonType: ImportFailureReason.NOT_FOUND });
+          } else if (record._resolvedPropertyId !== undefined && master.property.id !== record._resolvedPropertyId) {
+            rowIssues.push({
+              message: `Master Meter "${record.masterMeterId}" does not belong to Property "${record.property}"`,
+              reasonType: ImportFailureReason.MISMATCH,
+            });
+          } else {
+            record._resolvedMasterMeterId = master.id;
+          }
         }
         if (record.unitNumber && record._resolvedPropertyId) {
           const unit = await this.units.findOne({ where: { unitNumber: record.unitNumber, property: { id: record._resolvedPropertyId } } });
-          if (unit) record._resolvedUnitId = unit.id;
+          if (!unit) {
+            rowIssues.push({
+              message: `Unit "${record.unitNumber}" not found under Property "${record.property}"`,
+              reasonType: ImportFailureReason.NOT_FOUND,
+            });
+          } else if (unitsAlreadyMapped.has(unit.id)) {
+            rowIssues.push({
+              message: `Unit "${record.unitNumber}" already has a Sub Meter mapped to it`,
+              reasonType: ImportFailureReason.DUPLICATE,
+            });
+          } else if (unitsClaimedInFile.has(unit.id)) {
+            rowIssues.push({
+              message: `Unit "${record.unitNumber}" is claimed by more than one row in this file`,
+              reasonType: ImportFailureReason.DUPLICATE,
+            });
+          } else {
+            record._resolvedUnitId = unit.id;
+            unitsClaimedInFile.add(unit.id);
+          }
         }
       }
 
-      if (rowErrors.length > 0) errors.push({ row: rowNumber, message: rowErrors.join('; ') });
-      else validRows.push(record);
+      // Duplicate checks — against both already-committed DB rows and other
+      // rows already seen earlier in this same file. Checked last so a row
+      // that's already failing for another reason doesn't also get a
+      // confusing secondary "duplicate" message layered on top of an
+      // unrelated problem — though in practice a value can trip both a
+      // not-found check (for a different column) and a duplicate check
+      // (for this one) simultaneously, which is intentional: they're
+      // different columns' problems, both real.
+      for (const [field, existingSet] of [
+        ['serialNumber', existingSerialNumbers],
+        ['dtuId', existingDtuIds],
+      ] as const) {
+        const value = record[field];
+        if (!value) continue;
+        const seenSet = seenInFile[field];
+        if (seenSet.has(value)) {
+          rowIssues.push({ message: `Duplicate ${columnLabel(columns, field)} "${value}" (also used by an earlier row in this file)`, reasonType: ImportFailureReason.DUPLICATE });
+        } else if (existingSet.has(value)) {
+          rowIssues.push({ message: `Duplicate ${columnLabel(columns, field)} "${value}" (already exists in the system)`, reasonType: ImportFailureReason.DUPLICATE });
+        } else {
+          seenSet.add(value);
+        }
+      }
+
+      // M-Bus Address is scoped to a segment, not global — Property for
+      // Master Meters, Master Meter for Sub Meters (see the comment where
+      // seenMBusAddressByScope/existingMBusAddressByScope are built). Only
+      // checked once the row's scope has actually resolved (a row that
+      // failed to resolve its Property/Master Meter already has a NOT_FOUND
+      // issue and there's no scope to check the address within).
+      const mBusScopeId = meterType === MeterImportType.MASTER ? record._resolvedPropertyId : record._resolvedMasterMeterId;
+      if (record.mBusAddress && mBusScopeId !== undefined) {
+        const seenInScope = seenMBusAddressByScope.get(mBusScopeId);
+        const existingInScope = existingMBusAddressByScope.get(mBusScopeId);
+        if (seenInScope?.has(record.mBusAddress)) {
+          rowIssues.push({
+            message: `Duplicate ${columnLabel(columns, 'mBusAddress')} "${record.mBusAddress}" (also used by an earlier row in this file for the same ${meterType === MeterImportType.MASTER ? 'Property' : 'Master Meter'})`,
+            reasonType: ImportFailureReason.DUPLICATE,
+          });
+        } else if (existingInScope?.has(record.mBusAddress)) {
+          rowIssues.push({
+            message: `Duplicate ${columnLabel(columns, 'mBusAddress')} "${record.mBusAddress}" (already used by another meter on the same ${meterType === MeterImportType.MASTER ? 'Property' : 'Master Meter'})`,
+            reasonType: ImportFailureReason.DUPLICATE,
+          });
+        } else {
+          if (!seenMBusAddressByScope.has(mBusScopeId)) seenMBusAddressByScope.set(mBusScopeId, new Set());
+          seenMBusAddressByScope.get(mBusScopeId)!.add(record.mBusAddress);
+        }
+      }
+
+      // The uploaded Master Meter ID / Sub-Meter ID is this row's intended
+      // businessCode — duplicate-checked the same way as serial/DTU/M-Bus
+      // above, against both tables (see existingBusinessCodes comment).
+      if (uploadedCode) {
+        if (seenInFile.businessCode.has(uploadedCode)) {
+          rowIssues.push({
+            message: `Duplicate ${columnLabel(columns, idField)} "${uploadedCode}" (also used by an earlier row in this file)`,
+            reasonType: ImportFailureReason.DUPLICATE,
+          });
+        } else if (existingBusinessCodes.has(uploadedCode)) {
+          rowIssues.push({
+            message: `Duplicate ${columnLabel(columns, idField)} "${uploadedCode}" (already exists in the system)`,
+            reasonType: ImportFailureReason.DUPLICATE,
+          });
+        } else {
+          seenInFile.businessCode.add(uploadedCode);
+        }
+      }
+
+      if (rowIssues.length > 0) {
+        // First issue's category represents the row for summary counting —
+        // a row can have multiple problems, but "Duplicate Records" etc.
+        // need one bucket per row, not per issue.
+        failedRecords.push({
+          rowNumber,
+          reason: rowIssues.map((i) => i.message).join('; '),
+          reasonType: rowIssues[0].reasonType,
+          values: Object.fromEntries(columns.map((c) => [c.internalField, record[c.internalField] ?? null])),
+        });
+      } else {
+        // Carries the original Excel row number through to commitRows() so
+        // a DB-level failure there (a genuine race against a concurrent
+        // import — see commitRows' per-row transaction) can still be
+        // reported against the correct row instead of being lost.
+        record._rowNumber = rowNumber;
+        validRows.push(record);
+      }
     }
 
-    const totalRows = validRows.length + errors.length;
+    const totalRows = validRows.length + failedRecords.length;
     if (totalRows === 0) throw new BadRequestException('Uploaded file has no data rows');
     if (validRows.length === 0) {
-      throw new BadRequestException(`No valid rows to import — all ${errors.length} row(s) had errors: ${errors.map((e) => `row ${e.row}: ${e.message}`).join(' | ')}`);
+      throw new BadRequestException(
+        `No valid rows to import — all ${failedRecords.length} row(s) had errors: ${failedRecords.map((e) => `row ${e.rowNumber}: ${e.reason}`).join(' | ')}`,
+      );
     }
 
-    const created = await this.commitRows(meterType, validRows, actorId);
+    const { created, failed: commitFailures } = await this.commitRows(meterType, validRows, actorId, columns);
+    // Rows that failed at the DB layer (post pre-commit-validation — see
+    // commitRows/toCommitFailure) are merged into the same failedRecords
+    // list the response and audit log both read, so a concurrent-import
+    // race is reported identically to a validation failure rather than
+    // being a second, invisible category of failure.
+    const allFailedRecords = [...failedRecords, ...commitFailures];
+    const durationMs = Date.now() - startedAt;
+    const duplicateRows = allFailedRecords.filter((r) => r.reasonType === ImportFailureReason.DUPLICATE).length;
+
+    const summary: ImportSummary = {
+      batchId,
+      fileName,
+      importType: meterType,
+      totalRows,
+      successfulRows: created.length,
+      failedRows: allFailedRecords.length,
+      skippedRows: 0, // Nothing is currently skipped independently of failing — see entities/import-result.types.ts.
+      duplicateRows,
+      warnings: 0, // No warning-level (non-blocking) checks exist yet — every issue found today is a hard failure.
+      durationMs,
+      importedIds: created.map((c) => c.id),
+      importedCodes: created.map((c) => c.businessCode).filter((v): v is string => !!v),
+      failedRecords: allFailedRecords,
+    };
+
     await this.auditService.record({
       moduleName: 'Meter',
       entityId: created[0]?.id ?? 0,
       action: 'IMPORT',
       oldValue: null,
-      newValue: { fileName, totalRows, created: created.length },
+      newValue: summary,
       performedBy: actorId,
     });
-    return { created: created.length, errorRows: errors.length, errors };
+    return summary;
   }
 
-  private async commitRows(meterType: MeterImportType, rows: ImportRow[], actorId?: number) {
+  // ─── Import history ─────────────────────────────────────────────────────────
+
+  // Reads back the ImportSummary JSON this same service wrote to AuditLog on
+  // every importMeters() call (see the record() call above) — no separate
+  // "import runs" table, the audit log IS the history, same convention every
+  // other module's audit trail already follows. Includes IMPORT_FAILED rows
+  // (a request that never reached commitRows — bad file type, no valid
+  // rows, etc.) alongside IMPORT rows, so a totally-rejected import still
+  // shows up here instead of leaving no trace at all.
+  //
+  // Shared by both getImportHistory() (flat, used by the Meter Management
+  // dashboard's compact panel) and getImportHistoryPage() (filtered +
+  // paginated, used by the Import Center screen) — the audit-log read and
+  // JSON-parse-into-a-row logic is identical either way; only what each
+  // caller does with the resulting rows differs.
+  private async loadImportHistoryRows(fetchLimit: number) {
+    const logs = await this.auditService.findByModule('Meter', ['IMPORT', 'IMPORT_FAILED'], fetchLimit);
+    const performerIds = [...new Set(logs.map((l) => l.performedBy).filter((id): id is number => !!id))];
+    const performers = performerIds.length
+      ? await this.users.find({ where: performerIds.map((id) => ({ id })) })
+      : [];
+    const performerName = new Map(performers.map((u) => [u.id, `${u.firstName} ${u.lastName}`.trim()]));
+
+    return logs.map((log) => {
+      let summary: Partial<ImportSummary> & { error?: string } = {};
+      try {
+        summary = log.newValue ? JSON.parse(log.newValue) : {};
+      } catch {
+        summary = {};
+      }
+      const isRejected = log.action === 'IMPORT_FAILED';
+      return {
+        id: log.id,
+        batchId: summary.batchId ?? null,
+        fileName: summary.fileName ?? null,
+        importType: summary.importType ?? null,
+        importedAt: log.createdAt,
+        importedBy: log.performedBy ? performerName.get(log.performedBy) ?? `User #${log.performedBy}` : 'System',
+        totalRows: summary.totalRows ?? 0,
+        successfulRows: summary.successfulRows ?? 0,
+        failedRows: summary.failedRows ?? 0,
+        durationMs: summary.durationMs ?? 0,
+        // A rejected import (IMPORT_FAILED) never produced a row count to
+        // reason about — it's unconditionally 'failed', not derived from
+        // successfulRows/failedRows the way a committed IMPORT row is.
+        status: isRejected
+          ? ('failed' as const)
+          : (summary.failedRows ?? 0) > 0 && (summary.successfulRows ?? 0) === 0
+            ? ('failed' as const)
+            : (summary.failedRows ?? 0) > 0
+              ? ('partial' as const)
+              : ('success' as const),
+      };
+    });
+  }
+
+  async getImportHistory(limit = 50) {
+    return this.loadImportHistoryRows(limit);
+  }
+
+  // Bounds how much audit-log history is ever pulled into memory for
+  // filtering/pagination — the Import Center screen doesn't need to search
+  // arbitrarily far back; this caps a pathological "give me page 9999" query
+  // from scanning the entire audit log table.
+  private static readonly IMPORT_HISTORY_SCAN_LIMIT = 500;
+
+  async getImportHistoryPage(filters: {
+    type?: 'master_meter' | 'sub_meter';
+    status?: 'success' | 'failed' | 'partial';
+    page?: number;
+    pageSize?: number;
+  }) {
+    const page = filters.page && filters.page > 0 ? filters.page : 1;
+    const pageSize = filters.pageSize && filters.pageSize > 0 ? Math.min(filters.pageSize, 100) : 20;
+
+    const allRows = await this.loadImportHistoryRows(MeterService.IMPORT_HISTORY_SCAN_LIMIT);
+
+    const filteredRows = allRows.filter((row) => {
+      if (filters.type) {
+        const rowType = row.importType === MeterImportType.MASTER ? 'master_meter' : row.importType === MeterImportType.SUB ? 'sub_meter' : null;
+        if (rowType !== filters.type) return false;
+      }
+      if (filters.status && row.status !== filters.status) return false;
+      return true;
+    });
+
+    const total = filteredRows.length;
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    const start = (page - 1) * pageSize;
+    const items = filteredRows.slice(start, start + pageSize);
+
+    return {
+      items,
+      pagination: { page, limit: pageSize, total, totalPages },
+    };
+  }
+
+  // ─── Import error / success reports ─────────────────────────────────────────
+  // Both reuse the same enabled-columns config as the template/import path
+  // (getColumns()) so a re-downloaded error report has the exact same
+  // columns as the original template plus one trailing "Failure Reason"
+  // column — ready to fix and re-upload through the normal import endpoint,
+  // no separate re-import code path needed.
+
+  async buildImportErrorReport(meterType: MeterImportType, failedRecords: ImportFailedRecord[], batchId?: string): Promise<Buffer> {
+    const columns = (await this.getColumns(meterType)).filter((c) => c.enabled);
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('Failed Records');
+    const generatedAt = new Date().toISOString();
+    sheet.columns = [
+      { header: 'Row Number', key: '_rowNumber', width: 12 },
+      ...columns.map((c) => ({ header: c.displayLabel, key: c.internalField, width: 22 })),
+      { header: 'Reason Type', key: '_reasonType', width: 18 },
+      { header: 'Failure Reason', key: '_reason', width: 50 },
+      { header: 'Batch ID', key: '_batchId', width: 22 },
+      { header: 'Generated At', key: '_generatedAt', width: 24 },
+    ];
+    sheet.getRow(1).font = { bold: true };
+    for (const record of failedRecords) {
+      const sanitizedValues = Object.fromEntries(
+        Object.entries(record.values).map(([key, value]) => [key, sanitizeForExcel(value)]),
+      );
+      sheet.addRow({
+        _rowNumber: record.rowNumber,
+        ...sanitizedValues,
+        _reasonType: record.reasonType,
+        _reason: sanitizeForExcel(record.reason),
+        _batchId: batchId ?? '',
+        _generatedAt: generatedAt,
+      });
+    }
+    const buffer = await workbook.xlsx.writeBuffer();
+    return Buffer.from(buffer);
+  }
+
+  async buildImportSuccessReport(meterType: MeterImportType, ids: number[]): Promise<Buffer> {
+    const columns = (await this.getColumns(meterType)).filter((c) => c.enabled);
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('Imported Records');
+    sheet.columns = columns.map((c) => ({ header: c.displayLabel, key: c.internalField, width: 22 }));
+    sheet.getRow(1).font = { bold: true };
+
+    if (ids.length > 0) {
+      // Reuses the same row-shape builders the regular Export button already
+      // uses (buildMasterMeterExportRows/buildSubMeterExportRows), scoped to
+      // just this import's ids instead of the list screen's filters — no
+      // second copy of the entity→row mapping.
+      const rows =
+        meterType === MeterImportType.MASTER
+          ? await this.buildMasterMeterExportRows({}, ids)
+          : await this.buildSubMeterExportRows({}, ids);
+      sheet.addRows(rows);
+    }
+
+    const buffer = await workbook.xlsx.writeBuffer();
+    return Buffer.from(buffer);
+  }
+
+  // Bulk-import rows carry their own business identifier (the uploaded
+  // Master Meter ID / Sub-Meter ID column, already validated for uniqueness
+  // and length in importMeters()) — unlike createMasterMeter/createSubMeter
+  // (the manual create-one-record UI form), which still auto-generates a
+  // businessCode via generateBusinessCode() when the caller doesn't supply
+  // one. Both paths converge on the same `business_code` column with the
+  // same DB-level uniqueness constraint; only the source of the value
+  // differs.
+  //
+  // Each row commits inside its OWN transaction (not one transaction for the
+  // whole batch) so a genuine DB-level failure on one row — most commonly a
+  // unique-constraint race against a second, concurrent import that both
+  // validated against the same pre-import snapshot and both chose the same
+  // business code — can never leave that row half-written, while still
+  // letting every other valid row commit normally. A batch-wide transaction
+  // would have made one bad row roll back the entire import, which is
+  // worse: 11 genuinely valid rows would be discarded because of 1 row that
+  // lost a race no validation pass could have foreseen.
+  private async commitRows(
+    meterType: MeterImportType,
+    rows: ImportRow[],
+    actorId: number | undefined,
+    columns: ColumnConfig[],
+  ): Promise<{ created: Array<MasterMeter | SubMeter>; failed: ImportFailedRecord[] }> {
     const created: Array<MasterMeter | SubMeter> = [];
+    const failed: ImportFailedRecord[] = [];
+
     if (meterType === MeterImportType.MASTER) {
       for (const r of rows) {
-        const entity = this.masterMeters.create({
-          serialNumber: r.serialNumber ?? null,
-          dtuId: r.dtuId ?? null,
-          property: { id: r._resolvedPropertyId } as any,
-          mBusAddress: r.mBusAddress ?? null,
-          status: r.status?.toLowerCase?.() === 'inactive' ? MeterStatus.INACTIVE : MeterStatus.ACTIVE,
-          meterMake: r.meterMake ?? null,
-          meterModel: r.meterModel ?? null,
-          installationDate: r.installationDate || null,
-          createdByUser: actorId ? ({ id: actorId } as any) : null,
-        });
-        const saved = await this.masterMeters.save(entity);
-        saved.businessCode = generateBusinessCode(BUSINESS_CODE_PREFIXES.MASTER_METER, saved.id);
-        await this.masterMeters.update(saved.id, { businessCode: saved.businessCode });
-        created.push(saved);
+        try {
+          const saved = await this.dataSource.transaction(async (manager) => {
+            const entity = manager.create(MasterMeter, {
+              businessCode: r.masterMeterId,
+              serialNumber: r.serialNumber ?? null,
+              dtuId: r.dtuId ?? null,
+              property: { id: r._resolvedPropertyId } as any,
+              mBusAddress: r.mBusAddress ?? null,
+              status: r.status?.toLowerCase?.() === 'inactive' ? MeterStatus.INACTIVE : MeterStatus.ACTIVE,
+              meterMake: r.meterMake ?? null,
+              meterModel: r.meterModel ?? null,
+              installationDate: r.installationDate || null,
+              createdByUser: actorId ? ({ id: actorId } as any) : null,
+            });
+            return manager.save(MasterMeter, entity);
+          });
+          created.push(saved);
+        } catch (err) {
+          failed.push(this.toCommitFailure(r, err, columns));
+        }
       }
     } else {
       for (const r of rows) {
-        const entity = this.subMeters.create({
-          serialNumber: r.serialNumber ?? null,
-          masterMeter: { id: r._resolvedMasterMeterId } as any,
-          property: { id: r._resolvedPropertyId } as any,
-          unit: r._resolvedUnitId ? ({ id: r._resolvedUnitId } as any) : null,
-          mBusAddress: r.mBusAddress ?? null,
-          status: r.status?.toLowerCase?.() === 'inactive' ? MeterStatus.INACTIVE : MeterStatus.ACTIVE,
-          floor: r.floor ? Number(r.floor) : null,
-          meterMake: r.meterMake ?? null,
-          meterModel: r.meterModel ?? null,
-          installationDate: r.installationDate || null,
-          customerAccountNumber: r.customerAccountNumber ?? null,
-          createdByUser: actorId ? ({ id: actorId } as any) : null,
-        });
-        const saved = await this.subMeters.save(entity);
-        saved.businessCode = generateBusinessCode(BUSINESS_CODE_PREFIXES.SUB_METER, saved.id);
-        await this.subMeters.update(saved.id, { businessCode: saved.businessCode });
-        if (r._resolvedUnitId) {
-          const master = await this.masterMeters.findOne({ where: { id: r._resolvedMasterMeterId } });
-          await this.syncUnitMeterFields(r._resolvedUnitId, saved.businessCode, master?.businessCode ?? null);
+        try {
+          const saved = await this.dataSource.transaction(async (manager) => {
+            const entity = manager.create(SubMeter, {
+              businessCode: r.subMeterId,
+              serialNumber: r.serialNumber ?? null,
+              masterMeter: { id: r._resolvedMasterMeterId } as any,
+              property: { id: r._resolvedPropertyId } as any,
+              unit: r._resolvedUnitId ? ({ id: r._resolvedUnitId } as any) : null,
+              mBusAddress: r.mBusAddress ?? null,
+              status: r.status?.toLowerCase?.() === 'inactive' ? MeterStatus.INACTIVE : MeterStatus.ACTIVE,
+              floor: r.floor ? Number(r.floor) : null,
+              meterMake: r.meterMake ?? null,
+              meterModel: r.meterModel ?? null,
+              installationDate: r.installationDate || null,
+              customerAccountNumber: r.customerAccountNumber ?? null,
+              createdByUser: actorId ? ({ id: actorId } as any) : null,
+            });
+            const savedEntity = await manager.save(SubMeter, entity);
+            if (r._resolvedUnitId) {
+              const master = await manager.findOne(MasterMeter, { where: { id: r._resolvedMasterMeterId } });
+              await manager.update(Unit, r._resolvedUnitId, {
+                subMeterId: savedEntity.businessCode ?? null,
+                masterMeterId: master?.businessCode ?? null,
+              });
+            }
+            return savedEntity;
+          });
+          created.push(saved);
+        } catch (err) {
+          failed.push(this.toCommitFailure(r, err, columns));
         }
-        created.push(saved);
       }
     }
-    return created;
+    return { created, failed };
+  }
+
+  // A row that passed every pre-commit validation can still fail at the DB
+  // layer — almost always a unique-constraint collision from a concurrent
+  // import (see the commitRows comment above). Reported the same way a
+  // validation failure is, so it shows up in the Failed Records grid and
+  // the downloadable error report identically, rather than crashing the
+  // whole request.
+  // MySQL's duplicate-key error message names the exact index that was
+  // violated (e.g. "Duplicate entry 'X' for key
+  // 'master_meters.UQ_master_meters_serial_number'") — mapped here to a
+  // human-readable field/scope description so a genuine concurrent-import
+  // race reports exactly which uniqueness rule was lost, the same way an
+  // app-layer validation failure would, instead of a generic "duplicate"
+  // message that doesn't say which field.
+  private static readonly COMMIT_DUPLICATE_INDEX_MESSAGES: Record<string, string> = {
+    UQ_master_meters_serial_number: 'Serial Number is already used by another Master Meter',
+    UQ_master_meters_dtu_id: 'DTU ID is already used by another Master Meter',
+    UQ_master_meters_property_mbus: 'M-Bus Address is already used by another Master Meter on the same Property',
+    UQ_sub_meters_serial_number: 'Serial Number is already used by another Sub Meter',
+    UQ_sub_meters_master_meter_mbus: 'M-Bus Address is already used by another Sub Meter on the same Master Meter',
+  };
+
+  private toCommitFailure(row: ImportRow, err: unknown, columns: ColumnConfig[]): ImportFailedRecord {
+    const message = err instanceof Error ? err.message : 'Failed to save this record';
+    const isDuplicateKey = /duplicate entry/i.test(message) || (err as { code?: string })?.code === 'ER_DUP_ENTRY';
+    const violatedIndex = Object.keys(MeterService.COMMIT_DUPLICATE_INDEX_MESSAGES).find((indexName) => message.includes(indexName));
+    const reason = violatedIndex
+      ? `${MeterService.COMMIT_DUPLICATE_INDEX_MESSAGES[violatedIndex]} — created by another import running at the same time`
+      : isDuplicateKey
+        ? 'This record could not be saved because a matching record was created by another import at the same time'
+        : `This record could not be saved: ${message}`;
+    return {
+      rowNumber: row._rowNumber,
+      reason,
+      reasonType: isDuplicateKey ? ImportFailureReason.DUPLICATE : ImportFailureReason.OTHER,
+      values: Object.fromEntries(columns.map((c) => [c.internalField, row[c.internalField] ?? null])),
+    };
   }
 
   // ─── Response mappers ───────────────────────────────────────────────────────

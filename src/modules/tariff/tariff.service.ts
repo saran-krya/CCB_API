@@ -35,6 +35,8 @@ import {
   ACTIVE_LOCKED_TARIFF_FIELDS,
   DEFAULT_VAT_RATE_FALLBACK,
   EDITABLE_TARIFF_STATUSES,
+  LOCKABLE_TARIFF_FIELD_LABELS,
+  LOCKABLE_TARIFF_FIELDS,
   SORTABLE_TARIFF_FIELDS,
   SUBMITTABLE_TARIFF_STATUSES,
   TARIFF_AUDIT_MODULE_NAME,
@@ -156,13 +158,14 @@ export class TariffService {
   }
 
   async getFilterMetadata() {
-    const [properties, unitTypes, activeLockedFields] = await Promise.all([
+    const [properties, unitTypes, activeLockedFields, defaultVat] = await Promise.all([
       this.propertyRepo.find({
         relations: ['community'],
         order: { name: 'ASC' },
       }),
       this.lovService.findByCategory(TARIFF_UNIT_TYPE_LOV_CATEGORY),
       this.getActiveLockedFields(),
+      this.getDefaultVat(),
     ]);
 
     return {
@@ -185,6 +188,21 @@ export class TariffService {
       // getActiveLockedFields(). Lets the wizard grey out / footnote exactly
       // the fields the backend will actually reject on an active tariff.
       activeLockedFields,
+      // VAT percentage a brand-new tariff's Step 3 initializes to — see
+      // getDefaultVat(). The wizard must only apply this while creating a
+      // new tariff; an existing tariff's own persisted vat always wins once
+      // loaded (see TariffCreateForm's seed-effect).
+      defaultVat,
+      // Closed set of field names TARIFF_ACTIVE_LOCKED_FIELDS is allowed to
+      // contain, with display labels — lets the Module Attributes screen
+      // render a checkbox list instead of a free-text input, so an admin can
+      // only ever select real field names (see
+      // AttributeService.assertValidLockableTariffFields, the write-time
+      // counterpart to this same allowlist).
+      lockableFields: ACTIVE_LOCKED_TARIFF_FIELDS.map((field) => ({
+        value: field,
+        label: LOCKABLE_TARIFF_FIELD_LABELS[field] ?? field,
+      })),
     };
   }
 
@@ -570,6 +588,14 @@ export class TariffService {
       // record billing may already depend on without any review at all.
       // Locked fields (rate/scope/effectiveFrom) are already blocked above
       // by assertActiveEditAllowed, so only non-rate fields ever reach here.
+      //
+      // TODO(Billing Engine): this branch currently fires for EVERY Active
+      // tariff. Once invoice usage tracking exists, this must first check
+      // whether the tariff has any invoices (Scenario 4). If it does, this
+      // whole update() call should be rejected outright — the tariff must be
+      // fully read-only, and Create New Version (newVersion()) must be the
+      // only allowed path. Only when there are zero invoices (true Scenario
+      // 3) should this minor-version-bump-and-resubmit behavior still apply.
       if (originalStatus === TariffStatus.ACTIVE) {
         version.version = nextMinorVersion(version.version);
         version.status = TariffStatus.PENDING;
@@ -873,9 +899,27 @@ export class TariffService {
   }
 
   // Field list is Business-Admin-configurable (Attributes > Tariff Config >
-  // "Fields Requiring a New Version") so ops can add/relax locked fields
+  // "Fields Locked for Active Tariffs") so ops can add/relax locked fields
   // without a deploy — ACTIVE_LOCKED_TARIFF_FIELDS is only the fallback for
   // a missing/corrupt attribute value, not the source of truth.
+  //
+  // Defensive on read as well as on write: AttributeService.update() already
+  // rejects an invalid field name at save time (see
+  // assertValidLockableTariffFields), but this filters against the same
+  // LOCKABLE_TARIFF_FIELDS allowlist again here so a value that reached the
+  // database some other way (a direct DB edit, a restored backup predating
+  // the write-time validation, ...) can never silently disable a field's
+  // lock — an unrecognized name is dropped rather than trusted, and this
+  // never returns the unchecked type assertion the CSV parsing used to
+  // produce.
+  //
+  // TEMPORARY SCOPE (pending Billing Engine): TARIFF_ACTIVE_LOCKED_FIELDS is
+  // meant to govern Scenario 3 only (Active, not yet used for billing).
+  // There is currently no invoice-usage tracking to detect Scenario 4
+  // (Active + one or more invoices already generated), so this field list is
+  // applied to every Active tariff unconditionally. See the TODO on
+  // assertActiveEditAllowed() below for what must change once that tracking
+  // exists.
   private async getActiveLockedFields(): Promise<(keyof UpdateTariffDto)[]> {
     const raw = await this.attributeService.getValueByKey('TARIFF_ACTIVE_LOCKED_FIELDS');
     if (!raw?.trim()) return ACTIVE_LOCKED_TARIFF_FIELDS;
@@ -883,11 +927,22 @@ export class TariffService {
     const fields = raw
       .split(',')
       .map((field) => field.trim())
-      .filter(Boolean) as (keyof UpdateTariffDto)[];
+      .filter((field): field is keyof UpdateTariffDto => LOCKABLE_TARIFF_FIELDS.has(field));
 
     return fields.length ? fields : ACTIVE_LOCKED_TARIFF_FIELDS;
   }
 
+  // TODO(Billing Engine): once invoice usage tracking exists, insert a check
+  // here BEFORE consulting TARIFF_ACTIVE_LOCKED_FIELDS:
+  //   - If the tariff has one or more invoices generated against it
+  //     (Scenario 4), reject the entire update unconditionally — do not
+  //     fall through to the locked-fields check at all. The only allowed
+  //     action at that point is Create New Version (newVersion()).
+  //   - Only when the tariff has zero invoices (true Scenario 3) should the
+  //     existing partial field-lock behavior below continue to apply.
+  // Today this method cannot distinguish Scenario 3 from Scenario 4 (no
+  // Billing Engine / invoice relationship exists yet — see this module's
+  // CLAUDE.md), so it currently treats every Active tariff as Scenario 3.
   private async assertActiveEditAllowed(dto: UpdateTariffDto) {
     const lockedFields = await this.getActiveLockedFields();
     const locked = lockedFields.filter((field) => dto[field] !== undefined);

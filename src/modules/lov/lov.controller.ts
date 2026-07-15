@@ -54,6 +54,20 @@ export class LovController {
     return this.lovService.setCategoryModule(category, dto.module);
   }
 
+  /** GET /lov/languages — active Language values, every authenticated user */
+  // Deliberately NOT @Permission()-gated (unlike every other route on this
+  // controller) — every authenticated user, regardless of role, needs the
+  // list of active languages to use the Settings page's language switcher,
+  // not just users granted LOV_VIEW for admin LFM management. Mirrors
+  // AuthController.getSessionConfig()'s justification exactly. Must be
+  // declared before the bare @Get() catch-all below so "languages" isn't
+  // swallowed by it.
+  @Get('languages')
+  @ApiOkResponse({ type: LovValue, isArray: true })
+  findActiveLanguages(): Promise<LovValue[]> {
+    return this.lovService.findActiveLanguages();
+  }
+
   /** GET /lov?category=BILLING_FREQUENCY — values for a category */
   @Get()
   @Permission('LOV_VIEW')

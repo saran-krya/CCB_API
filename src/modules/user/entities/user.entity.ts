@@ -155,4 +155,12 @@ export class User extends BaseEntity {
   })
   navTheme?: string | null;
 
+  @Column({
+    name: "preferred_language_code",
+    type: "varchar",
+    length: 10,
+    nullable: true,
+  })
+  preferredLanguageCode?: string | null;
+
 }

@@ -12,6 +12,7 @@ import { User } from './entities/user.entity';
 import { BusinessRole } from '../business-role/entities/business-role.entity';
 import { RolePermissionsService } from '../role-permissions/role-permissions.service';
 import { AttributeService } from '../attribute/attribute.service';
+import { LovService } from '../lov/lov.service';
 
 // User Creation Rules (Module Attributes > User Management) that make a
 // field conditionally mandatory. Add an entry here — plus the matching
@@ -45,6 +46,8 @@ export class UserService {
     private readonly audit: AuditService,
 
     private readonly attributes: AttributeService,
+
+    private readonly lov: LovService,
   ) { }
 
   // Checks every field in DYNAMIC_FIELD_REQUIREMENTS that's present on this
@@ -346,6 +349,7 @@ export class UserService {
 
       themeMode: user.themeMode ?? null,
       navTheme: user.navTheme ?? null,
+      preferredLanguageCode: user.preferredLanguageCode ?? null,
 
       permissions,
     };
@@ -357,11 +361,26 @@ export class UserService {
     if (dto.themeMode !== undefined) user.themeMode = dto.themeMode;
     if (dto.navTheme !== undefined) user.navTheme = dto.navTheme;
 
+    if (dto.preferredLanguageCode !== undefined) {
+      // Validated against live LANGUAGE lookup rows, not a hardcoded array —
+      // new languages become valid the moment they're added via Lookup
+      // Field Master, no code change needed.
+      const languages = await this.lov.findActiveLanguages();
+      const isValid = languages.some((l) => l.code === dto.preferredLanguageCode);
+      if (!isValid) {
+        throw new BadRequestException(
+          `"${dto.preferredLanguageCode}" is not an active language — configure it in Lookup Field Master first`,
+        );
+      }
+      user.preferredLanguageCode = dto.preferredLanguageCode;
+    }
+
     await this.users.save(user);
 
     return {
       themeMode: user.themeMode ?? null,
       navTheme: user.navTheme ?? null,
+      preferredLanguageCode: user.preferredLanguageCode ?? null,
     };
   }
 

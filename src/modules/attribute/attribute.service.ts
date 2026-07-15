@@ -13,6 +13,7 @@ import { ROLES } from '../../common/constants/global';
 import { paginate } from '../../common/utils/pagination.util';
 import { AttributeQueryDto, attributeValueErrorMessage, isValueValidForType, UpdateAttributeDto } from './dto/attribute.dto';
 import { Attribute, AttributeScope, AttributeValueType } from './entities/attribute.entity';
+import { LOCKABLE_TARIFF_FIELDS } from '../tariff/tariff.constants';
 
 // Parameters where a value change is required to carry a reason — these feed
 // business rules tied to active billing cycles / bill runs. There is no
@@ -32,6 +33,30 @@ const CYCLE_SENSITIVE_KEYS = new Set([
 const ATTRIBUTE_BOUNDS: Record<string, { min: number; max: number }> = {
   SESSION_TIMEOUT_MINUTES: { min: 30, max: 1440 }, // 30 minutes to 24 hours
 };
+
+// TARIFF_ACTIVE_LOCKED_FIELDS holds a comma-separated list of field names,
+// not a free-form string — used by TariffService.getActiveLockedFields() to
+// decide which fields are blocked from in-place editing on an Active
+// tariff. A typo or an invalid field name here would silently fail to match
+// any real UpdateTariffDto key and disable that field's lock with no error
+// anywhere (the bug this validation closes), so every submitted name is
+// checked against LOCKABLE_TARIFF_FIELDS — the same closed allowlist
+// TariffService defensively re-checks on read.
+function assertValidLockableTariffFields(value: string): void {
+  const fields = value
+    .split(',')
+    .map((field) => field.trim())
+    .filter(Boolean);
+
+  if (!fields.length) {
+    throw new BadRequestException('At least one field must be selected');
+  }
+
+  const invalid = fields.filter((field) => !LOCKABLE_TARIFF_FIELDS.has(field));
+  if (invalid.length) {
+    throw new BadRequestException(`Invalid field name(s): ${invalid.join(', ')}`);
+  }
+}
 
 type AttributeSeedRow = Pick<Attribute, 'scope' | 'key' | 'label' | 'valueType' | 'value' | 'displayOrder'> &
   Partial<
@@ -89,7 +114,11 @@ function buildAttributeSeed(sessionTimeoutMinutes: number): AttributeSeedRow[] {
     module: 'meter',
     groupKey: 'meter_bulk_import',
     groupLabel: 'Bulk Import',
-    groupDescription: 'Approval thresholds and column configuration for Master Meter and Sub Meter bulk import/export',
+    // "General" tab's description in the Meter Information attribute editor
+    // (see CCB_Web's MeterAttributesContent) — the two column-config
+    // attributes below get their own dedicated Master Meter Import / Sub
+    // Meter Import tabs there instead of appearing under this description.
+    groupDescription: 'Approval thresholds and general settings for Master Meter and Sub Meter bulk import/export',
   };
 
   return [
@@ -215,9 +244,13 @@ function buildAttributeSeed(sessionTimeoutMinutes: number): AttributeSeedRow[] {
     },
     {
       ...tariffGroup, scope: AttributeScope.MODULE, key: 'TARIFF_ACTIVE_LOCKED_FIELDS',
-      label: 'Fields Requiring a New Version', valueType: AttributeValueType.TEXT,
+      label: 'Fields Locked for Active Tariffs', valueType: AttributeValueType.TEXT,
       value: 'propertyType,rateType,flatRate,tiers,applicability,propertyIds,unitIds,billingServiceFee,vat,effectiveFrom',
-      description: 'Comma-separated field names that cannot be edited on an active tariff — changing any of them requires creating a new version instead',
+      description:
+        'This setting defines which fields are locked when editing an Active tariff before any invoices have been generated. ' +
+        'Once invoices exist, the entire tariff becomes read-only and Create New Version is required. ' +
+        '(Invoice-based enforcement is not yet implemented — see TariffService.assertActiveEditAllowed() — so today this list applies to every ' +
+        'Active tariff regardless of invoice status.)',
       displayOrder: 4,
     },
 
@@ -236,8 +269,8 @@ function buildAttributeSeed(sessionTimeoutMinutes: number): AttributeSeedRow[] {
         { internalField: 'masterMeterId', displayLabel: 'Master Meter ID', mandatory: true, locked: true, enabled: true },
         { internalField: 'serialNumber', displayLabel: 'Serial Number', mandatory: true, locked: true, enabled: true },
         { internalField: 'dtuId', displayLabel: 'DTU ID', mandatory: true, locked: true, enabled: true },
-        { internalField: 'community', displayLabel: 'Community', mandatory: true, locked: true, enabled: true },
-        { internalField: 'property', displayLabel: 'Property', mandatory: true, locked: true, enabled: true },
+        { internalField: 'community', displayLabel: 'Community Code', mandatory: true, locked: true, enabled: true },
+        { internalField: 'property', displayLabel: 'Property Code', mandatory: true, locked: true, enabled: true },
         { internalField: 'mBusAddress', displayLabel: 'M-Bus Address', mandatory: true, locked: true, enabled: true },
         { internalField: 'status', displayLabel: 'Status', mandatory: true, locked: true, enabled: true },
         { internalField: 'meterMake', displayLabel: 'Meter Make', mandatory: false, locked: false, enabled: true },
@@ -254,8 +287,8 @@ function buildAttributeSeed(sessionTimeoutMinutes: number): AttributeSeedRow[] {
         { internalField: 'subMeterId', displayLabel: 'Sub-Meter ID', mandatory: true, locked: true, enabled: true },
         { internalField: 'serialNumber', displayLabel: 'Serial Number', mandatory: true, locked: true, enabled: true },
         { internalField: 'masterMeterId', displayLabel: 'Master Meter ID', mandatory: true, locked: true, enabled: true },
-        { internalField: 'community', displayLabel: 'Community', mandatory: true, locked: true, enabled: true },
-        { internalField: 'property', displayLabel: 'Property', mandatory: true, locked: true, enabled: true },
+        { internalField: 'community', displayLabel: 'Community Code', mandatory: true, locked: true, enabled: true },
+        { internalField: 'property', displayLabel: 'Property Code', mandatory: true, locked: true, enabled: true },
         { internalField: 'unitNumber', displayLabel: 'Unit Number', mandatory: true, locked: true, enabled: true },
         { internalField: 'mBusAddress', displayLabel: 'M-Bus Address', mandatory: true, locked: true, enabled: true },
         { internalField: 'status', displayLabel: 'Status', mandatory: true, locked: true, enabled: true },
@@ -373,6 +406,10 @@ export class AttributeService {
       }
     }
 
+    if (attribute.key === 'TARIFF_ACTIVE_LOCKED_FIELDS' && fields.value !== undefined) {
+      assertValidLockableTariffFields(fields.value);
+    }
+
     if (CYCLE_SENSITIVE_KEYS.has(attribute.key) && fields.value !== undefined && !changeReason?.trim()) {
       throw new ConflictException('A reason for change is required for this parameter');
     }
@@ -464,6 +501,63 @@ export class AttributeService {
         ...seedRow,
       });
       await this.attributes.save(entity);
+    }
+
+    await this.refreshRelabeledColumnConfigs(seedRows);
+  }
+
+  // MASTER_METER_IMPORT_COLUMNS / SUB_METER_IMPORT_COLUMNS store their column
+  // list as the attribute's `value` (a JSON-stringified array), not just its
+  // label/description — so the insert-if-missing loop above never touches an
+  // already-seeded row even after buildAttributeSeed()'s column entries
+  // change (e.g. renaming "Community"/"Property" display labels to
+  // "Community Code"/"Property Code" for business-code-based imports). This
+  // patches just the displayLabel of already-existing internalField entries
+  // to match the current seed, leaving any admin-added custom columns and
+  // every other column's mandatory/locked/enabled flags untouched.
+  private async refreshRelabeledColumnConfigs(seedRows: AttributeSeedRow[]): Promise<void> {
+    const columnConfigKeys = ['MASTER_METER_IMPORT_COLUMNS', 'SUB_METER_IMPORT_COLUMNS'];
+
+    for (const key of columnConfigKeys) {
+      const seedRow = seedRows.find((r) => r.key === key);
+      const existing = await this.attributes.findOne({ where: { key } });
+      if (!seedRow || !existing) continue;
+
+      let seedColumns: { internalField: string; displayLabel: string }[];
+      let currentColumns: { internalField: string; displayLabel: string; [k: string]: unknown }[];
+      try {
+        seedColumns = JSON.parse(seedRow.value);
+        currentColumns = JSON.parse(existing.value);
+      } catch {
+        continue;
+      }
+
+      const seedLabelByField = new Map(seedColumns.map((c) => [c.internalField, c.displayLabel]));
+      let changed = false;
+      const relabeled = currentColumns.map((col) => {
+        const newLabel = seedLabelByField.get(col.internalField);
+        if (newLabel && newLabel !== col.displayLabel) {
+          changed = true;
+          return { ...col, displayLabel: newLabel };
+        }
+        return col;
+      });
+
+      if (changed) {
+        await this.attributes.update({ key }, { value: JSON.stringify(relabeled) });
+      }
+    }
+
+    // groupDescription is denormalized onto every row in the group (same
+    // convention as label/description) — refresh it the same way for
+    // whichever of the two keys above still exists, so an already-seeded
+    // database picks up a groupDescription copy change too.
+    const meterGroupSeedRow = seedRows.find((r) => r.key === columnConfigKeys[0]);
+    if (meterGroupSeedRow?.groupKey && meterGroupSeedRow.groupDescription) {
+      await this.attributes.update(
+        { groupKey: meterGroupSeedRow.groupKey },
+        { groupDescription: meterGroupSeedRow.groupDescription },
+      );
     }
   }
 }

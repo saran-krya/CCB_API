@@ -5,7 +5,15 @@ import { CreateLovDto, UpdateLovDto } from './dto/lov.dto';
 import { LovCategory } from './entities/lov-category.entity';
 import { LovValue } from './entities/lov-value.entity';
 
-const LOV_SEED: { category: string; code: string; label: string; displayOrder: number }[] = [
+const LOV_SEED: {
+  category: string;
+  code: string;
+  label: string;
+  displayOrder: number;
+  direction?: string;
+  localeCode?: string;
+  isSystem?: boolean;
+}[] = [
   { category: 'BILLING_FREQUENCY', code: 'monthly',   label: 'Monthly',   displayOrder: 1 },
   { category: 'BILLING_FREQUENCY', code: 'quarterly', label: 'Quarterly', displayOrder: 2 },
   { category: 'BILLING_FREQUENCY', code: 'annually',  label: 'Annually',  displayOrder: 3 },
@@ -32,6 +40,15 @@ const LOV_SEED: { category: string; code: string; label: string; displayOrder: n
   { category: 'BILLING_CYCLE_DEPRECATION_REASON', code: 'replaced-by-new-version', label: 'Replaced by New Version',   displayOrder: 3 },
   { category: 'BILLING_CYCLE_DEPRECATION_REASON', code: 'regulatory',            label: 'Regulatory Requirement',      displayOrder: 4 },
   { category: 'BILLING_CYCLE_DEPRECATION_REASON', code: 'other',                 label: 'Other',                       displayOrder: 5 },
+  // General Lookup — Language. label holds the NATIVE name (matches every
+  // other category's convention of label = the text actually shown in a
+  // dropdown). No LOV_CATEGORY_MODULES entry below — leaving it unmapped is
+  // what surfaces it under General Lookup rather than a specific module.
+  // isSystem: true — these two are platform-defined, not admin-authored;
+  // the LFM admin UI shows them locked/read-only (matching CCB_Template's
+  // system-value pattern) instead of editable like ordinary lookup rows.
+  { category: 'LANGUAGE', code: 'en', label: 'English',  displayOrder: 1, direction: 'ltr', localeCode: 'en-US', isSystem: true },
+  { category: 'LANGUAGE', code: 'ar', label: 'العربية', displayOrder: 2, direction: 'rtl', localeCode: 'ar-AE', isSystem: true },
 ];
 
 // Module assignment for the Lookup Field Master "Module Lookup" tab — keeps
@@ -71,6 +88,13 @@ export class LovService {
       where: includeInactive ? { category } : { category, isActive: true },
       order: { displayOrder: 'ASC', code: 'ASC' },
     });
+  }
+
+  // Backs the unguarded GET /lov/languages self-service endpoint — every
+  // authenticated user needs the active language list for the Settings page
+  // switcher, not just users granted LOV_VIEW for admin LFM management.
+  async findActiveLanguages(): Promise<LovValue[]> {
+    return this.findByCategory('LANGUAGE', false);
   }
 
   async findAll(): Promise<LovValue[]> {
@@ -118,6 +142,19 @@ export class LovService {
     const entity = await this.lovValues.findOne({ where: { id } });
     if (!entity) throw new NotFoundException(`LOV value #${id} not found`);
 
+    // System-defined rows (e.g. the seeded LANGUAGE values) may still be
+    // enabled/disabled, but their identity/content is platform-owned —
+    // matches the read-only UI, enforced here too since the frontend lock
+    // is only UX, not the actual guarantee.
+    if (entity.isSystem) {
+      const attemptsContentChange =
+        (dto.code !== undefined && dto.code !== entity.code) ||
+        (dto.label !== undefined && dto.label !== entity.label);
+      if (attemptsContentChange) {
+        throw new ConflictException('System-defined values cannot be renamed or recoded');
+      }
+    }
+
     if (dto.code && dto.code !== entity.code) {
       const conflict = await this.lovValues.findOne({
         where: { category: dto.category ?? entity.category, code: dto.code },
@@ -136,6 +173,9 @@ export class LovService {
   async remove(id: number): Promise<void> {
     const entity = await this.lovValues.findOne({ where: { id } });
     if (!entity) throw new NotFoundException(`LOV value #${id} not found`);
+    if (entity.isSystem) {
+      throw new ConflictException('System-defined values cannot be deleted');
+    }
     await this.lovValues.softRemove(entity);
   }
 
@@ -152,6 +192,7 @@ export class LovService {
       'TARIFF_REJECTION_REASON',
       'BILLING_CYCLE_CHANGE_REASON',
       'BILLING_CYCLE_DEPRECATION_REASON',
+      'LANGUAGE',
     ];
     for (const category of criticalCategories) {
       const existing = await this.lovValues.count({ where: { category } });
@@ -162,6 +203,29 @@ export class LovService {
       }
       const module = LOV_CATEGORY_MODULES[category];
       if (module) await this.setCategoryModule(category, module);
+    }
+
+    await this.correctSystemFlags();
+  }
+
+  // One-time correction for rows inserted by an earlier bootstrap pass,
+  // before isSystem existed as a concept — e.g. LANGUAGE's en/ar, seeded
+  // when this database was first initialized, before this column/seed flag
+  // existed. The insert-if-missing loop above only ever fires for a
+  // category with zero rows, so it can never retrofit isSystem onto rows
+  // that already exist. Matches the same one-time-correction precedent as
+  // PModulesService.MODULE_NAME_CODE_FIXES — reconciles existing data
+  // instead of relying on insert-if-missing to do something it structurally
+  // can't.
+  private async correctSystemFlags(): Promise<void> {
+    for (const seed of LOV_SEED.filter((v) => v.isSystem)) {
+      const existing = await this.lovValues.findOne({
+        where: { category: seed.category, code: seed.code },
+      });
+      if (existing && !existing.isSystem) {
+        existing.isSystem = true;
+        await this.lovValues.save(existing);
+      }
     }
   }
 

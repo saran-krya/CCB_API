@@ -6,6 +6,18 @@ import {
   HttpStatus,
 } from '@nestjs/common';
 import { Request, Response } from 'express';
+import { MulterError } from 'multer';
+
+// Multer throws its own error class (not a NestJS HttpException) when an
+// upload violates the interceptor's configured limits (fileSize, etc.) —
+// without this mapping it falls through to the generic 500 branch below,
+// which is the wrong status code for what is really a client-side "your
+// upload didn't meet our limits" case.
+const MULTER_ERROR_STATUS: Record<string, number> = {
+  LIMIT_FILE_SIZE: HttpStatus.PAYLOAD_TOO_LARGE,
+  LIMIT_FILE_COUNT: HttpStatus.BAD_REQUEST,
+  LIMIT_UNEXPECTED_FILE: HttpStatus.BAD_REQUEST,
+};
 
 @Catch()
 export class GlobalExceptionFilter implements ExceptionFilter {
@@ -13,11 +25,8 @@ export class GlobalExceptionFilter implements ExceptionFilter {
     const ctx = host.switchToHttp();
     const response = ctx.getResponse<Response>();
     const request = ctx.getRequest<Request>();
-    const status =
-      exception instanceof HttpException
-        ? exception.getStatus()
-        : HttpStatus.INTERNAL_SERVER_ERROR;
 
+    const status = this.resolveStatus(exception);
     const exceptionResponse =
       exception instanceof HttpException ? exception.getResponse() : undefined;
 
@@ -38,5 +47,11 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       timestamp: new Date().toISOString(),
       path: request.url,
     });
+  }
+
+  private resolveStatus(exception: unknown): number {
+    if (exception instanceof HttpException) return exception.getStatus();
+    if (exception instanceof MulterError) return MULTER_ERROR_STATUS[exception.code] ?? HttpStatus.BAD_REQUEST;
+    return HttpStatus.INTERNAL_SERVER_ERROR;
   }
 }

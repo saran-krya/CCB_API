@@ -18,4 +18,22 @@ export class LovValue extends BaseEntity {
 
   @Column({ name: 'is_active', type: 'boolean', default: true })
   isActive!: boolean;
+
+  // Only meaningful for the LANGUAGE category — null for every other
+  // category's rows. General-purpose columns on the shared LOV shape rather
+  // than a separate Language-specific table, consistent with how every
+  // other lookup category reuses this same entity.
+  @Column({ name: 'direction', type: 'varchar', length: 3, nullable: true })
+  direction?: string | null; // 'ltr' | 'rtl'
+
+  @Column({ name: 'locale_code', type: 'varchar', length: 20, nullable: true })
+  localeCode?: string | null; // e.g. 'en-US'
+
+  // System-defined rows (currently: the seeded LANGUAGE values en/ar) are
+  // read-only in the admin UI — code/label/direction/localeCode cannot be
+  // edited, matching CCB_Template's locked-value pattern. Data-driven, not a
+  // hardcoded category check, so any future category can mark specific rows
+  // system-locked the same way.
+  @Column({ name: 'is_system', type: 'boolean', default: false })
+  isSystem!: boolean;
 }

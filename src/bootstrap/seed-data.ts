@@ -137,11 +137,19 @@ export const SUB_MODULES: SeedSubModule[] = [
   },
   {
     pModuleCode: 'METER_MANAGEMENT',
+    name: 'Import Center',
+    code: 'IMPORT_CENTER',
+    icon: 'Upload',
+    url: '/meters/import-center',
+    displayOrder: 2,
+  },
+  {
+    pModuleCode: 'METER_MANAGEMENT',
     name: 'SFTP File Monitor',
     code: 'SFTP_MONITOR',
     icon: 'FolderSync',
     url: '/meters/sftp-monitor',
-    displayOrder: 2,
+    displayOrder: 3,
   },
   {
     pModuleCode: 'METER_MANAGEMENT',
@@ -149,7 +157,7 @@ export const SUB_MODULES: SeedSubModule[] = [
     code: 'DAILY_METER_READINGS',
     icon: 'BarChart2',
     url: '/meters/daily-meter-readings',
-    displayOrder: 3,
+    displayOrder: 4,
   },
   {
     pModuleCode: 'METER_MANAGEMENT',
@@ -157,7 +165,7 @@ export const SUB_MODULES: SeedSubModule[] = [
     code: 'BILLING_READINESS',
     icon: 'BadgeCheck',
     url: '/meters/billing-readiness',
-    displayOrder: 4,
+    displayOrder: 5,
   },
 
   // ── Billing Management ────────────────────────────────────────────────────
@@ -335,6 +343,13 @@ export const SCREENS: SeedScreen[] = [
     name: 'Meter Information',
     code: 'METER_LIST',
     url: '/meters',
+    displayOrder: 1,
+  },
+  {
+    subModuleCode: 'IMPORT_CENTER',
+    name: 'Import Center',
+    code: 'IMPORT_CENTER',
+    url: '/meters/import-center',
     displayOrder: 1,
   },
 ]
@@ -765,6 +780,13 @@ export const ACTIONS: SeedAction[] = [
     code: 'METER_EDIT',
     description: 'Edit a master or sub meter, including status and unit mapping',
     displayOrder: 3,
+  },
+  {
+    screenCode: 'IMPORT_CENTER',
+    name: 'View Import Center',
+    code: 'IMPORT_CENTER_VIEW',
+    description: 'View the Import Center dashboard, template downloads, and bulk import history',
+    displayOrder: 1,
   },
 ]
 

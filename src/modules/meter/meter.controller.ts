@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Get,
@@ -20,6 +21,9 @@ import { Permission } from '../../common/decorators/permission.decorator';
 import {
   CreateMasterMeterDto,
   CreateSubMeterDto,
+  DownloadErrorReportDto,
+  DownloadSuccessReportDto,
+  ImportHistoryQueryDto,
   MeterQueryDto,
   SetMeterStatusDto,
   UpdateMasterMeterDto,
@@ -29,6 +33,7 @@ import { MeterImportType } from './entities/meter-import-type.enum';
 import { MeterService } from './meter.service';
 
 const EXCEL_CONTENT_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+const MAX_IMPORT_UPLOAD_BYTES = 10 * 1024 * 1024; // 10 MB — mirrors MeterService's own guard, enforced earlier by Multer
 
 @ApiBearerAuth()
 @ApiTags('Meters')
@@ -76,6 +81,22 @@ export class MeterController {
     return this.meters.getPropertyDetail(propertyId);
   }
 
+  // ─── Import history ─────────────────────────────────────────────────────────
+
+  @Get('import-history')
+  @Permission('METER_VIEW')
+  @ApiOperation({ summary: 'List recent Master/Sub Meter bulk import runs (file name, counts, duration, status)' })
+  getImportHistory(@Query('limit') limit?: string) {
+    return this.meters.getImportHistory(limit ? Number(limit) : undefined);
+  }
+
+  @Get('import-history/page')
+  @Permission('IMPORT_CENTER_VIEW')
+  @ApiOperation({ summary: 'Filtered, paginated Master/Sub Meter bulk import history — powers the Import Center screen' })
+  getImportHistoryPage(@Query() query: ImportHistoryQueryDto) {
+    return this.meters.getImportHistoryPage(query);
+  }
+
   // ─── Master Meters ──────────────────────────────────────────────────────────
 
   @Get('master-meters')
@@ -105,12 +126,30 @@ export class MeterController {
 
   @Post('master-meters/import')
   @Permission('METER_IMPORT')
-  @UseInterceptors(FileInterceptor('file'))
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_IMPORT_UPLOAD_BYTES } }))
   @ApiConsumes('multipart/form-data')
   @ApiOperation({ summary: 'Bulk import master meters from an uploaded Excel file' })
   importMasterMeters(@UploadedFile() file: Express.Multer.File, @CurrentUser() user?: AuthenticatedUser) {
-    if (!file) throw new Error('No file uploaded');
-    return this.meters.importMeters(MeterImportType.MASTER, file.buffer, file.originalname, user?.sub);
+    if (!file) throw new BadRequestException('No file uploaded');
+    return this.meters.importMeters(MeterImportType.MASTER, file.buffer, file.originalname, file.mimetype, user?.sub);
+  }
+
+  @Post('master-meters/import/error-report')
+  @Permission('METER_IMPORT')
+  @ApiOperation({ summary: 'Generate an Excel report of failed rows from a Master Meter import (fix and re-upload)' })
+  async downloadMasterMeterErrorReport(@Body() dto: DownloadErrorReportDto, @Res() res: Response) {
+    const buffer = await this.meters.buildImportErrorReport(MeterImportType.MASTER, dto.failedRecords, dto.batchId);
+    res.set({ 'Content-Type': EXCEL_CONTENT_TYPE, 'Content-Disposition': 'attachment; filename="master-meter-import-errors.xlsx"' });
+    res.send(buffer);
+  }
+
+  @Post('master-meters/import/success-report')
+  @Permission('METER_IMPORT')
+  @ApiOperation({ summary: 'Generate an Excel report of the rows successfully created by a Master Meter import' })
+  async downloadMasterMeterSuccessReport(@Body() dto: DownloadSuccessReportDto, @Res() res: Response) {
+    const buffer = await this.meters.buildImportSuccessReport(MeterImportType.MASTER, dto.ids);
+    res.set({ 'Content-Type': EXCEL_CONTENT_TYPE, 'Content-Disposition': 'attachment; filename="master-meter-import-success.xlsx"' });
+    res.send(buffer);
   }
 
   @Get('master-meters/:id')
@@ -173,12 +212,30 @@ export class MeterController {
 
   @Post('sub-meters/import')
   @Permission('METER_IMPORT')
-  @UseInterceptors(FileInterceptor('file'))
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_IMPORT_UPLOAD_BYTES } }))
   @ApiConsumes('multipart/form-data')
   @ApiOperation({ summary: 'Bulk import sub meters from an uploaded Excel file' })
   importSubMeters(@UploadedFile() file: Express.Multer.File, @CurrentUser() user?: AuthenticatedUser) {
-    if (!file) throw new Error('No file uploaded');
-    return this.meters.importMeters(MeterImportType.SUB, file.buffer, file.originalname, user?.sub);
+    if (!file) throw new BadRequestException('No file uploaded');
+    return this.meters.importMeters(MeterImportType.SUB, file.buffer, file.originalname, file.mimetype, user?.sub);
+  }
+
+  @Post('sub-meters/import/error-report')
+  @Permission('METER_IMPORT')
+  @ApiOperation({ summary: 'Generate an Excel report of failed rows from a Sub Meter import (fix and re-upload)' })
+  async downloadSubMeterErrorReport(@Body() dto: DownloadErrorReportDto, @Res() res: Response) {
+    const buffer = await this.meters.buildImportErrorReport(MeterImportType.SUB, dto.failedRecords, dto.batchId);
+    res.set({ 'Content-Type': EXCEL_CONTENT_TYPE, 'Content-Disposition': 'attachment; filename="sub-meter-import-errors.xlsx"' });
+    res.send(buffer);
+  }
+
+  @Post('sub-meters/import/success-report')
+  @Permission('METER_IMPORT')
+  @ApiOperation({ summary: 'Generate an Excel report of the rows successfully created by a Sub Meter import' })
+  async downloadSubMeterSuccessReport(@Body() dto: DownloadSuccessReportDto, @Res() res: Response) {
+    const buffer = await this.meters.buildImportSuccessReport(MeterImportType.SUB, dto.ids);
+    res.set({ 'Content-Type': EXCEL_CONTENT_TYPE, 'Content-Disposition': 'attachment; filename="sub-meter-import-success.xlsx"' });
+    res.send(buffer);
   }
 
   @Get('sub-meters/:id')

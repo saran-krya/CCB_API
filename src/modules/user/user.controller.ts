@@ -45,8 +45,8 @@ export class UserController {
     return this.users.getReportingManagers();
   }
 
-  // Self-service — any authenticated user manages their own appearance
-  // preferences, regardless of role.
+  // Self-service — any authenticated user manages their own appearance and
+  // language preferences, regardless of role.
   @Patch("me/preferences")
   updateOwnPreferences(
     @Body() dto: UpdatePreferencesDto,
