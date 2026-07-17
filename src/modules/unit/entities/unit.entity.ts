@@ -1,6 +1,7 @@
-import { Column, Entity, JoinColumn, ManyToOne } from 'typeorm';
+import { Column, Entity, JoinColumn, ManyToOne, OneToOne } from 'typeorm';
 import { BaseEntity } from '../../../common/entities/base.entity';
 import { Property } from '../../property/entities/property.entity';
+import { SubMeter } from '../../meter/entities/sub-meter.entity';
 
 export enum UnitType {
   APARTMENT = 'apartment',
@@ -82,11 +83,9 @@ export class Unit extends BaseEntity {
   @Column({ name: 'tenant_id', type: 'varchar', length: 50, nullable: true })
   tenantId?: string | null;
 
-  @Column({ name: 'master_meter_id', type: 'varchar', length: 100, nullable: true })
-  masterMeterId?: string | null;
-
-  @Column({ name: 'sub_meter_id', type: 'varchar', length: 100, nullable: true })
-  subMeterId?: string | null;
+  
+  @OneToOne(() => SubMeter, (subMeter) => subMeter.unit)
+  subMeter?: SubMeter | null;
 
   @Column({ type: 'simple-json', nullable: true })
   amenities?: string[] | null;

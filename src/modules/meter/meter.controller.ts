@@ -24,6 +24,9 @@ import {
   DownloadErrorReportDto,
   DownloadSuccessReportDto,
   ImportHistoryQueryDto,
+  MeterCommunitiesOverviewQueryDto,
+  MeterPropertiesOverviewQueryDto,
+  MeterUnitsOverviewQueryDto,
   MeterQueryDto,
   SetMeterStatusDto,
   UpdateMasterMeterDto,
@@ -52,9 +55,9 @@ export class MeterController {
 
   @Get('communities')
   @Permission('METER_VIEW')
-  @ApiOperation({ summary: 'Get meter overview for every community' })
-  getCommunitiesOverview() {
-    return this.meters.getCommunitiesOverview();
+  @ApiOperation({ summary: 'Get paginated, sortable, filterable meter overview for every community' })
+  getCommunitiesOverview(@Query() query: MeterCommunitiesOverviewQueryDto) {
+    return this.meters.getCommunitiesOverview(query);
   }
 
   @Get('communities/:communityId')
@@ -67,10 +70,10 @@ export class MeterController {
 
   @Get('communities/:communityId/properties')
   @Permission('METER_VIEW')
-  @ApiOperation({ summary: 'Get meter overview for every property in a community' })
+  @ApiOperation({ summary: 'Get paginated, sortable, filterable meter overview for every property in a community' })
   @ApiParam({ name: 'communityId', type: Number })
-  getPropertiesOverview(@Param('communityId', ParseIntPipe) communityId: number) {
-    return this.meters.getPropertiesOverview(communityId);
+  getPropertiesOverview(@Param('communityId', ParseIntPipe) communityId: number, @Query() query: MeterPropertiesOverviewQueryDto) {
+    return this.meters.getPropertiesOverview(communityId, query);
   }
 
   @Get('properties/:propertyId')
@@ -79,6 +82,14 @@ export class MeterController {
   @ApiParam({ name: 'propertyId', type: Number })
   getPropertyDetail(@Param('propertyId', ParseIntPipe) propertyId: number) {
     return this.meters.getPropertyDetail(propertyId);
+  }
+
+  @Get('properties/:propertyId/units')
+  @Permission('METER_VIEW')
+  @ApiOperation({ summary: 'Get paginated, sortable, filterable unit-level meter overview for one property' })
+  @ApiParam({ name: 'propertyId', type: Number })
+  getUnitsOverview(@Param('propertyId', ParseIntPipe) propertyId: number, @Query() query: MeterUnitsOverviewQueryDto) {
+    return this.meters.getUnitsOverview(propertyId, query);
   }
 
   // ─── Import history ─────────────────────────────────────────────────────────
@@ -95,6 +106,13 @@ export class MeterController {
   @ApiOperation({ summary: 'Filtered, paginated Master/Sub Meter bulk import history — powers the Import Center screen' })
   getImportHistoryPage(@Query() query: ImportHistoryQueryDto) {
     return this.meters.getImportHistoryPage(query);
+  }
+
+  @Get('import-history/metaFilters')
+  @Permission('IMPORT_CENTER_VIEW')
+  @ApiOperation({ summary: 'Filter option metadata (Type, Status) for the Import Center table filters' })
+  getImportHistoryMetaFilters() {
+    return this.meters.getImportHistoryMetaFilters();
   }
 
   // ─── Master Meters ──────────────────────────────────────────────────────────

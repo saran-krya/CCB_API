@@ -1,9 +1,12 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { Type } from 'class-transformer';
-import { IsArray, IsDateString, IsEnum, IsInt, IsNotEmpty, IsNumber, IsObject, IsOptional, IsString, MaxLength, ValidateNested } from 'class-validator';
+import { Transform, Type } from 'class-transformer';
+import { IsArray, IsDateString, IsEnum, IsIn, IsInt, IsNotEmpty, IsNumber, IsObject, IsOptional, IsString, MaxLength, ValidateNested } from 'class-validator';
 import { BasePaginationDto } from '../../../common/dto/base-pagination.dto';
 import { MeterStatus } from '../entities/meter-status.enum';
 import { ImportFailureReason } from '../entities/import-result.types';
+import { CommunityStatus } from '../../community/entities/community.entity';
+import { PropertyStatus } from '../../property/entities/property.entity';
+import { UnitStatus } from '../../unit/entities/unit.entity';
 
 export class CreateMasterMeterDto {
   @IsOptional()
@@ -181,8 +184,46 @@ export class MeterQueryDto extends BasePaginationDto {
 
   @ApiPropertyOptional({ enum: MeterStatus })
   @IsOptional()
+  @Transform(({ value }) => (value === '' ? undefined : value))
   @IsEnum(MeterStatus)
   status?: MeterStatus;
+}
+
+// ─── Meter Information — paginated Communities / Properties overview ────────
+// `search` (inherited from BasePaginationDto) matches by name; `sortBy` is
+// whitelisted server-side to real base-table columns only (name, status) —
+// the coverage/count columns are computed via separate grouped queries per
+// page of results, not part of the base table, so they aren't sortable.
+
+// The "All" option in the status filter dropdown clears the filter by
+// sending status="" rather than omitting the param — @IsOptional() only
+// skips validation when the value is undefined, not for an empty string, so
+// without this transform @IsEnum() rejects "" with a 400 and the table
+// renders empty. Blank out empty strings to undefined before @IsEnum runs.
+const emptyStringToUndefined = ({ value }: { value: unknown }) => (value === '' ? undefined : value);
+
+export class MeterCommunitiesOverviewQueryDto extends BasePaginationDto {
+  @ApiPropertyOptional({ enum: CommunityStatus })
+  @IsOptional()
+  @Transform(emptyStringToUndefined)
+  @IsEnum(CommunityStatus)
+  status?: CommunityStatus;
+}
+
+export class MeterPropertiesOverviewQueryDto extends BasePaginationDto {
+  @ApiPropertyOptional({ enum: PropertyStatus })
+  @IsOptional()
+  @Transform(emptyStringToUndefined)
+  @IsEnum(PropertyStatus)
+  status?: PropertyStatus;
+}
+
+export class MeterUnitsOverviewQueryDto extends BasePaginationDto {
+  @ApiPropertyOptional({ enum: UnitStatus })
+  @IsOptional()
+  @Transform(emptyStringToUndefined)
+  @IsEnum(UnitStatus)
+  status?: UnitStatus;
 }
 
 // ─── Import result report generation ────────────────────────────────────────
@@ -249,4 +290,14 @@ export class ImportHistoryQueryDto {
   @Type(() => Number)
   @IsInt()
   pageSize?: number;
+
+  @ApiPropertyOptional({ example: 'importedAt', description: 'Field to sort by' })
+  @IsOptional()
+  @IsString()
+  sortBy?: string;
+
+  @ApiPropertyOptional({ enum: ['ASC', 'DESC'], default: 'DESC' })
+  @IsOptional()
+  @IsIn(['ASC', 'DESC'])
+  sortOrder?: 'ASC' | 'DESC';
 }

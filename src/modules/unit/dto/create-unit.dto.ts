@@ -107,18 +107,6 @@ export class CreateUnitDto {
   @IsOptional()
   tenantId?: string;
 
-  @ApiPropertyOptional({ example: 'MTR-M-001' })
-  @IsString()
-  @MaxLength(100)
-  @IsOptional()
-  masterMeterId?: string;
-
-  @ApiPropertyOptional({ example: 'MTR-S-001' })
-  @IsString()
-  @MaxLength(100)
-  @IsOptional()
-  subMeterId?: string;
-
   @ApiPropertyOptional({ example: ['gym', 'pool', 'parking'] })
   @IsArray()
   @IsString({ each: true })

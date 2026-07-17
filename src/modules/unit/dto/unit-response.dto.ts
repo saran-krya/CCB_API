@@ -40,9 +40,12 @@ export class UnitDetailDto {
   @ApiPropertyOptional({ description: 'ISO-8601 date string' }) handoverDate!: string | null;
   @ApiPropertyOptional() ownerId!: string | null;
   @ApiPropertyOptional() tenantId!: string | null;
-  // Meter Information card
-  @ApiPropertyOptional() masterMeterId!: string | null;
-  @ApiPropertyOptional() subMeterId!: string | null;
+  // Meter Information card — sourced from the real SubMeter.unit /
+  // SubMeter.masterMeter relations, never a denormalized copy.
+  @ApiPropertyOptional() masterMeterId!: number | null;
+  @ApiPropertyOptional() masterMeterCode!: string | null;
+  @ApiPropertyOptional() subMeterId!: number | null;
+  @ApiPropertyOptional() subMeterCode!: string | null;
   // Amenities card
   @ApiPropertyOptional({ type: [String] }) amenities!: string[] | null;
   @ApiPropertyOptional() description!: string | null;

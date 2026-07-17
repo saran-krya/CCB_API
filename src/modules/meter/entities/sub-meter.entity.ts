@@ -1,4 +1,4 @@
-import { Column, Entity, Index, JoinColumn, ManyToOne } from 'typeorm';
+import { Column, Entity, Index, JoinColumn, ManyToOne, OneToOne } from 'typeorm';
 import { BaseEntity } from '../../../common/entities/base.entity';
 import { Property } from '../../property/entities/property.entity';
 import { Unit } from '../../unit/entities/unit.entity';
@@ -46,10 +46,11 @@ export class SubMeter extends BaseEntity {
 
   // Nullable = the sub-meter is installed but not yet linked to a billable
   // unit ("Unmapped" in the Meter Information UI). Setting/clearing this is
-  // the actual mapping operation — mirrors the legacy Unit.subMeterId /
-  // Unit.masterMeterId denormalized fields, which are kept in sync by
-  // MeterService whenever a sub-meter's unit link changes.
-  @ManyToOne(() => Unit, { nullable: true })
+  // the actual mapping operation — the ONLY place a unit's meter mapping is
+  // stored (Unit.subMeter is the read-only inverse side of this relation).
+  // One-to-one: a unit has at most one sub-meter, enforced at the DB layer
+  // by a unique index on sub_meters.unit_id (see MeterUniquenessMigrationService).
+  @OneToOne(() => Unit, { nullable: true })
   @JoinColumn({ name: 'unit_id' })
   unit?: Unit | null;
 

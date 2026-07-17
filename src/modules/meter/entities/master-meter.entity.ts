@@ -17,10 +17,11 @@ import { SubMeter } from './sub-meter.entity';
 // live schema diff by index name, and a name mismatch here made it try to
 // drop-and-recreate this index on every boot, which MySQL refused because
 // FK_d4dfcff9f167345902b3633d38d (sub_meters.master_meter_id) depended on
-// its Master Meter counterpart's equivalent at the time. A dedicated plain
-// index on `property_id` alone (added by the same migration service) now
-// backs that Property FK independently, so this composite index is never
-// load-bearing for a foreign key and can be freely dropped/recreated.
+// its Master Meter counterpart's equivalent at the time. The dedicated
+// UNIQUE index on `property_id` alone declared just below (added by the
+// same migration service) now backs that Property FK independently, so
+// this composite index is never load-bearing for a foreign key and can be
+// freely dropped/recreated.
 @Entity('master_meters')
 @Index('UQ_master_meters_property_mbus', ['property', 'mBusAddress'], { unique: true })
 // serialNumber/dtuId are named explicitly (see the composite-index comment
@@ -29,6 +30,14 @@ import { SubMeter } from './sub-meter.entity';
 // what MeterUniquenessMigrationService already created via raw SQL.
 @Index('UQ_master_meters_serial_number', ['serialNumber'], { unique: true })
 @Index('UQ_master_meters_dtu_id', ['dtuId'], { unique: true })
+// One Master Meter per Property (one-to-one) — mirrors
+// UQ_sub_meters_unit_id's role for Unit -> Sub Meter. Previously enforced
+// only in MeterService.importMeters() against a pre-import snapshot, which
+// a concurrent import (or import racing a direct create call) could still
+// slip past; this closes that race at the DB layer. Also supersedes the
+// migration service's old plain index on `property_id` alone — see
+// MeterUniquenessMigrationService's SUPERSEDED_INDEXES comment.
+@Index('UQ_master_meters_property_id', ['property'], { unique: true })
 export class MasterMeter extends BaseEntity {
   @Column({ name: 'business_code', type: 'varchar', length: 20, unique: true, nullable: true })
   businessCode?: string | null;

@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, In, Repository } from 'typeorm';
 import * as ExcelJS from 'exceljs';
 import { AttributeService } from '../attribute/attribute.service';
 import { AuditService } from '../../audit/audit.service';
@@ -13,6 +13,9 @@ import { User } from '../user/entities/user.entity';
 import {
   CreateMasterMeterDto,
   CreateSubMeterDto,
+  MeterCommunitiesOverviewQueryDto,
+  MeterPropertiesOverviewQueryDto,
+  MeterUnitsOverviewQueryDto,
   MeterQueryDto,
   SetMeterStatusDto,
   UpdateMasterMeterDto,
@@ -142,65 +145,158 @@ export class MeterService {
       this.masterMeters.count(),
       this.subMeters.count(),
     ]);
-    const mappedMeters = await this.subMeters.createQueryBuilder('s').where('s.unit_id IS NOT NULL').getCount();
+    // Coverage, not a meter tally: "Mapped" answers "how many Properties /
+    // Units have been assigned a meter", so the denominator is the parent
+    // entity count (Properties / Units), never the meter row count. A
+    // Property could in principle carry more than one Master Meter (no DB
+    // constraint forbids it), so this is COUNT(DISTINCT property_id), not
+    // COUNT(*) — one property with 2 master meters still counts as 1
+    // covered property. Sub Meter coverage mirrors this over Units; the
+    // DISTINCT is redundant there in practice (sub_meters.unit_id already
+    // carries a unique constraint — see MeterUniquenessMigrationService) but
+    // kept for the same defensive reason and symmetry with the Master Meter query.
+    const [mappedMasterMeters, mappedSubMeters] = await Promise.all([
+      this.masterMeters.createQueryBuilder('m').select('COUNT(DISTINCT m.property_id)', 'cnt').getRawOne<{ cnt: string }>(),
+      this.subMeters.createQueryBuilder('s').where('s.unit_id IS NOT NULL').select('COUNT(DISTINCT s.unit_id)', 'cnt').getRawOne<{ cnt: string }>(),
+    ]);
+    const mappedMasterMetersCount = Number(mappedMasterMeters?.cnt ?? 0);
+    const mappedSubMetersCount = Number(mappedSubMeters?.cnt ?? 0);
     return {
       totalCommunities,
       totalProperties,
       totalUnits,
       totalMasterMeters,
       totalSubMeters,
-      mappedMeters,
-      unmappedMeters: totalSubMeters - mappedMeters,
+      mappedMasterMeters: mappedMasterMetersCount,
+      unmappedMasterMeters: totalProperties - mappedMasterMetersCount,
+      mappedMeters: mappedSubMetersCount,
+      unmappedMeters: totalUnits - mappedSubMetersCount,
     };
   }
 
-  async getCommunitiesOverview() {
-    const communities = await this.communities.find({ order: { name: 'ASC' } });
-    if (communities.length === 0) return [];
+  // Sortable columns are limited to real base-table columns (name, status) —
+  // every coverage/count field is computed via separate grouped queries
+  // scoped to this page's community IDs, not part of the base `communities`
+  // table, so there's nothing meaningful to ORDER BY for those.
+  private static readonly COMMUNITIES_OVERVIEW_SORTABLE = new Set(['name', 'status']);
 
+  async getCommunitiesOverview(query: MeterCommunitiesOverviewQueryDto = new MeterCommunitiesOverviewQueryDto()) {
+    const page = query.page && query.page > 0 ? query.page : 1;
+    const limit = query.limit && query.limit > 0 ? Math.min(query.limit, 100) : 20;
+    const sortBy = MeterService.COMMUNITIES_OVERVIEW_SORTABLE.has(query.sortBy ?? '') ? query.sortBy! : 'name';
+    const sortOrder = query.sortOrder ?? 'ASC';
+
+    const qb = this.communities.createQueryBuilder('c').orderBy(`c.${sortBy}`, sortOrder);
+    if (query.search) qb.andWhere('c.name LIKE :s', { s: `%${query.search}%` });
+    if (query.status) qb.andWhere('c.status = :status', { status: query.status });
+
+    const [communities, total] = await qb
+      .skip((page - 1) * limit)
+      .take(limit)
+      .getManyAndCount();
+
+    const pagination = { page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)) };
+    if (communities.length === 0) return { items: [], pagination };
+
+    const communityIds = communities.map((c) => c.id);
     const toMap = (rows: Array<{ communityId: string; count: string }>) =>
       new Map(rows.map((r) => [Number(r.communityId), Number(r.count)]));
 
-    const [unitRows, propertyRows, masterRows, subRows, mappedRows] = await Promise.all([
-      this.units.createQueryBuilder('u').innerJoin('u.property', 'p').select('p.community_id', 'communityId').addSelect('COUNT(*)', 'count').groupBy('p.community_id').getRawMany(),
-      this.properties.createQueryBuilder('p').select('p.community_id', 'communityId').addSelect('COUNT(*)', 'count').groupBy('p.community_id').getRawMany(),
-      this.masterMeters.createQueryBuilder('m').innerJoin('m.property', 'p').select('p.community_id', 'communityId').addSelect('COUNT(*)', 'count').groupBy('p.community_id').getRawMany(),
-      this.subMeters.createQueryBuilder('s').innerJoin('s.property', 'p').select('p.community_id', 'communityId').addSelect('COUNT(*)', 'count').groupBy('p.community_id').getRawMany(),
-      this.subMeters.createQueryBuilder('s').innerJoin('s.property', 'p').where('s.unit_id IS NOT NULL').select('p.community_id', 'communityId').addSelect('COUNT(*)', 'count').groupBy('p.community_id').getRawMany(),
+    const [unitRows, propertyRows, masterRows, subRows, mappedSubRows, mappedMasterRows] = await Promise.all([
+      this.units.createQueryBuilder('u').innerJoin('u.property', 'p').where('p.community_id IN (:...ids)', { ids: communityIds }).select('p.community_id', 'communityId').addSelect('COUNT(*)', 'count').groupBy('p.community_id').getRawMany(),
+      this.properties.createQueryBuilder('p').where('p.community_id IN (:...ids)', { ids: communityIds }).select('p.community_id', 'communityId').addSelect('COUNT(*)', 'count').groupBy('p.community_id').getRawMany(),
+      this.masterMeters.createQueryBuilder('m').innerJoin('m.property', 'p').where('p.community_id IN (:...ids)', { ids: communityIds }).select('p.community_id', 'communityId').addSelect('COUNT(*)', 'count').groupBy('p.community_id').getRawMany(),
+      this.subMeters.createQueryBuilder('s').innerJoin('s.property', 'p').where('p.community_id IN (:...ids)', { ids: communityIds }).select('p.community_id', 'communityId').addSelect('COUNT(*)', 'count').groupBy('p.community_id').getRawMany(),
+      // Coverage, not a meter tally — see getStats()'s comment for why this
+      // is COUNT(DISTINCT ...) over the parent entity (Units here), not
+      // COUNT(*) over the meter rows.
+      this.subMeters.createQueryBuilder('s').innerJoin('s.property', 'p').where('p.community_id IN (:...ids)', { ids: communityIds }).andWhere('s.unit_id IS NOT NULL').select('p.community_id', 'communityId').addSelect('COUNT(DISTINCT s.unit_id)', 'count').groupBy('p.community_id').getRawMany(),
+      this.masterMeters.createQueryBuilder('m').innerJoin('m.property', 'p').where('p.community_id IN (:...ids)', { ids: communityIds }).select('p.community_id', 'communityId').addSelect('COUNT(DISTINCT m.property_id)', 'count').groupBy('p.community_id').getRawMany(),
     ]);
-    const unitsMap = toMap(unitRows), propsMap = toMap(propertyRows), mmMap = toMap(masterRows), smMap = toMap(subRows), mappedMap = toMap(mappedRows);
+    const unitsMap = toMap(unitRows), propsMap = toMap(propertyRows), mmMap = toMap(masterRows), smMap = toMap(subRows);
+    const mappedSubMap = toMap(mappedSubRows), mappedMasterMap = toMap(mappedMasterRows);
 
-    return communities.map((c) => {
-      const totalSubMeters = smMap.get(c.id) ?? 0;
-      const mappedMeters = mappedMap.get(c.id) ?? 0;
+    const items = communities.map((c) => {
+      const totalUnits = unitsMap.get(c.id) ?? 0;
+      const totalProperties = propsMap.get(c.id) ?? 0;
+      const mappedMeters = mappedSubMap.get(c.id) ?? 0;
+      const mappedMasterMeters = mappedMasterMap.get(c.id) ?? 0;
       return {
         id: c.id,
         code: c.businessCode ?? c.code,
         name: c.name,
-        totalProperties: propsMap.get(c.id) ?? 0,
-        totalUnits: unitsMap.get(c.id) ?? 0,
+        totalProperties,
+        totalUnits,
         totalMasterMeters: mmMap.get(c.id) ?? 0,
-        totalSubMeters,
+        totalSubMeters: smMap.get(c.id) ?? 0,
+        mappedMasterMeters,
+        unmappedMasterMeters: totalProperties - mappedMasterMeters,
         mappedMeters,
-        unmappedMeters: totalSubMeters - mappedMeters,
+        unmappedMeters: totalUnits - mappedMeters,
         status: c.status,
       };
     });
+
+    return { items, pagination };
   }
 
   async getCommunityDetail(communityId: number) {
     const community = await this.communities.findOne({ where: { id: communityId } });
     if (!community) throw new NotFoundException('Community not found');
-    const overview = await this.getCommunitiesOverview();
-    const summary = overview.find((c) => c.id === communityId) ?? null;
+
+    // Single-community summary — same shape/queries as getCommunitiesOverview(),
+    // just scoped to this one ID instead of a paginated page of communities.
+    const [totalUnits, totalProperties, totalMasterMeters, totalSubMeters, mappedMeters, mappedMasterMeters] = await Promise.all([
+      this.units.createQueryBuilder('u').innerJoin('u.property', 'p').where('p.community_id = :communityId', { communityId }).getCount(),
+      this.properties.count({ where: { community: { id: communityId } } }),
+      this.masterMeters.createQueryBuilder('m').innerJoin('m.property', 'p').where('p.community_id = :communityId', { communityId }).getCount(),
+      this.subMeters.createQueryBuilder('s').innerJoin('s.property', 'p').where('p.community_id = :communityId', { communityId }).getCount(),
+      this.subMeters.createQueryBuilder('s').innerJoin('s.property', 'p').where('p.community_id = :communityId', { communityId }).andWhere('s.unit_id IS NOT NULL').select('COUNT(DISTINCT s.unit_id)', 'cnt').getRawOne<{ cnt: string }>().then((r) => Number(r?.cnt ?? 0)),
+      this.masterMeters.createQueryBuilder('m').innerJoin('m.property', 'p').where('p.community_id = :communityId', { communityId }).select('COUNT(DISTINCT m.property_id)', 'cnt').getRawOne<{ cnt: string }>().then((r) => Number(r?.cnt ?? 0)),
+    ]);
+
+    const summary = {
+      id: community.id,
+      code: community.businessCode ?? community.code,
+      name: community.name,
+      totalProperties,
+      totalUnits,
+      totalMasterMeters,
+      totalSubMeters,
+      mappedMasterMeters,
+      unmappedMasterMeters: totalProperties - mappedMasterMeters,
+      mappedMeters,
+      unmappedMeters: totalUnits - mappedMeters,
+      status: community.status,
+    };
+
     return { community: { id: community.id, name: community.name, code: community.businessCode ?? community.code, status: community.status }, summary };
   }
 
-  async getPropertiesOverview(communityId: number) {
-    const properties = await this.properties.find({ where: { community: { id: communityId } }, order: { name: 'ASC' } });
-    if (properties.length === 0) return [];
-    const propertyIds = properties.map((p) => p.id);
+  // Sortable columns limited to real base-table columns (name, status) — see
+  // COMMUNITIES_OVERVIEW_SORTABLE's comment for why the coverage/count
+  // fields aren't included.
+  private static readonly PROPERTIES_OVERVIEW_SORTABLE = new Set(['name', 'status']);
 
+  async getPropertiesOverview(communityId: number, query: MeterPropertiesOverviewQueryDto = new MeterPropertiesOverviewQueryDto()) {
+    const page = query.page && query.page > 0 ? query.page : 1;
+    const limit = query.limit && query.limit > 0 ? Math.min(query.limit, 100) : 20;
+    const sortBy = MeterService.PROPERTIES_OVERVIEW_SORTABLE.has(query.sortBy ?? '') ? query.sortBy! : 'name';
+    const sortOrder = query.sortOrder ?? 'ASC';
+
+    const qb = this.properties.createQueryBuilder('p').where('p.community_id = :communityId', { communityId }).orderBy(`p.${sortBy}`, sortOrder);
+    if (query.search) qb.andWhere('p.name LIKE :s', { s: `%${query.search}%` });
+    if (query.status) qb.andWhere('p.status = :status', { status: query.status });
+
+    const [properties, total] = await qb
+      .skip((page - 1) * limit)
+      .take(limit)
+      .getManyAndCount();
+
+    const pagination = { page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)) };
+    if (properties.length === 0) return { items: [], pagination };
+
+    const propertyIds = properties.map((p) => p.id);
     const toMap = (rows: Array<{ propertyId: string; count: string }>) =>
       new Map(rows.map((r) => [Number(r.propertyId), Number(r.count)]));
 
@@ -208,25 +304,34 @@ export class MeterService {
       this.units.createQueryBuilder('u').where('u.property_id IN (:...ids)', { ids: propertyIds }).select('u.property_id', 'propertyId').addSelect('COUNT(*)', 'count').groupBy('u.property_id').getRawMany(),
       this.masterMeters.createQueryBuilder('m').where('m.property_id IN (:...ids)', { ids: propertyIds }).select('m.property_id', 'propertyId').addSelect('COUNT(*)', 'count').groupBy('m.property_id').getRawMany(),
       this.subMeters.createQueryBuilder('s').where('s.property_id IN (:...ids)', { ids: propertyIds }).select('s.property_id', 'propertyId').addSelect('COUNT(*)', 'count').groupBy('s.property_id').getRawMany(),
-      this.subMeters.createQueryBuilder('s').where('s.property_id IN (:...ids)', { ids: propertyIds }).andWhere('s.unit_id IS NOT NULL').select('s.property_id', 'propertyId').addSelect('COUNT(*)', 'count').groupBy('s.property_id').getRawMany(),
+      // Coverage, not a meter tally — see getStats()'s comment for why this
+      // is COUNT(DISTINCT unit_id) over Units, not COUNT(*) over Sub Meters.
+      this.subMeters.createQueryBuilder('s').where('s.property_id IN (:...ids)', { ids: propertyIds }).andWhere('s.unit_id IS NOT NULL').select('s.property_id', 'propertyId').addSelect('COUNT(DISTINCT s.unit_id)', 'count').groupBy('s.property_id').getRawMany(),
     ]);
     const unitsMap = toMap(unitRows), mmMap = toMap(masterRows), smMap = toMap(subRows), mappedMap = toMap(mappedRows);
 
-    return properties.map((p) => {
-      const totalSubMeters = smMap.get(p.id) ?? 0;
+    const items = properties.map((p) => {
+      const totalUnits = unitsMap.get(p.id) ?? 0;
       const mappedMeters = mappedMap.get(p.id) ?? 0;
       return {
         id: p.id,
         code: p.businessCode ?? p.code,
         name: p.name,
-        totalUnits: unitsMap.get(p.id) ?? 0,
+        totalUnits,
         totalMasterMeters: mmMap.get(p.id) ?? 0,
-        totalSubMeters,
+        // A property has at most a small handful of master meters in
+        // practice — coverage at this level is a yes/no fact, not a count,
+        // so callers show a single "Has Master Meter" badge rather than a
+        // mapped/unmapped pair.
+        hasMasterMeter: (mmMap.get(p.id) ?? 0) > 0,
+        totalSubMeters: smMap.get(p.id) ?? 0,
         mappedMeters,
-        unmappedMeters: totalSubMeters - mappedMeters,
+        unmappedMeters: totalUnits - mappedMeters,
         status: p.status,
       };
     });
+
+    return { items, pagination };
   }
 
   async getPropertyDetail(propertyId: number) {
@@ -254,7 +359,11 @@ export class MeterService {
       stats: {
         totalUnits: units.length,
         mappedSubMeters,
-        unmappedSubMeters: subMeters.length - mappedSubMeters,
+        // Coverage over Units, not a meter tally — a Unit that has no Sub
+        // Meter is unmapped even if this property's Sub Meter count happens
+        // to differ from its Unit count (e.g. 3 sub meters against 180
+        // units means 177 units unmapped, not "0 sub meters left over").
+        unmappedSubMeters: units.length - mappedSubMeters,
         occupiedUnits: units.filter((u) => u.occupancyStatus === 'occupied').length,
         vacantUnits: units.filter((u) => u.occupancyStatus === 'vacant').length,
       },
@@ -266,6 +375,59 @@ export class MeterService {
         subMeter: subMeterByUnitId.has(u.id) ? this.mapSubMeterResponse(subMeterByUnitId.get(u.id)!) : null,
       })),
     };
+  }
+
+  // Sortable columns limited to real base-table columns on `units` — see
+  // COMMUNITIES_OVERVIEW_SORTABLE's comment for why the meter-mapping fields
+  // (computed via a join, not part of this table) aren't included.
+  private static readonly UNITS_OVERVIEW_SORTABLE = new Set(['unitNumber', 'status']);
+
+  async getUnitsOverview(propertyId: number, query: MeterUnitsOverviewQueryDto = new MeterUnitsOverviewQueryDto()) {
+    const property = await this.properties.findOne({ where: { id: propertyId } });
+    if (!property) throw new NotFoundException('Property not found');
+
+    const page = query.page && query.page > 0 ? query.page : 1;
+    const limit = query.limit && query.limit > 0 ? Math.min(query.limit, 100) : 20;
+    const sortBy = MeterService.UNITS_OVERVIEW_SORTABLE.has(query.sortBy ?? '') ? query.sortBy! : 'unitNumber';
+    const sortOrder = query.sortOrder ?? 'ASC';
+
+    const qb = this.units
+      .createQueryBuilder('u')
+      .where('u.property_id = :propertyId', { propertyId })
+      .orderBy(`u.${sortBy === 'unitNumber' ? 'unit_number' : sortBy}`, sortOrder);
+    if (query.search) qb.andWhere('u.unit_number LIKE :s', { s: `%${query.search}%` });
+    if (query.status) qb.andWhere('u.unit_status = :status', { status: query.status });
+
+    const [units, total] = await qb
+      .skip((page - 1) * limit)
+      .take(limit)
+      .getManyAndCount();
+
+    const pagination = { page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)) };
+    if (units.length === 0) return { items: [], pagination };
+
+    const unitIds = units.map((u) => u.id);
+    const [masterMeter, subMeters] = await Promise.all([
+      this.masterMeters.findOne({ where: { property: { id: propertyId } }, order: { id: 'ASC' } }),
+      this.subMeters.find({ where: { unit: { id: In(unitIds) } }, relations: ['unit'] }),
+    ]);
+    const subMeterByUnitId = new Map(subMeters.filter((s) => s.unit).map((s) => [s.unit!.id, s]));
+
+    const items = units.map((u) => {
+      const subMeter = subMeterByUnitId.get(u.id) ?? null;
+      return {
+        id: u.id,
+        unitNumber: u.unitNumber,
+        floorNumber: u.floorNumber,
+        hasMasterMeter: !!masterMeter,
+        masterMeterCode: masterMeter?.businessCode ?? null,
+        hasSubMeter: !!subMeter,
+        subMeterCode: subMeter?.businessCode ?? null,
+        status: u.status,
+      };
+    });
+
+    return { items, pagination };
   }
 
   // ─── Master Meter CRUD ──────────────────────────────────────────────────────
@@ -309,7 +471,24 @@ export class MeterService {
       entity.createdByUser = { id: actorId } as any;
       entity.lastModifiedByUser = { id: actorId } as any;
     }
-    const saved = await this.masterMeters.save(entity);
+
+    // UQ_master_meters_property_id (one Master Meter per Property),
+    // UQ_master_meters_serial_number, UQ_master_meters_dtu_id, and
+    // UQ_master_meters_property_mbus are all real DB constraints (see
+    // MeterUniquenessMigrationService) that this single-record create path
+    // has no pre-check for — unlike bulk import, which validates against a
+    // snapshot first (see propertiesWithMasterMeter in runImport()). A
+    // collision here is rarer (no concurrent-batch race) but just as real —
+    // e.g. two admins creating a Master Meter for the same Property at
+    // nearly the same time — so it gets the same clean-message treatment
+    // toCommitFailure() already gives the import path, instead of a raw
+    // MySQL 500.
+    let saved: MasterMeter;
+    try {
+      saved = await this.masterMeters.save(entity);
+    } catch (err) {
+      throw this.toDuplicateKeyException(err);
+    }
     saved.businessCode = generateBusinessCode(BUSINESS_CODE_PREFIXES.MASTER_METER, saved.id);
     await this.masterMeters.update(saved.id, { businessCode: saved.businessCode });
 
@@ -402,8 +581,6 @@ export class MeterService {
     saved.businessCode = generateBusinessCode(BUSINESS_CODE_PREFIXES.SUB_METER, saved.id);
     await this.subMeters.update(saved.id, { businessCode: saved.businessCode });
 
-    if (unit) await this.syncUnitMeterFields(unit.id, saved.businessCode, masterMeter.businessCode ?? null);
-
     await this.auditService.record({ moduleName: 'Meter', entityId: saved.id, action: 'CREATE', oldValue: null, newValue: saved, performedBy: actorId });
     return this.findOneSubMeter(saved.id);
   }
@@ -412,7 +589,6 @@ export class MeterService {
     const meter = await this.subMeters.findOne({ where: { id }, relations: ['unit', 'masterMeter'] });
     if (!meter) throw new NotFoundException('Sub meter not found');
     const oldValue = { ...meter };
-    const previousUnitId = meter.unit?.id ?? null;
 
     if (dto.unitId !== undefined) {
       if (dto.unitId === null) {
@@ -433,14 +609,6 @@ export class MeterService {
     if (actorId) meter.lastModifiedByUser = { id: actorId } as any;
 
     const saved = await this.subMeters.save(meter);
-    const newUnitId = saved.unit?.id ?? null;
-
-    if (previousUnitId && previousUnitId !== newUnitId) {
-      await this.units.update(previousUnitId, { subMeterId: null, masterMeterId: null });
-    }
-    if (newUnitId) {
-      await this.syncUnitMeterFields(newUnitId, saved.businessCode ?? null, saved.masterMeter?.businessCode ?? null);
-    }
 
     await this.auditService.record({ moduleName: 'Meter', entityId: id, action: 'UPDATE', oldValue, newValue: saved, performedBy: actorId });
     return this.findOneSubMeter(id);
@@ -462,10 +630,6 @@ export class MeterService {
       performedBy: actorId,
     });
     return this.findOneSubMeter(id);
-  }
-
-  private async syncUnitMeterFields(unitId: number, subMeterCode: string | null, masterMeterCode: string | null) {
-    await this.units.update(unitId, { subMeterId: subMeterCode, masterMeterId: masterMeterCode });
   }
 
   // ─── Column config (Attribute-driven) ───────────────────────────────────────
@@ -1139,14 +1303,34 @@ export class MeterService {
   // from scanning the entire audit log table.
   private static readonly IMPORT_HISTORY_SCAN_LIMIT = 500;
 
+  // Columns the Recent Imports table may sort by — every one of these lives
+  // only inside the audit log's parsed JSON blob (fileName/importType/
+  // totalRows/failedRows/status) or is resolved after the fact (importedBy),
+  // so there's no real DB column to ORDER BY; this whitelist guards which
+  // in-memory field name we're allowed to read off a row before sorting,
+  // mirroring BillingCycleService.findAll()'s SORTABLE-set guard idiom.
+  private static readonly IMPORT_HISTORY_SORTABLE = new Set([
+    'fileName',
+    'importType',
+    'importedBy',
+    'importedAt',
+    'totalRows',
+    'failedRows',
+    'status',
+  ]);
+
   async getImportHistoryPage(filters: {
     type?: 'master_meter' | 'sub_meter';
     status?: 'success' | 'failed' | 'partial';
     page?: number;
     pageSize?: number;
+    sortBy?: string;
+    sortOrder?: 'ASC' | 'DESC';
   }) {
     const page = filters.page && filters.page > 0 ? filters.page : 1;
     const pageSize = filters.pageSize && filters.pageSize > 0 ? Math.min(filters.pageSize, 100) : 20;
+    const sortBy = MeterService.IMPORT_HISTORY_SORTABLE.has(filters.sortBy ?? '') ? filters.sortBy! : 'importedAt';
+    const sortOrder = filters.sortOrder ?? 'DESC';
 
     const allRows = await this.loadImportHistoryRows(MeterService.IMPORT_HISTORY_SCAN_LIMIT);
 
@@ -1159,14 +1343,45 @@ export class MeterService {
       return true;
     });
 
-    const total = filteredRows.length;
+    const direction = sortOrder === 'ASC' ? 1 : -1;
+    const sortedRows = [...filteredRows].sort((a, b) => {
+      const aValue = a[sortBy as keyof typeof a];
+      const bValue = b[sortBy as keyof typeof b];
+      if (aValue == null && bValue == null) return 0;
+      if (aValue == null) return 1;
+      if (bValue == null) return -1;
+      if (typeof aValue === 'number' && typeof bValue === 'number') return (aValue - bValue) * direction;
+      return String(aValue).localeCompare(String(bValue)) * direction;
+    });
+
+    const total = sortedRows.length;
     const totalPages = Math.max(1, Math.ceil(total / pageSize));
     const start = (page - 1) * pageSize;
-    const items = filteredRows.slice(start, start + pageSize);
+    const items = sortedRows.slice(start, start + pageSize);
 
     return {
       items,
       pagination: { page, limit: pageSize, total, totalPages },
+    };
+  }
+
+  // Filter option metadata for the Import Center's Type/Status dropdowns —
+  // mirrors TariffService.getFilterMetadata() / BillingCycleService's
+  // metaFilters endpoint: both are fixed, system-defined workflow values
+  // (MeterImportType is a real backend enum; status is a runtime-derived
+  // 3-state union, never business-configurable), so this stays a plain
+  // enum-reflecting endpoint rather than a LOV Master category.
+  async getImportHistoryMetaFilters() {
+    return {
+      types: [
+        { value: 'master_meter', label: MeterImportType.MASTER },
+        { value: 'sub_meter', label: MeterImportType.SUB },
+      ],
+      statuses: [
+        { value: 'success', label: 'Success' },
+        { value: 'failed', label: 'Failed' },
+        { value: 'partial', label: 'Partial' },
+      ],
     };
   }
 
@@ -1301,13 +1516,6 @@ export class MeterService {
               createdByUser: actorId ? ({ id: actorId } as any) : null,
             });
             const savedEntity = await manager.save(SubMeter, entity);
-            if (r._resolvedUnitId) {
-              const master = await manager.findOne(MasterMeter, { where: { id: r._resolvedMasterMeterId } });
-              await manager.update(Unit, r._resolvedUnitId, {
-                subMeterId: savedEntity.businessCode ?? null,
-                masterMeterId: master?.businessCode ?? null,
-              });
-            }
             return savedEntity;
           });
           created.push(saved);
@@ -1336,6 +1544,7 @@ export class MeterService {
     UQ_master_meters_serial_number: 'Serial Number is already used by another Master Meter',
     UQ_master_meters_dtu_id: 'DTU ID is already used by another Master Meter',
     UQ_master_meters_property_mbus: 'M-Bus Address is already used by another Master Meter on the same Property',
+    UQ_master_meters_property_id: 'This Property already has a Master Meter',
     UQ_sub_meters_serial_number: 'Serial Number is already used by another Sub Meter',
     UQ_sub_meters_master_meter_mbus: 'M-Bus Address is already used by another Sub Meter on the same Master Meter',
   };
@@ -1355,6 +1564,21 @@ export class MeterService {
       reasonType: isDuplicateKey ? ImportFailureReason.DUPLICATE : ImportFailureReason.OTHER,
       values: Object.fromEntries(columns.map((c) => [c.internalField, row[c.internalField] ?? null])),
     };
+  }
+
+  // Single-record equivalent of toCommitFailure() above, for create paths
+  // outside bulk import (currently just createMasterMeter()) that have no
+  // pre-check against one of the named unique indexes and would otherwise
+  // let a raw MySQL duplicate-key error reach the client as a generic 500.
+  // A non-duplicate-key error is rethrown completely unchanged — this only
+  // ever translates the one error shape it actually understands.
+  private toDuplicateKeyException(err: unknown): Error {
+    const message = err instanceof Error ? err.message : String(err);
+    const isDuplicateKey = /duplicate entry/i.test(message) || (err as { code?: string })?.code === 'ER_DUP_ENTRY';
+    if (!isDuplicateKey) return err instanceof Error ? err : new Error(message);
+
+    const violatedIndex = Object.keys(MeterService.COMMIT_DUPLICATE_INDEX_MESSAGES).find((indexName) => message.includes(indexName));
+    return new BadRequestException(violatedIndex ? MeterService.COMMIT_DUPLICATE_INDEX_MESSAGES[violatedIndex] : 'This record could not be saved because it duplicates an existing one');
   }
 
   // ─── Response mappers ───────────────────────────────────────────────────────

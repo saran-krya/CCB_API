@@ -114,7 +114,7 @@ export class UnitService {
   async findOne(id: number): Promise<UnitDetailDto> {
     const unit = await this.units.findOne({
       where: { id },
-      relations: { property: { community: true } },
+      relations: { property: { community: true }, subMeter: { masterMeter: true } },
     });
     if (!unit) throw new NotFoundException('Unit not found');
     return {
@@ -134,8 +134,13 @@ export class UnitService {
       handoverDate: unit.handoverDate ?? null,
       ownerId: unit.ownerId ?? null,
       tenantId: unit.tenantId ?? null,
-      masterMeterId: unit.masterMeterId ?? null,
-      subMeterId: unit.subMeterId ?? null,
+      // Sourced from the real SubMeter.unit / SubMeter.masterMeter relations
+      // (see unit.entity.ts's Unit.subMeter comment) — never a denormalized
+      // copy, so this can never drift from the actual mapping.
+      subMeterId: unit.subMeter?.id ?? null,
+      subMeterCode: unit.subMeter?.businessCode ?? null,
+      masterMeterId: unit.subMeter?.masterMeter?.id ?? null,
+      masterMeterCode: unit.subMeter?.masterMeter?.businessCode ?? null,
       amenities: unit.amenities ?? null,
       description: unit.description ?? null,
       createdDate: unit.createdAt?.toISOString() ?? '',
