@@ -118,14 +118,24 @@ export class MeterController {
   // ─── Master Meters ──────────────────────────────────────────────────────────
 
   @Get('master-meters')
-  @Permission('METER_VIEW')
+  @Permission('METER_VIEW', 'METER_INVENTORY_VIEW')
   @ApiOperation({ summary: 'List master meters with pagination, search and filters' })
   findMasterMeters(@Query() query: MeterQueryDto) {
     return this.meters.findMasterMeters(query);
   }
 
+  // Registered before master-meters/:id (same reason export/import-template
+  // already are) so the literal 'metaFilters' segment can never be swallowed
+  // by the :id param route.
+  @Get('master-meters/metaFilters')
+  @Permission('METER_VIEW', 'METER_INVENTORY_VIEW')
+  @ApiOperation({ summary: 'Filter option metadata (Community, Property, Status) for the Master Meter inventory list' })
+  getMasterMeterFilterMetadata() {
+    return this.meters.getMeterInventoryFilterMetadata();
+  }
+
   @Get('master-meters/export')
-  @Permission('METER_VIEW')
+  @Permission('METER_VIEW', 'METER_INVENTORY_EXPORT')
   @ApiOperation({ summary: 'Export master meters to Excel using the configured column list' })
   async exportMasterMeters(@Query() query: MeterQueryDto, @Res() res: Response) {
     const buffer = await this.meters.exportMeters(MeterImportType.MASTER, query);
@@ -171,7 +181,7 @@ export class MeterController {
   }
 
   @Get('master-meters/:id')
-  @Permission('METER_VIEW')
+  @Permission('METER_VIEW', 'METER_INVENTORY_VIEW')
   @ApiOperation({ summary: 'Get master meter detail' })
   @ApiParam({ name: 'id', type: Number })
   findOneMasterMeter(@Param('id', ParseIntPipe) id: number) {
@@ -179,14 +189,14 @@ export class MeterController {
   }
 
   @Post('master-meters')
-  @Permission('METER_CREATE')
+  @Permission('METER_CREATE', 'METER_INVENTORY_CREATE')
   @ApiOperation({ summary: 'Register a new master meter' })
   createMasterMeter(@Body() dto: CreateMasterMeterDto, @CurrentUser() user?: AuthenticatedUser) {
     return this.meters.createMasterMeter(dto, user?.sub);
   }
 
   @Patch('master-meters/:id')
-  @Permission('METER_EDIT')
+  @Permission('METER_INVENTORY_EDIT')
   @ApiOperation({ summary: 'Edit a master meter' })
   @ApiParam({ name: 'id', type: Number })
   updateMasterMeter(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateMasterMeterDto, @CurrentUser() user?: AuthenticatedUser) {
@@ -194,7 +204,7 @@ export class MeterController {
   }
 
   @Patch('master-meters/:id/status')
-  @Permission('METER_EDIT')
+  @Permission('METER_INVENTORY_EDIT')
   @ApiOperation({ summary: 'Activate or deactivate a master meter' })
   @ApiParam({ name: 'id', type: Number })
   setMasterMeterStatus(@Param('id', ParseIntPipe) id: number, @Body() dto: SetMeterStatusDto, @CurrentUser() user?: AuthenticatedUser) {
@@ -204,14 +214,22 @@ export class MeterController {
   // ─── Sub Meters ─────────────────────────────────────────────────────────────
 
   @Get('sub-meters')
-  @Permission('METER_VIEW')
+  @Permission('METER_VIEW', 'METER_INVENTORY_VIEW')
   @ApiOperation({ summary: 'List sub meters with pagination, search and filters' })
   findSubMeters(@Query() query: MeterQueryDto) {
     return this.meters.findSubMeters(query);
   }
 
+  // Registered before sub-meters/:id — same reason as master-meters/metaFilters above.
+  @Get('sub-meters/metaFilters')
+  @Permission('METER_VIEW', 'METER_INVENTORY_VIEW')
+  @ApiOperation({ summary: 'Filter option metadata (Community, Property, Status) for the Sub Meter inventory list' })
+  getSubMeterFilterMetadata() {
+    return this.meters.getMeterInventoryFilterMetadata();
+  }
+
   @Get('sub-meters/export')
-  @Permission('METER_VIEW')
+  @Permission('METER_VIEW', 'METER_INVENTORY_EXPORT')
   @ApiOperation({ summary: 'Export sub meters to Excel using the configured column list' })
   async exportSubMeters(@Query() query: MeterQueryDto, @Res() res: Response) {
     const buffer = await this.meters.exportMeters(MeterImportType.SUB, query);
@@ -257,7 +275,7 @@ export class MeterController {
   }
 
   @Get('sub-meters/:id')
-  @Permission('METER_VIEW')
+  @Permission('METER_VIEW', 'METER_INVENTORY_VIEW')
   @ApiOperation({ summary: 'Get sub meter detail' })
   @ApiParam({ name: 'id', type: Number })
   findOneSubMeter(@Param('id', ParseIntPipe) id: number) {
@@ -265,14 +283,20 @@ export class MeterController {
   }
 
   @Post('sub-meters')
-  @Permission('METER_CREATE')
+  @Permission('METER_CREATE', 'METER_INVENTORY_CREATE')
   @ApiOperation({ summary: 'Register a new sub meter' })
   createSubMeter(@Body() dto: CreateSubMeterDto, @CurrentUser() user?: AuthenticatedUser) {
     return this.meters.createSubMeter(dto, user?.sub);
   }
 
+  // Shared by two distinct callers with two distinct permissions — Meter
+  // Inventory's full attribute edit (METER_INVENTORY_EDIT) and Meter
+  // Information's mapping-only dialog (METER_MAPPING, which only ever sends
+  // { unitId }). The DTO/route can't tell them apart field-by-field, so this
+  // is a route-level OR, not true field-level authorization — consistent
+  // with how every other permission check in this codebase already works.
   @Patch('sub-meters/:id')
-  @Permission('METER_EDIT')
+  @Permission('METER_INVENTORY_EDIT', 'METER_MAPPING')
   @ApiOperation({ summary: 'Edit a sub meter, including mapping/unmapping it to a unit' })
   @ApiParam({ name: 'id', type: Number })
   updateSubMeter(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateSubMeterDto, @CurrentUser() user?: AuthenticatedUser) {
@@ -280,7 +304,7 @@ export class MeterController {
   }
 
   @Patch('sub-meters/:id/status')
-  @Permission('METER_EDIT')
+  @Permission('METER_INVENTORY_EDIT')
   @ApiOperation({ summary: 'Activate or deactivate a sub meter' })
   @ApiParam({ name: 'id', type: Number })
   setSubMeterStatus(@Param('id', ParseIntPipe) id: number, @Body() dto: SetMeterStatusDto, @CurrentUser() user?: AuthenticatedUser) {

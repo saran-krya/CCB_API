@@ -25,6 +25,7 @@ import { MeterUniquenessMigrationModule } from './common/migrations/meter-unique
 import { TariffModule } from './modules/tariff/tariff.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { MeterModule } from './modules/meter/meter.module';
+import { SftpModule } from './modules/sftp/sftp.module';
 
 @Module({
   imports: [
@@ -52,6 +53,7 @@ import { MeterModule } from './modules/meter/meter.module';
     MeterUniquenessMigrationModule,
     DashboardModule,
     MeterModule,
+    SftpModule,
     BootstrapModule,
   ],
 })

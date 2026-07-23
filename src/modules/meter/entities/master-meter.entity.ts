@@ -49,10 +49,6 @@ export class MasterMeter extends BaseEntity {
   @Column({ name: 'serial_number', type: 'varchar', length: 100, nullable: true })
   serialNumber?: string | null;
 
-  // The tower's physical Data Transfer Unit — one DTU per tower/property,
-  // and the DTU hardware ID itself is globally unique across the whole
-  // portfolio (confirmed with the business owner). Uniqueness declared via
-  // the named @Index above — see that comment for why.
   @Column({ name: 'dtu_id', type: 'varchar', length: 100, nullable: true })
   dtuId?: string | null;
 

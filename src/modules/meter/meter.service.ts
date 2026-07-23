@@ -444,7 +444,51 @@ export class MeterService {
     return { items, pagination };
   }
 
+  // ─── Meter Inventory filter metadata ────────────────────────────────────────
+
+  // Single shared metadata call for both the Master Meter and Sub Meter
+  // inventory tabs — they filter on the exact same three dimensions
+  // (community/property/status), so one method backs both
+  // 'master-meters/metaFilters' and 'sub-meters/metaFilters' routes, matching
+  // the "one metaFilters call feeds every filter dropdown" convention already
+  // established by BillingCycleService.getFilterMetadata().
+  async getMeterInventoryFilterMetadata() {
+    const [communities, properties] = await Promise.all([
+      this.communities.find({ select: ['id', 'name'], order: { name: 'ASC' } }),
+      this.properties.find({ select: ['id', 'name'], relations: ['community'], order: { name: 'ASC' } }),
+    ]);
+
+    return {
+      communities: communities.map((c) => ({ id: c.id, name: c.name })),
+      properties: properties.map((p) => ({ id: p.id, name: p.name, communityId: p.community?.id ?? null })),
+      statuses: [
+        { value: MeterStatus.ACTIVE, label: 'Active' },
+        { value: MeterStatus.INACTIVE, label: 'Inactive' },
+      ],
+    };
+  }
+
   // ─── Master Meter CRUD ──────────────────────────────────────────────────────
+
+  // Maps each sortable response field to its real alias-prefixed ORM path —
+  // propertyName/communityName live on the joined Property/Community aliases,
+  // not a column directly on MasterMeter, so a plain `m.${sortBy}` template
+  // (as COMMUNITIES_OVERVIEW_SORTABLE uses for same-table columns) can't
+  // express this; every other field maps back onto the base 'm' alias. Same
+  // camelCase-ORM-property-name requirement as every other orderBy() in this
+  // codebase — passing a raw DB column name here fails deep inside TypeORM's
+  // combined-order-by resolution rather than with a clear error (see
+  // SftpFileListService's SORTABLE_COLUMNS for the exact same gotcha).
+  private static readonly MASTER_METERS_SORTABLE: Record<string, string> = {
+    code: 'm.businessCode',
+    serialNumber: 'm.serialNumber',
+    dtuId: 'm.dtuId',
+    propertyName: 'property.name',
+    communityName: 'community.name',
+    status: 'm.status',
+    installationDate: 'm.installationDate',
+    createdAt: 'm.createdAt',
+  };
 
   async findMasterMeters(query: MeterQueryDto) {
     const qb = this.masterMeters
@@ -457,7 +501,8 @@ export class MeterService {
     if (query.search) {
       qb.andWhere('(m.business_code LIKE :s OR m.serial_number LIKE :s OR m.dtu_id LIKE :s)', { s: `%${query.search}%` });
     }
-    qb.orderBy('m.id', 'DESC');
+    const orderCol = MeterService.MASTER_METERS_SORTABLE[query.sortBy ?? ''] ?? 'm.id';
+    qb.orderBy(orderCol, query.sortOrder === 'ASC' ? 'ASC' : 'DESC');
     const result = await paginate(qb, query);
     return { ...result, items: result.items.map((m) => this.mapMasterMeterResponse(m)) };
   }
@@ -541,6 +586,21 @@ export class MeterService {
 
   // ─── Sub Meter CRUD ─────────────────────────────────────────────────────────
 
+  // Same rationale as MASTER_METERS_SORTABLE above — propertyName/
+  // communityName/unitNumber/masterMeterCode all live on joined aliases, not
+  // directly on SubMeter.
+  private static readonly SUB_METERS_SORTABLE: Record<string, string> = {
+    code: 's.businessCode',
+    serialNumber: 's.serialNumber',
+    masterMeterCode: 'masterMeter.businessCode',
+    propertyName: 'property.name',
+    communityName: 'community.name',
+    unitNumber: 'unit.unitNumber',
+    status: 's.status',
+    installationDate: 's.installationDate',
+    createdAt: 's.createdAt',
+  };
+
   async findSubMeters(query: MeterQueryDto) {
     const qb = this.subMeters
       .createQueryBuilder('s')
@@ -554,7 +614,8 @@ export class MeterService {
     if (query.search) {
       qb.andWhere('(s.business_code LIKE :s OR s.serial_number LIKE :s)', { s: `%${query.search}%` });
     }
-    qb.orderBy('s.id', 'DESC');
+    const orderCol = MeterService.SUB_METERS_SORTABLE[query.sortBy ?? ''] ?? 's.id';
+    qb.orderBy(orderCol, query.sortOrder === 'ASC' ? 'ASC' : 'DESC');
     const result = await paginate(qb, query);
     return { ...result, items: result.items.map((s) => this.mapSubMeterResponse(s)) };
   }

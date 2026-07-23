@@ -167,6 +167,14 @@ export const SUB_MODULES: SeedSubModule[] = [
     url: '/meters/billing-readiness',
     displayOrder: 5,
   },
+  {
+    pModuleCode: 'METER_MANAGEMENT',
+    name: 'Meter Inventory',
+    code: 'METER_INVENTORY',
+    icon: 'Gauge',
+    url: '/meters/inventory',
+    displayOrder: 6,
+  },
 
   // ── Billing Management ────────────────────────────────────────────────────
   {
@@ -350,6 +358,13 @@ export const SCREENS: SeedScreen[] = [
     name: 'Import Center',
     code: 'IMPORT_CENTER',
     url: '/meters/import-center',
+    displayOrder: 1,
+  },
+  {
+    subModuleCode: 'METER_INVENTORY',
+    name: 'Meter Inventory',
+    code: 'METER_INVENTORY',
+    url: '/meters/inventory',
     displayOrder: 1,
   },
 ]
@@ -761,6 +776,14 @@ export const ACTIONS: SeedAction[] = [
   },
   {
     screenCode: 'METER_LIST',
+    name: 'Map Sub Meter',
+    code: 'METER_MAPPING',
+    description: 'Map, unmap, or change which unit a sub meter is mapped to',
+    parentActionCode: 'METER_VIEW',
+    displayOrder: 2,
+  },
+  {
+    screenCode: 'METER_LIST',
     name: 'Register Meter',
     code: 'METER_CREATE',
     description: 'Register a new master or sub meter, individually or via bulk import',
@@ -774,13 +797,55 @@ export const ACTIONS: SeedAction[] = [
     parentActionCode: 'METER_CREATE',
     displayOrder: 1,
   },
+  // METER_EDIT deliberately does not exist on this screen — Meter Information
+  // is operational hierarchy/mapping only (View + Map/Unmap/Change Mapping);
+  // Meter Inventory (METER_INVENTORY_EDIT, below) is the sole place meter
+  // master data — including Activate/Deactivate — can be edited. See
+  // MeterInventoryShell.tsx and the removed Edit/status-toggle buttons on the
+  // Property/Unit hierarchy pages for the corresponding frontend change.
+
+  // Meter Inventory — the portfolio-wide Master/Sub Meter list, distinct from
+  // METER_LIST's community/property/unit drill-down. METER_INVENTORY_DELETE
+  // is reserved for permission completeness only — no hard-delete endpoint
+  // exists for meters yet (only activate/deactivate), so nothing in the UI
+  // calls it today.
   {
-    screenCode: 'METER_LIST',
-    name: 'Edit Meter',
-    code: 'METER_EDIT',
-    description: 'Edit a master or sub meter, including status and unit mapping',
+    screenCode: 'METER_INVENTORY',
+    name: 'View Meter Inventory',
+    code: 'METER_INVENTORY_VIEW',
+    description: 'View the Meter Inventory screen (Master Meter and Sub Meter lists)',
+    displayOrder: 1,
+  },
+  {
+    screenCode: 'METER_INVENTORY',
+    name: 'Export Meter Inventory',
+    code: 'METER_INVENTORY_EXPORT',
+    description: 'Export Master or Sub Meters to Excel from the Meter Inventory screen',
+    parentActionCode: 'METER_INVENTORY_VIEW',
+    displayOrder: 1,
+  },
+  {
+    screenCode: 'METER_INVENTORY',
+    name: 'Register Meter (Inventory)',
+    code: 'METER_INVENTORY_CREATE',
+    description: 'Register a new Master or Sub Meter from the Meter Inventory screen',
+    displayOrder: 2,
+  },
+  {
+    screenCode: 'METER_INVENTORY',
+    name: 'Edit Meter (Inventory)',
+    code: 'METER_INVENTORY_EDIT',
+    description: 'Edit a Master or Sub Meter, including status, from the Meter Inventory screen',
     displayOrder: 3,
   },
+  {
+    screenCode: 'METER_INVENTORY',
+    name: 'Delete Meter (Inventory)',
+    code: 'METER_INVENTORY_DELETE',
+    description: 'Delete a Master or Sub Meter from the Meter Inventory screen (reserved — no hard-delete capability exists yet; not wired to any UI action)',
+    displayOrder: 4,
+  },
+
   {
     screenCode: 'IMPORT_CENTER',
     name: 'View Import Center',
