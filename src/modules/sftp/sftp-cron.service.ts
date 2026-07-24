@@ -13,11 +13,7 @@ import { SftpIngestionStatus } from './entities/sftp-ingestion-status.enum';
 import { TriggerSource } from './entities/trigger-source.enum';
 import { MasterMeter } from '../meter/entities/master-meter.entity';
 import { SubMeter } from '../meter/entities/sub-meter.entity';
-
-// Filenames on the real server follow DTU_<dtuId>_<YYYYMMDD>.csv (confirmed
-// against the live EC2 server during the Download/Parse milestones) — this
-// is the one place that pattern is parsed.
-const FILENAME_PATTERN = /^DTU_(.+)_(\d{8})\.csv$/i;
+import { DTU_FILENAME_PATTERN as FILENAME_PATTERN } from './filename.util';
 
 const CONNECTIVITY_RETRY_DELAYS_MS = [1000, 2000, 4000];
 

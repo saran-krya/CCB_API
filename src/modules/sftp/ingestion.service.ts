@@ -6,16 +6,38 @@ import { createReadStream } from 'fs';
 import { stat } from 'fs/promises';
 import { hostname } from 'os';
 import { SftpService } from './sftp.service';
-import { ValidationService, AnomalySeverity } from './validation.service';
+import { ValidationService, AnomalySeverity, RowValidationError } from './validation.service';
 import { MeterHierarchyResolverService } from './meter-hierarchy-resolver.service';
 import { SftpIngestionLog } from './entities/sftp-ingestion-log.entity';
 import { SftpIngestionStatus } from './entities/sftp-ingestion-status.enum';
 import { TriggerSource } from './entities/trigger-source.enum';
-import { MeterReading } from './entities/meter-reading.entity';
+import { MeterReading, ReadingAnomalyCode, ReadingApprovalStatus, ReadingValidationStatus } from './entities/meter-reading.entity';
 import { SubMeter } from '../meter/entities/sub-meter.entity';
 import { Unit } from '../unit/entities/unit.entity';
 import { Property } from '../property/entities/property.entity';
 import { Community } from '../community/entities/community.entity';
+import { parseReadingDateFromFilename } from './filename.util';
+
+// Maps a row-validation failure to a stable anomaly code. Deliberately a
+// small, honest scheme reflecting exactly what ValidationService.validateRows()
+// checks (field presence/format) — see ReadingAnomalyCode's own comment for
+// why this isn't the Daily Meter Readings mock UI's ANM-101..110 codes.
+function toAnomalyCode(error: RowValidationError): ReadingAnomalyCode {
+  switch (error.field) {
+    case 'meter_id':
+      return ReadingAnomalyCode.MISSING_METER_ID;
+    case 'reading_date':
+      return ReadingAnomalyCode.MISSING_READING_DATE;
+    case 'unit':
+      return ReadingAnomalyCode.MISSING_UNIT;
+    case 'reading_value':
+      if (error.message === 'reading_value must be numeric') return ReadingAnomalyCode.NON_NUMERIC_READING_VALUE;
+      if (error.message === 'Value cannot be negative') return ReadingAnomalyCode.NEGATIVE_READING_VALUE;
+      return ReadingAnomalyCode.MISSING_READING_VALUE;
+    default:
+      return ReadingAnomalyCode.MISSING_READING_VALUE;
+  }
+}
 
 export interface IngestSuccessResult {
   outcome: 'success';
@@ -83,6 +105,14 @@ export class IngestionService {
 
     const processingStartedAt = new Date();
 
+    // The date this file's data is FOR (parsed from its own filename,
+    // DTU_<dtuId>_<YYYYMMDD>.csv) — distinct from processingStartedAt, which
+    // is only when ingestion happened to run. Without this, EstateSummaryService
+    // falls back to grouping by ingestion timestamp instead of the file's real
+    // date, silently mis-bucketing the SFTP dashboard whenever a file is
+    // ingested on a different calendar day than the one its data covers.
+    const readingDate = parseReadingDateFromFilename(fileName);
+
     const { localPath } = await this.sftp.downloadFile(fileName);
     const { rows } = await this.sftp.parseCsv(localPath);
 
@@ -119,6 +149,7 @@ export class IngestionService {
           fileChecksumSha256: null,
           existingFileId: existing.id,
           fileStatus: SftpIngestionStatus.DUPLICATE,
+          readingDate,
           receivedMeterCount: 0,
           validReadingCount: 0,
           anomalyCount: 0,
@@ -158,6 +189,7 @@ export class IngestionService {
           fileSizeBytes: (await stat(localPath)).size,
           fileChecksumSha256,
           fileStatus: SftpIngestionStatus.FAILED,
+          readingDate,
           receivedMeterCount: rowResult.totalRows,
           validReadingCount: 0,
           anomalyCount: rowResult.invalidRows,
@@ -188,21 +220,23 @@ export class IngestionService {
       };
     }
 
-    // Only rows that passed validateRows() become MeterReading records —
-    // a row flagged invalid (missing meter_id, non-numeric/negative
-    // reading_value, etc.) is counted in anomalyCount but never persisted.
-    const invalidRowIndexes = new Set(rowResult.errors.map((e) => e.row - 1));
-    const validRows = rows.filter((_, index) => !invalidRowIndexes.has(index));
+    // Every row becomes a MeterReading now — Clean (passed validation) or
+    // Anomaly (failed) — never discarded. SftpIngestionLog's own aggregate
+    // counts/file-level status are computed exactly as before from
+    // rowResult; this only changes what gets persisted per row.
+    const worstErrorByRow = this.validation.getWorstErrorPerRow(rowResult.errors);
 
     const processingNode = hostname();
     const { size: fileSizeBytes } = await stat(localPath);
 
     // Meter hierarchy resolution (meter_id -> SubMeter -> Unit -> Property ->
-    // Community), batched once per file rather than once per row. A
-    // meter_id with no matching SubMeter is simply absent from the map —
-    // that reading still gets saved below, just without the resolved
-    // hierarchy; existing validation/anomaly handling above is untouched.
-    const distinctMeterIds = Array.from(new Set(validRows.map((row) => row.meter_id.trim())));
+    // Community), batched once per file rather than once per row, over EVERY
+    // row (Clean and Anomaly alike) — an Anomaly row can still have a
+    // resolvable meter_id (e.g. its reading_value failed, not meter_id
+    // itself). A meter_id with no matching SubMeter (including a blank one)
+    // is simply absent from the map — that reading still gets saved below,
+    // just without the resolved hierarchy.
+    const distinctMeterIds = Array.from(new Set(rows.map((row) => row.meter_id?.trim()).filter((id): id is string => !!id)));
     const hierarchyByMeterId = await this.hierarchyResolver.resolveBatch(distinctMeterIds);
 
     const resolvedPropertyIds = new Set<number>();
@@ -216,6 +250,7 @@ export class IngestionService {
         fileSizeBytes,
         fileChecksumSha256,
         fileStatus: SftpIngestionStatus.PROCESSED,
+        readingDate,
         receivedMeterCount: rowResult.totalRows,
         validReadingCount: rowResult.validRows,
         anomalyCount: rowResult.invalidRows,
@@ -230,20 +265,38 @@ export class IngestionService {
       });
       const savedLog = await manager.save(SftpIngestionLog, log);
 
-      if (validRows.length > 0) {
-        const readingEntities = validRows.map((row) => {
-          const meterId = row.meter_id.trim();
-          const hierarchy = hierarchyByMeterId.get(meterId);
+      if (rows.length > 0) {
+        const readingEntities = rows.map((row, index) => {
+          const meterId = row.meter_id?.trim() ?? '';
+          const hierarchy = meterId ? hierarchyByMeterId.get(meterId) : undefined;
           if (hierarchy) {
             resolvedPropertyIds.add(hierarchy.propertyId);
             resolvedCommunityIds.add(hierarchy.communityId);
           }
 
+          const worstError = worstErrorByRow.get(index + 1);
+          const validationStatus = worstError ? ReadingValidationStatus.ANOMALY : ReadingValidationStatus.CLEAN;
+
+          // Auto-approval, decided from validationStatus alone, at the exact
+          // moment each row is built — before this entity is ever persisted.
+          // Clean readings need no human judgment call and are immediately
+          // billable; Anomaly readings always stay Pending for Operations to
+          // review manually. There is no path that leaves a Clean reading
+          // Pending, and no path that auto-approves an Anomaly reading.
+          const isAutoApproved = validationStatus === ReadingValidationStatus.CLEAN;
+
           return manager.create(MeterReading, {
             meterId,
-            readingDate: row.reading_date.trim(),
-            readingValue: row.reading_value.trim(),
-            unit: row.unit.trim(),
+            readingDate: row.reading_date?.trim() || processingStartedAt.toISOString().slice(0, 10),
+            readingValue: row.reading_value?.trim() || null,
+            unit: row.unit?.trim() || null,
+            validationStatus,
+            anomalyCode: worstError ? toAnomalyCode(worstError) : null,
+            anomalySeverity: worstError?.severity ?? null,
+            anomalyMessage: worstError?.message ?? null,
+            approvalStatus: isAutoApproved ? ReadingApprovalStatus.APPROVED : ReadingApprovalStatus.PENDING,
+            approvedAt: isAutoApproved ? processingStartedAt : null,
+            approvedBy: isAutoApproved ? 'SYSTEM' : null,
             sourceFile: savedLog,
             subMeter: hierarchy ? ({ id: hierarchy.subMeterId } as SubMeter) : null,
             propertyUnit: hierarchy?.unitId ? ({ id: hierarchy.unitId } as Unit) : null,
@@ -277,10 +330,11 @@ export class IngestionService {
     });
 
     this.logger.log(
-      `Ingested "${fileName}" — log #${saved.id}, ${validRows.length} reading(s) inserted, ${processingDurationMs}ms`,
+      `Ingested "${fileName}" — log #${saved.id}, ${rows.length} reading(s) inserted ` +
+      `(${rowResult.validRows} clean, ${rowResult.invalidRows} anomaly), ${processingDurationMs}ms`,
     );
 
-    return { outcome: 'success', success: true, fileId: saved.id, rowsInserted: validRows.length };
+    return { outcome: 'success', success: true, fileId: saved.id, rowsInserted: rows.length };
   }
 
   

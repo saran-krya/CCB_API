@@ -21,6 +21,8 @@ import { Permission } from '../../common/decorators/permission.decorator';
 import {
   CreateMasterMeterDto,
   CreateSubMeterDto,
+  DailyMeterReadingQueryDto,
+  DailyMeterReadingSummaryQueryDto,
   DownloadErrorReportDto,
   DownloadSuccessReportDto,
   ImportHistoryQueryDto,
@@ -309,5 +311,56 @@ export class MeterController {
   @ApiParam({ name: 'id', type: Number })
   setSubMeterStatus(@Param('id', ParseIntPipe) id: number, @Body() dto: SetMeterStatusDto, @CurrentUser() user?: AuthenticatedUser) {
     return this.meters.setSubMeterStatus(id, dto, user?.sub);
+  }
+
+  // ─── Daily Meter Readings — read-only list (Phase 2) ────────────────────────
+  // Registered before any future daily-readings/:id route, same reason as
+  // master-meters/metaFilters above.
+
+  @Get('daily-readings/metaFilters')
+  @Permission('METER_VIEW')
+  @ApiOperation({ summary: 'Filter option metadata (Community, Property, Unit, Validation Status) for Daily Meter Readings' })
+  getDailyMeterReadingsFilterMetadata() {
+    return this.meters.getDailyMeterReadingsFilterMetadata();
+  }
+
+  @Get('daily-readings/summary')
+  @Permission('METER_VIEW')
+  @ApiOperation({ summary: 'Dashboard summary (meters expected/received/missing, data quality %) for one date — read-only' })
+  getDailyMeterReadingsSummary(@Query() query: DailyMeterReadingSummaryQueryDto) {
+    const date = query.date ?? new Date().toISOString().slice(0, 10);
+    return this.meters.getDailyMeterReadingsSummary(date, query.communityId, query.propertyId);
+  }
+
+  @Get('daily-readings')
+  @Permission('METER_VIEW')
+  @ApiOperation({ summary: 'Paginated, sortable, filterable Daily Meter Readings list — read-only' })
+  getDailyMeterReadings(@Query() query: DailyMeterReadingQueryDto) {
+    return this.meters.getDailyMeterReadings(query);
+  }
+
+  @Get('daily-readings/history/:meterId')
+  @Permission('METER_VIEW')
+  @ApiOperation({ summary: 'Trailing daily-consumption history for one meter — powers the reading detail drawer chart' })
+  @ApiParam({ name: 'meterId', type: String })
+  getMeterReadingHistory(@Param('meterId') meterId: string, @Query('date') date?: string) {
+    return this.meters.getMeterReadingHistory(meterId, date);
+  }
+
+  @Get('daily-readings/anomalies-by-community')
+  @Permission('METER_VIEW')
+  @ApiOperation({ summary: 'Anomaly counts by community and severity for one date — powers the Dashboard chart' })
+  getAnomaliesByCommunity(@Query('date') date?: string) {
+    return this.meters.getAnomaliesByCommunity(date ?? new Date().toISOString().slice(0, 10));
+  }
+
+  @Get('daily-readings/property-summary')
+  @Permission('METER_VIEW')
+  @ApiOperation({ summary: 'Per-property Expected/Received/Valid/DataQuality/anomaly-severity breakdown — powers the Property Reading Summary tab' })
+  getPropertyReadingSummary(@Query('date') date?: string, @Query('communityId') communityId?: string) {
+    return this.meters.getPropertyReadingSummary(
+      date ?? new Date().toISOString().slice(0, 10),
+      communityId ? parseInt(communityId, 10) : undefined,
+    );
   }
 }

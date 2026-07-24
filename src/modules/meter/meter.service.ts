@@ -10,9 +10,11 @@ import { Community } from '../community/entities/community.entity';
 import { Property } from '../property/entities/property.entity';
 import { Unit } from '../unit/entities/unit.entity';
 import { User } from '../user/entities/user.entity';
+import { MeterReading } from '../sftp/entities/meter-reading.entity';
 import {
   CreateMasterMeterDto,
   CreateSubMeterDto,
+  DailyMeterReadingQueryDto,
   MeterCommunitiesOverviewQueryDto,
   MeterPropertiesOverviewQueryDto,
   MeterUnitsOverviewQueryDto,
@@ -130,6 +132,7 @@ export class MeterService {
     @InjectRepository(Property) private readonly properties: Repository<Property>,
     @InjectRepository(Unit) private readonly units: Repository<Unit>,
     @InjectRepository(User) private readonly users: Repository<User>,
+    @InjectRepository(MeterReading) private readonly meterReadings: Repository<MeterReading>,
     private readonly attributeService: AttributeService,
     private readonly auditService: AuditService,
     private readonly dataSource: DataSource,
@@ -1698,6 +1701,419 @@ export class MeterService {
       customerAccountNumber: s.customerAccountNumber,
       createdAt: s.createdAt,
       updatedAt: s.updatedAt,
+    };
+  }
+
+  // ─── Daily Meter Readings — read-only list ──────────────────────────────────
+  // Reads meter_readings (+ the sub_meter/unit/property/community FKs the
+  // SFTP ingestion pipeline's MeterHierarchyResolverService already resolves
+  // at ingest time) — never writes it. Approval, billing, and
+  // AI-explanation fields are explicitly out of scope this milestone.
+
+  private static readonly DAILY_READINGS_SORTABLE: Record<string, string> = {
+    readingDate: 'r.readingDate',
+    meterId: 'r.meterId',
+    readingValue: 'r.readingValue',
+  };
+
+  async getDailyMeterReadings(query: DailyMeterReadingQueryDto) {
+    const date = query.date ?? new Date().toISOString().slice(0, 10);
+    const page = query.page && query.page > 0 ? query.page : 1;
+    const limit = query.limit && query.limit > 0 ? Math.min(query.limit, 100) : 20;
+
+    if (query.validationStatus === 'anomaly') {
+      // Invalid rows are never persisted as MeterReading (IngestionService
+      // filters them out before saving) — a "clean" meter_readings table
+      // cannot contain an anomalous row, so this is accurately always empty
+      // under today's schema, not a bug.
+      return { items: [], pagination: { page, limit, total: 0, totalPages: 1 } };
+    }
+
+    if (query.validationStatus === 'missing') {
+      return this.getMissingDailyReadings(query, date, page, limit);
+    }
+
+    const qb = this.meterReadings
+      .createQueryBuilder('r')
+      .leftJoinAndSelect('r.subMeter', 'subMeter')
+      .leftJoinAndSelect('r.propertyUnit', 'propertyUnit')
+      .leftJoinAndSelect('r.property', 'property')
+      .leftJoinAndSelect('r.community', 'community')
+      .where('r.readingDate = :date', { date });
+
+    if (query.communityId) qb.andWhere('community.id = :communityId', { communityId: query.communityId });
+    if (query.propertyId) qb.andWhere('property.id = :propertyId', { propertyId: query.propertyId });
+    if (query.unitId) qb.andWhere('propertyUnit.id = :unitId', { unitId: query.unitId });
+    if (query.search) qb.andWhere('r.meter_id LIKE :s', { s: `%${query.search}%` });
+
+    const orderCol = MeterService.DAILY_READINGS_SORTABLE[query.sortBy ?? ''] ?? 'r.readingDate';
+    qb.orderBy(orderCol, query.sortOrder === 'ASC' ? 'ASC' : 'DESC');
+
+    const [readings, total] = await qb.skip((page - 1) * limit).take(limit).getManyAndCount();
+    const pagination = { page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)) };
+    if (readings.length === 0) return { items: [], pagination };
+
+    const history = await this.getReadingHistoryByMeterId(readings.map((r) => r.meterId), date);
+
+    return {
+      items: readings.map((r) => this.mapDailyReadingToItem(r, history.get(r.meterId) ?? [])),
+      pagination,
+    };
+  }
+
+  async getDailyMeterReadingsFilterMetadata() {
+    const [communities, properties, units] = await Promise.all([
+      this.communities.find({ select: ['id', 'name'], order: { name: 'ASC' } }),
+      this.properties.find({ select: ['id', 'name'], relations: ['community'], order: { name: 'ASC' } }),
+      this.units.find({ select: ['id', 'unitNumber'], relations: ['property'], order: { unitNumber: 'ASC' } }),
+    ]);
+
+    return {
+      communities: communities.map((c) => ({ id: c.id, name: c.name })),
+      properties: properties.map((p) => ({ id: p.id, name: p.name, communityId: p.community?.id ?? null })),
+      units: units.map((u) => ({ id: u.id, unitNumber: u.unitNumber, propertyId: u.property?.id ?? null })),
+      validationStatuses: [
+        { value: 'clean', label: 'Clean' },
+        { value: 'anomaly', label: 'Anomaly' },
+        { value: 'missing', label: 'Missing' },
+      ],
+    };
+  }
+
+  // Honestly-computable dashboard summary — expected/received/missing/quality
+  // (registered SubMeters vs MeterReading rows), plus validReadings and
+  // anomaliesPending+severity breakdown (real, since validation_status/
+  // anomaly_severity have been persisted since Phase 2b). Properties Ready /
+  // Readings Approved / Readings On Hold still need an approval_status
+  // column that doesn't exist yet — deliberately not included here.
+  async getDailyMeterReadingsSummary(date: string, communityId?: number, propertyId?: number) {
+    const expectedQb = this.subMeters
+      .createQueryBuilder('s')
+      .innerJoin('s.property', 'property')
+      .innerJoin('property.community', 'community')
+      .where('s.business_code IS NOT NULL');
+    if (communityId) expectedQb.andWhere('community.id = :communityId', { communityId });
+    if (propertyId) expectedQb.andWhere('property.id = :propertyId', { propertyId });
+    const metersExpected = await expectedQb.getCount();
+
+    const receivedQb = this.meterReadings
+      .createQueryBuilder('r')
+      .leftJoin('r.property', 'property')
+      .leftJoin('r.community', 'community')
+      .where('r.readingDate = :date', { date });
+    if (communityId) receivedQb.andWhere('community.id = :communityId', { communityId });
+    if (propertyId) receivedQb.andWhere('property.id = :propertyId', { propertyId });
+    const metersReceived = await receivedQb.getCount();
+
+    const validQb = this.meterReadings
+      .createQueryBuilder('r')
+      .leftJoin('r.property', 'property')
+      .leftJoin('r.community', 'community')
+      .where('r.readingDate = :date', { date })
+      .andWhere("r.validation_status = 'clean'");
+    if (communityId) validQb.andWhere('community.id = :communityId', { communityId });
+    if (propertyId) validQb.andWhere('property.id = :propertyId', { propertyId });
+    const validReadings = await validQb.getCount();
+
+    const anomalyQb = this.meterReadings
+      .createQueryBuilder('r')
+      .leftJoin('r.property', 'property')
+      .leftJoin('r.community', 'community')
+      .select('r.anomaly_severity', 'severity')
+      .addSelect('COUNT(*)', 'count')
+      .where('r.reading_date = :date', { date })
+      .andWhere("r.validation_status = 'anomaly'");
+    if (communityId) anomalyQb.andWhere('community.id = :communityId', { communityId });
+    if (propertyId) anomalyQb.andWhere('property.id = :propertyId', { propertyId });
+    const anomalyRows = await anomalyQb.groupBy('r.anomaly_severity').getRawMany<{ severity: string; count: string }>();
+
+    const severityBreakdown = { critical: 0, high: 0, medium: 0, low: 0 };
+    for (const row of anomalyRows) {
+      const severity = row.severity as keyof typeof severityBreakdown;
+      if (severity in severityBreakdown) severityBreakdown[severity] = Number(row.count);
+    }
+    const anomaliesPending = Object.values(severityBreakdown).reduce((a, b) => a + b, 0);
+
+    const metersMissing = Math.max(0, metersExpected - metersReceived);
+    const dataQualityPct = metersExpected > 0 ? Number(((metersReceived / metersExpected) * 100).toFixed(2)) : 0;
+
+    return {
+      date, metersExpected, metersReceived, metersMissing, dataQualityPct,
+      validReadings, anomaliesPending, anomaliesBySeverity: severityBreakdown,
+    };
+  }
+
+
+  async getPropertyReadingSummary(date: string, communityId?: number) {
+    const expectedQb = this.masterMeters
+      .createQueryBuilder('m')
+      .innerJoin('m.property', 'property')
+      .innerJoin('property.community', 'community')
+      .select('property.id', 'propertyId')
+      .addSelect('property.name', 'property')
+      .addSelect('community.name', 'community')
+      .addSelect('m.dtu_id', 'dtuId');
+    if (communityId) expectedQb.andWhere('community.id = :communityId', { communityId });
+    const properties = await expectedQb.getRawMany<{ propertyId: number; property: string; community: string; dtuId: string | null }>();
+
+    const expectedCountRows = await this.subMeters
+      .createQueryBuilder('s')
+      .innerJoin('s.property', 'property')
+      .select('property.id', 'propertyId')
+      .addSelect('COUNT(*)', 'count')
+      .where('s.business_code IS NOT NULL')
+      .groupBy('property.id')
+      .getRawMany<{ propertyId: number; count: string }>();
+    const expectedByProperty = new Map(expectedCountRows.map((r) => [r.propertyId, Number(r.count)]));
+
+    const receivedRows = await this.meterReadings
+      .createQueryBuilder('r')
+      .innerJoin('r.property', 'property')
+      .select('property.id', 'propertyId')
+      .addSelect('COUNT(*)', 'count')
+      .where('r.reading_date = :date', { date })
+      .groupBy('property.id')
+      .getRawMany<{ propertyId: number; count: string }>();
+    const receivedByProperty = new Map(receivedRows.map((r) => [r.propertyId, Number(r.count)]));
+
+    const validRows = await this.meterReadings
+      .createQueryBuilder('r')
+      .innerJoin('r.property', 'property')
+      .select('property.id', 'propertyId')
+      .addSelect('COUNT(*)', 'count')
+      .where('r.reading_date = :date', { date })
+      .andWhere("r.validation_status = 'clean'")
+      .groupBy('property.id')
+      .getRawMany<{ propertyId: number; count: string }>();
+    const validByProperty = new Map(validRows.map((r) => [r.propertyId, Number(r.count)]));
+
+    const anomalyRows = await this.meterReadings
+      .createQueryBuilder('r')
+      .innerJoin('r.property', 'property')
+      .select('property.id', 'propertyId')
+      .addSelect('r.anomaly_severity', 'severity')
+      .addSelect('COUNT(*)', 'count')
+      .where('r.reading_date = :date', { date })
+      .andWhere("r.validation_status = 'anomaly'")
+      .groupBy('property.id')
+      .addGroupBy('r.anomaly_severity')
+      .getRawMany<{ propertyId: number; severity: string; count: string }>();
+    const anomaliesByProperty = new Map<number, { critical: number; high: number; medium: number }>();
+    for (const row of anomalyRows) {
+      const entry = anomaliesByProperty.get(row.propertyId) ?? { critical: 0, high: 0, medium: 0 };
+      const severity = row.severity as 'critical' | 'high' | 'medium' | 'low';
+      if (severity === 'critical' || severity === 'high' || severity === 'medium') entry[severity] = Number(row.count);
+      anomaliesByProperty.set(row.propertyId, entry);
+    }
+
+    return properties.map((p) => {
+      const expected = expectedByProperty.get(p.propertyId) ?? 0;
+      const received = receivedByProperty.get(p.propertyId) ?? 0;
+      const valid = validByProperty.get(p.propertyId) ?? 0;
+      const anomalies = anomaliesByProperty.get(p.propertyId) ?? { critical: 0, high: 0, medium: 0 };
+      return {
+        propertyId: p.propertyId,
+        property: p.property,
+        community: p.community,
+        dtuId: p.dtuId,
+        expected,
+        received,
+        valid,
+        dataQualityPct: received > 0 ? Number(((valid / received) * 100).toFixed(2)) : 0,
+        criticalAnomalies: anomalies.critical,
+        highAnomalies: anomalies.high,
+        mediumAnomalies: anomalies.medium,
+      };
+    });
+  }
+
+  // Anomalies-by-community breakdown for the Dashboard chart — real aggregation
+  // over validation_status/anomaly_severity/community_id, all persisted since
+  // the ingestion pipeline started writing Clean/Anomaly rows (Phase 2b).
+  // Communities with zero anomalies for the date are included at zero (not
+  // omitted) so the chart's x-axis is stable across days.
+  async getAnomaliesByCommunity(date: string) {
+    const communities = await this.communities.find({ select: ['id', 'name'], order: { name: 'ASC' } });
+
+    const rows = await this.meterReadings
+      .createQueryBuilder('r')
+      .innerJoin('r.community', 'community')
+      .select('community.id', 'communityId')
+      .addSelect('r.anomaly_severity', 'severity')
+      .addSelect('COUNT(*)', 'count')
+      .where('r.reading_date = :date', { date })
+      .andWhere("r.validation_status = 'anomaly'")
+      .groupBy('community.id')
+      .addGroupBy('r.anomaly_severity')
+      .getRawMany<{ communityId: number; severity: string; count: string }>();
+
+    const countsByCommunity = new Map<number, { critical: number; high: number; medium: number; low: number }>();
+    for (const row of rows) {
+      const entry = countsByCommunity.get(row.communityId) ?? { critical: 0, high: 0, medium: 0, low: 0 };
+      const severity = row.severity as 'critical' | 'high' | 'medium' | 'low' | null;
+      if (severity && severity in entry) entry[severity] = Number(row.count);
+      countsByCommunity.set(row.communityId, entry);
+    }
+
+    return communities.map((c) => ({
+      communityId: c.id,
+      community: c.name,
+      ...(countsByCommunity.get(c.id) ?? { critical: 0, high: 0, medium: 0, low: 0 }),
+    }));
+  }
+
+  // Trailing daily-consumption history for one specific meter, chart-ready
+  // (ascending by date). Reuses the exact same "last 31 readings, compute
+  // consecutive deltas" logic as the list's own 30-Day Avg computation —
+  // there's no separate stored history table, this is derived every time.
+  async getMeterReadingHistory(meterId: string, upToDate?: string): Promise<{ date: string; consumption: number }[]> {
+    const date = upToDate ?? new Date().toISOString().slice(0, 10);
+    const history = (await this.getReadingHistoryByMeterId([meterId], date)).get(meterId) ?? [];
+
+    const points: { date: string; consumption: number }[] = [];
+    for (let i = 0; i < history.length - 1; i++) {
+      points.push({
+        date: history[i].readingDate,
+        consumption: Number(history[i].readingValue) - Number(history[i + 1].readingValue),
+      });
+    }
+    return points.reverse();
+  }
+
+  // Batches the last 31 readings (today + up to 30 priors) per distinct
+  // meter_id in one query — bounded by the current page's distinct meter
+  // count (≤100), not the whole table. Used to derive Opening/Consumption/
+  // 30-Day Avg/Deviation without any of those being stored columns.
+  private async getReadingHistoryByMeterId(meterIds: string[], upToDate: string): Promise<Map<string, MeterReading[]>> {
+    const distinctIds = Array.from(new Set(meterIds));
+    const rows = await this.meterReadings
+      .createQueryBuilder('r')
+      .where('r.meter_id IN (:...distinctIds)', { distinctIds })
+      .andWhere('r.readingDate <= :upToDate', { upToDate })
+      .orderBy('r.meter_id', 'ASC')
+      .addOrderBy('r.readingDate', 'DESC')
+      .getMany();
+
+    const byMeter = new Map<string, MeterReading[]>();
+    for (const row of rows) {
+      const list = byMeter.get(row.meterId) ?? [];
+      if (list.length < 31) list.push(row);
+      byMeter.set(row.meterId, list);
+    }
+    return byMeter;
+  }
+
+  // history[0] is always `reading` itself (today's row); history[1], if
+  // present, is the immediately-preceding reading for the same meter
+  // ("Opening"). Consumption/30-Day Avg/Deviation are all derived here —
+  // none of them are stored columns.
+  private mapDailyReadingToItem(reading: MeterReading, history: MeterReading[]) {
+    const closing = Number(reading.readingValue);
+    const opening = history[1] ? Number(history[1].readingValue) : null;
+    const consumption = opening !== null ? closing - opening : null;
+
+    const deltas: number[] = [];
+    for (let i = 0; i < history.length - 1 && i < 30; i++) {
+      deltas.push(Number(history[i].readingValue) - Number(history[i + 1].readingValue));
+    }
+    const thirtyDayAvg = deltas.length > 0 ? deltas.reduce((a, b) => a + b, 0) / deltas.length : null;
+    const deviationPercent =
+      thirtyDayAvg !== null && thirtyDayAvg !== 0 && consumption !== null
+        ? ((consumption - thirtyDayAvg) / thirtyDayAvg) * 100
+        : null;
+
+    return {
+      id: reading.id,
+      meterId: reading.meterId,
+      readingDate: reading.readingDate,
+      unit: reading.unit,
+      openingReading: opening,
+      closingReading: closing,
+      consumption,
+      thirtyDayAvg,
+      deviationPercent,
+      // Real per-row status — Anomaly rows have been persisted (not
+      // discarded) since Phase 2b's ingestion rewrite; this used to be
+      // hardcoded to 'clean' before that change and was never updated.
+      validationStatus: reading.validationStatus,
+      approvalStatus: reading.approvalStatus,
+      approvedAt: reading.approvedAt?.toISOString() ?? null,
+      approvedBy: reading.approvedBy ?? null,
+      unitId: reading.propertyUnit?.id ?? null,
+      unitNumber: reading.propertyUnit?.unitNumber ?? null,
+      floorNumber: reading.propertyUnit?.floorNumber ?? null,
+      propertyId: reading.property?.id ?? null,
+      propertyName: reading.property?.name ?? null,
+      communityId: reading.community?.id ?? null,
+      communityName: reading.community?.name ?? null,
+    };
+  }
+
+  // Registered SubMeters (with a real business code) in scope that have no
+  // MeterReading for `date` at all — synthesized virtual rows, mirroring
+  // the SFTP module's own Missing File Engine pattern but at Unit/SubMeter
+  // granularity for this feature specifically. Nothing is persisted here.
+  private async getMissingDailyReadings(
+    query: DailyMeterReadingQueryDto,
+    date: string,
+    page: number,
+    limit: number,
+  ) {
+    const qb = this.subMeters
+      .createQueryBuilder('s')
+      .innerJoinAndSelect('s.property', 'property')
+      .innerJoinAndSelect('property.community', 'community')
+      .leftJoinAndSelect('s.unit', 'unit')
+      .where('s.business_code IS NOT NULL');
+
+    if (query.communityId) qb.andWhere('community.id = :communityId', { communityId: query.communityId });
+    if (query.propertyId) qb.andWhere('property.id = :propertyId', { propertyId: query.propertyId });
+    if (query.unitId) qb.andWhere('unit.id = :unitId', { unitId: query.unitId });
+
+    const allSubMeters = await qb.getMany();
+    if (allSubMeters.length === 0) {
+      return { items: [], pagination: { page, limit, total: 0, totalPages: 1 } };
+    }
+
+    const businessCodes = allSubMeters.map((s) => s.businessCode!);
+    const reportedRows = await this.meterReadings
+      .createQueryBuilder('r')
+      .select('r.meter_id', 'meterId')
+      .where('r.meter_id IN (:...businessCodes)', { businessCodes })
+      .andWhere('r.readingDate = :date', { date })
+      .getRawMany<{ meterId: string }>();
+    const reported = new Set(reportedRows.map((r) => r.meterId));
+
+    const missing = allSubMeters.filter((s) => !reported.has(s.businessCode!));
+    const total = missing.length;
+    const pageItems = missing.slice((page - 1) * limit, (page - 1) * limit + limit);
+
+    return {
+      items: pageItems.map((s) => ({
+        id: null,
+        meterId: s.businessCode,
+        readingDate: date,
+        unit: null,
+        openingReading: null,
+        closingReading: null,
+        consumption: null,
+        thirtyDayAvg: null,
+        deviationPercent: null,
+        validationStatus: 'missing' as const,
+        // A Missing row is a synthesized virtual row — there's no real
+        // MeterReading, so no approval concept applies to it at all.
+        approvalStatus: null,
+        approvedAt: null,
+        approvedBy: null,
+        unitId: s.unit?.id ?? null,
+        unitNumber: s.unit?.unitNumber ?? null,
+        floorNumber: s.unit?.floorNumber ?? null,
+        propertyId: s.property.id,
+        propertyName: s.property.name,
+        communityId: s.property.community.id,
+        communityName: s.property.community.name,
+      })),
+      pagination: { page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)) },
     };
   }
 }

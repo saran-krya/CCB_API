@@ -125,7 +125,7 @@ export class ValidationService {
     };
   }
 
-  
+
   private worstSeverityPerRow(errors: RowValidationError[]): Record<AnomalySeverity, number> {
     const worstByRow = new Map<number, AnomalySeverity>();
     for (const error of errors) {
@@ -145,5 +145,21 @@ export class ValidationService {
       counts[severity] += 1;
     }
     return counts;
+  }
+
+  // Same ranking as worstSeverityPerRow() above, but returns the full worst
+  // RowValidationError per row (field/message/severity) instead of just a
+  // count — used by IngestionService to persist per-reading anomaly detail.
+  // Purely additive: does not change validateRows()'s existing return shape
+  // or any of its current callers' behavior.
+  getWorstErrorPerRow(errors: RowValidationError[]): Map<number, RowValidationError> {
+    const worstByRow = new Map<number, RowValidationError>();
+    for (const error of errors) {
+      const current = worstByRow.get(error.row);
+      if (!current || SEVERITY_RANK[error.severity] > SEVERITY_RANK[current.severity]) {
+        worstByRow.set(error.row, error);
+      }
+    }
+    return worstByRow;
   }
 }

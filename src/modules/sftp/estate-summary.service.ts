@@ -42,10 +42,18 @@ export class EstateSummaryService {
 
 
   async generateSummaryForDate(date: string): Promise<SftpEstateSummary> {
+    // reading_date (parsed from the file's own name — see filename.util.ts) is
+    // the authoritative match. DATE(created_at) is a fallback for the rare
+    // row where reading_date is still unknown (e.g. an unparseable filename),
+    // NOT a second unconditional match path — a file with a real reading_date
+    // must be counted under its own date only, even if it happened to be
+    // ingested on a different calendar day (this was a real bug: a file for
+    // 07-21 ingested on 07-23 was being double-counted into 07-23's summary
+    // via this OR, inflating that day's numbers with a previous day's data).
     const rows = await this.ingestionLogs
       .createQueryBuilder('log')
       .where('log.reading_date = :date', { date })
-      .orWhere('DATE(log.created_at) = :date', { date })
+      .orWhere('log.reading_date IS NULL AND DATE(log.created_at) = :date', { date })
       .getMany();
 
     if (rows.length === 0) {
@@ -273,12 +281,16 @@ export class EstateSummaryService {
   }
 
   async getFailedLogsForDate(date: string): Promise<SftpIngestionLog[]> {
+    // Same reading_date-first rule as generateSummaryForDate() above — a
+    // failed file now carries its own real reading_date (see
+    // ingestion.service.ts), so it must be listed under its own date, not
+    // whatever day it happened to be ingested on.
     return this.ingestionLogs
       .createQueryBuilder('log')
       .leftJoinAndSelect('log.property', 'property')
       .leftJoinAndSelect('log.community', 'community')
       .where('log.file_status = :status', { status: SftpIngestionStatus.FAILED })
-      .andWhere('DATE(log.created_at) = :date', { date })
+      .andWhere('(log.reading_date = :date OR (log.reading_date IS NULL AND DATE(log.created_at) = :date))', { date })
       .getMany();
   }
 

@@ -301,3 +301,79 @@ export class ImportHistoryQueryDto {
   @IsIn(['ASC', 'DESC'])
   sortOrder?: 'ASC' | 'DESC';
 }
+
+export class DailyMeterReadingSummaryQueryDto {
+  @ApiPropertyOptional({ description: 'Reading date (YYYY-MM-DD) — defaults to today' })
+  @IsOptional()
+  @IsDateString()
+  date?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  communityId?: number;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  propertyId?: number;
+}
+
+// ─── Daily Meter Readings — paginated, filterable list ──────────────────────
+
+export type DailyReadingValidationStatus = 'clean' | 'anomaly' | 'missing';
+
+export class DailyMeterReadingQueryDto extends BasePaginationDto {
+  @ApiPropertyOptional({ description: 'Reading date (YYYY-MM-DD) — defaults to today' })
+  @IsOptional()
+  @IsDateString()
+  date?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  communityId?: number;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  propertyId?: number;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  unitId?: number;
+
+  // 'anomaly' always returns an empty page today — invalid rows are never
+  // persisted as MeterReading, so no anomalous reading can ever be found
+  // this way (see DailyMeterReadingsService.getDailyMeterReadings). 'missing'
+  // is synthesized separately by diffing the SubMeter registry against
+  // meter_ids that actually reported for the date.
+  @ApiPropertyOptional({ enum: ['clean', 'anomaly', 'missing'] })
+  @IsOptional()
+  @IsIn(['clean', 'anomaly', 'missing'])
+  validationStatus?: DailyReadingValidationStatus;
+
+  // Accepted for forward compatibility with the UI's existing filter bar —
+  // no billing_status data exists anywhere yet (billing logic is explicitly
+  // out of scope for this milestone), so this currently has no effect.
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  billingStatus?: string;
+
+  @ApiPropertyOptional({ example: 'readingDate', description: 'Field to sort by' })
+  @IsOptional()
+  @IsString()
+  sortBy?: string;
+
+  @ApiPropertyOptional({ enum: ['ASC', 'DESC'], default: 'DESC' })
+  @IsOptional()
+  @IsIn(['ASC', 'DESC'])
+  sortOrder?: 'ASC' | 'DESC';
+}
