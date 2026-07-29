@@ -146,7 +146,7 @@ export class MeterController {
   }
 
   @Get('master-meters/import-template')
-  @Permission('METER_CREATE')
+  @Permission('METER_CREATE', 'METER_INVENTORY_CREATE')
   @ApiOperation({ summary: 'Download the Master Meter bulk import template' })
   async getMasterMeterImportTemplate(@Res() res: Response) {
     const buffer = await this.meters.getImportTemplate(MeterImportType.MASTER);
@@ -155,7 +155,7 @@ export class MeterController {
   }
 
   @Post('master-meters/import')
-  @Permission('METER_IMPORT')
+  @Permission('METER_IMPORT', 'METER_INVENTORY_CREATE')
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_IMPORT_UPLOAD_BYTES } }))
   @ApiConsumes('multipart/form-data')
   @ApiOperation({ summary: 'Bulk import master meters from an uploaded Excel file' })
@@ -240,7 +240,7 @@ export class MeterController {
   }
 
   @Get('sub-meters/import-template')
-  @Permission('METER_CREATE')
+  @Permission('METER_CREATE', 'METER_INVENTORY_CREATE')
   @ApiOperation({ summary: 'Download the Sub Meter bulk import template' })
   async getSubMeterImportTemplate(@Res() res: Response) {
     const buffer = await this.meters.getImportTemplate(MeterImportType.SUB);
@@ -249,7 +249,7 @@ export class MeterController {
   }
 
   @Post('sub-meters/import')
-  @Permission('METER_IMPORT')
+  @Permission('METER_IMPORT', 'METER_INVENTORY_CREATE')
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_IMPORT_UPLOAD_BYTES } }))
   @ApiConsumes('multipart/form-data')
   @ApiOperation({ summary: 'Bulk import sub meters from an uploaded Excel file' })

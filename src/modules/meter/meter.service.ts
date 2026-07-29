@@ -1315,21 +1315,7 @@ export class MeterService {
     return summary;
   }
 
-  // ─── Import history ─────────────────────────────────────────────────────────
 
-  // Reads back the ImportSummary JSON this same service wrote to AuditLog on
-  // every importMeters() call (see the record() call above) — no separate
-  // "import runs" table, the audit log IS the history, same convention every
-  // other module's audit trail already follows. Includes IMPORT_FAILED rows
-  // (a request that never reached commitRows — bad file type, no valid
-  // rows, etc.) alongside IMPORT rows, so a totally-rejected import still
-  // shows up here instead of leaving no trace at all.
-  //
-  // Shared by both getImportHistory() (flat, used by the Meter Management
-  // dashboard's compact panel) and getImportHistoryPage() (filtered +
-  // paginated, used by the Import Center screen) — the audit-log read and
-  // JSON-parse-into-a-row logic is identical either way; only what each
-  // caller does with the resulting rows differs.
   private async loadImportHistoryRows(fetchLimit: number) {
     const logs = await this.auditService.findByModule('Meter', ['IMPORT', 'IMPORT_FAILED'], fetchLimit);
     const performerIds = [...new Set(logs.map((l) => l.performedBy).filter((id): id is number => !!id))];
