@@ -246,11 +246,7 @@ function buildAttributeSeed(sessionTimeoutMinutes: number): AttributeSeedRow[] {
       ...tariffGroup, scope: AttributeScope.MODULE, key: 'TARIFF_ACTIVE_LOCKED_FIELDS',
       label: 'Fields Locked for Active Tariffs', valueType: AttributeValueType.TEXT,
       value: 'propertyType,rateType,flatRate,tiers,applicability,propertyIds,unitIds,billingServiceFee,vat,effectiveFrom',
-      description:
-        'This setting defines which fields are locked when editing an Active tariff before any invoices have been generated. ' +
-        'Once invoices exist, the entire tariff becomes read-only and Create New Version is required. ' +
-        '(Invoice-based enforcement is not yet implemented — see TariffService.assertActiveEditAllowed() — so today this list applies to every ' +
-        'Active tariff regardless of invoice status.)',
+      description: 'Defines which fields are locked when editing an active tariff. After invoicing, a new tariff version is required.',
       displayOrder: 4,
     },
 
