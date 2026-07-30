@@ -306,11 +306,10 @@ export class BootstrapService implements OnApplicationBootstrap {
 
     for (const r of ROLES) {
       const userCategoryId = lovMap.get(`USER_CATEGORY:${r.userCategoryName.toLowerCase()}`)
-      const userTypeId = lovMap.get(`USER_TYPE:${r.userTypeName.toLowerCase()}`)
 
-      if (!userCategoryId || !userTypeId) {
+      if (!userCategoryId) {
         this.logger.warn(
-          `Role "${r.roleName}" skipped — missing LOV entry for "${r.userCategoryName}" or "${r.userTypeName}"`,
+          `Role "${r.roleName}" skipped — missing LOV entry for "${r.userCategoryName}"`,
         )
         continue
       }
@@ -319,7 +318,6 @@ export class BootstrapService implements OnApplicationBootstrap {
         roleName: r.roleName,
         roleDescription: r.roleDescription,
         userCategoryId,
-        userTypeId,
         canBeReportingManager: r.canBeReportingManager,
       })
       const saved = await manager.save(entity)

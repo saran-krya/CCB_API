@@ -50,16 +50,6 @@ export class RoleQueryDto {
   userCategoryId?: number;
 
   @ApiPropertyOptional({
-    description: "Filter by user type ID",
-    minimum: 1,
-  })
-  @IsOptional()
-  @IsInt()
-  @Min(1)
-  @Type(() => Number)
-  userTypeId?: number;
-
-  @ApiPropertyOptional({
     description: "Search by created date (YYYY-MM-DD)",
     example: "2026-06-25",
   })

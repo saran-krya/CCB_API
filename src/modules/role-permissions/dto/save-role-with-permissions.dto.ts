@@ -39,14 +39,6 @@ export class SaveRoleWithPermissionsDto {
   @IsNumber()
   userCategoryId!: number;
 
-  @ApiProperty({
-    example: 1,
-    description:
-      'User Type Id',
-  })
-  @IsNumber()
-  userTypeId!: number;
-
   @ApiPropertyOptional({
     default: false,
   })

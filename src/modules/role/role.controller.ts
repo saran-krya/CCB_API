@@ -31,14 +31,10 @@ export class RoleController {
   @Get('dropdown')
   getRoleDropdown(
     @Query('userCategoryId')
-    userCategoryId: number,
-
-    @Query('userTypeId')
-    userTypeId: number,
+    userCategoryId?: string,
   ) {
     return this.roles.getRoleDropdown(
-      Number(userCategoryId),
-      Number(userTypeId),
+      userCategoryId ? Number(userCategoryId) : undefined,
     );
   }
   @Get("filter")

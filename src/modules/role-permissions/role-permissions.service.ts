@@ -129,8 +129,6 @@ export class RolePermissionsService {
             dto.roleDescription,
           userCategoryId:
             dto.userCategoryId,
-          userTypeId:
-            dto.userTypeId,
           canBeReportingManager:
             dto.canBeReportingManager ??
             false,
@@ -564,9 +562,9 @@ export class RolePermissionsService {
     const result = {
       roleId: role?.id ?? null,
       roleName: role?.roleName ?? null,
-      roleDescription: null,
+      roleDescription: role?.roleDescription ?? null,
       userCategoryId: role?.userCategoryId ?? null,
-      userTypeId: role?.userTypeId ?? null,
+      canBeReportingManager: role?.canBeReportingManager ?? false,
       userId: 0,
 
       screenPermissionList: modules.map((module) => ({
@@ -627,8 +625,6 @@ export class RolePermissionsService {
         dto.roleDescription,
       userCategoryId:
         dto.userCategoryId,
-      userTypeId:
-        dto.userTypeId,
       canBeReportingManager:
         dto.canBeReportingManager,
     });

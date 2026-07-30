@@ -22,10 +22,6 @@ export class CreateUserDto {
 
   @ApiPropertyOptional()
   @IsOptional()
-  businessRoleId?: number;
-
-  @ApiPropertyOptional()
-  @IsOptional()
   reportingManagerId?: number;
 
   @ApiProperty({

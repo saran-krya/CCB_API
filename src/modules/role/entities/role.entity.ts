@@ -43,19 +43,6 @@ export class Role extends BaseEntity {
   userCategory!: LovValue;
 
   @Column({
-    name: 'user_type_id',
-  })
-  userTypeId!: number;
-
-  @ManyToOne(() => LovValue, {
-    eager: true,
-  })
-  @JoinColumn({
-    name: 'user_type_id',
-  })
-  userType!: LovValue;
-
-  @Column({
     name: 'can_be_reporting_manager',
     default: false,
   })

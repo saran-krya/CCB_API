@@ -59,7 +59,6 @@ export interface SeedRole {
   roleName: string
   roleDescription: string
   userCategoryName: string
-  userTypeName: string
   canBeReportingManager: boolean
 }
 
@@ -885,14 +884,12 @@ export const ROLES: SeedRole[] = [
     roleDescription:
       'Full system access — all modules, all actions, all data, except where excluded by explicit business rule (see ADMIN_GRANT_EXCLUDED_ACTION_CODES).',
     userCategoryName: 'Internal',
-    userTypeName: 'Employee',
     canBeReportingManager: false,
   },
   {
     roleName: 'FINANCE',
     roleDescription: 'Billing, invoicing, tariff approval, and payment operations',
     userCategoryName: 'Internal',
-    userTypeName: 'Employee',
     canBeReportingManager: true,
   },
   {
@@ -900,7 +897,6 @@ export const ROLES: SeedRole[] = [
     roleDescription:
       'Meter management, daily readings review, anomaly resolution, and billing readiness',
     userCategoryName: 'Internal',
-    userTypeName: 'Employee',
     canBeReportingManager: true,
   },
   {
@@ -908,14 +904,12 @@ export const ROLES: SeedRole[] = [
     roleDescription:
       'Customer-facing support, reading enquiry resolution, and dispute handling',
     userCategoryName: 'Internal',
-    userTypeName: 'Employee',
     canBeReportingManager: false,
   },
   {
     roleName: 'CUSTOMER',
     roleDescription: 'End-customer self-service portal access',
     userCategoryName: 'External',
-    userTypeName: 'Customer',
     canBeReportingManager: false,
   },
 ]

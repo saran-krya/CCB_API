@@ -37,12 +37,6 @@ export class CreateRoleDto {
   @IsNumber()
   userCategoryId!: number;
 
-  @ApiProperty({
-    example: 1,
-  })
-  @IsNumber()
-  userTypeId!: number;
-
   @ApiPropertyOptional({
     default: false,
   })

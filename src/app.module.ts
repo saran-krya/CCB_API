@@ -11,7 +11,6 @@ import { PropertyModule } from './modules/property/property.module';
 import { RoleModule } from './modules/role/role.module';
 import { UnitModule } from './modules/unit/unit.module';
 import { UserModule } from './modules/user/user.module';
-import { BusinessRoleModule } from './modules/business-role/business-role.module';
 import { SubModulesModule } from './modules/sub-modules/sub-modules.module';
 import { RolePermissionsModule } from './modules/role-permissions/role-permissions.module';
 import { ScreensModule } from './modules/screens/screens.module';
@@ -39,7 +38,6 @@ import { SftpModule } from './modules/sftp/sftp.module';
     CommunityModule,
     PropertyModule,
     UnitModule,
-    BusinessRoleModule,
     PModulesModule,
     SubModulesModule,
     ActionsModule,

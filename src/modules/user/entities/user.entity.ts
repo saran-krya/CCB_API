@@ -7,7 +7,6 @@ import {
 } from "typeorm";
 import { BaseEntity } from "../../../common/entities/base.entity";
 import { Role } from "../../role/entities/role.entity";
-import { BusinessRole } from "../../business-role/entities/business-role.entity";
 
 @Entity("users")
 export class User extends BaseEntity {
@@ -23,18 +22,6 @@ export class User extends BaseEntity {
     name: "role_id",
   })
   role!: Role;
-
-  @ManyToOne(
-    () => BusinessRole,
-    {
-      eager: true,
-      nullable: true,
-    },
-  )
-  @JoinColumn({
-    name: "business_role_id",
-  })
-  businessRole?: BusinessRole;
 
   @ManyToOne(
     () => User,

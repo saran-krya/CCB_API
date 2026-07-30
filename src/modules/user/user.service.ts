@@ -9,7 +9,6 @@ import { RoleService } from '../role/role.service';
 import { CreateUserDto, UpdateUserDto } from './dto/create-user.dto';
 import { UpdatePreferencesDto } from './dto/update-preferences.dto';
 import { User } from './entities/user.entity';
-import { BusinessRole } from '../business-role/entities/business-role.entity';
 import { RolePermissionsService } from '../role-permissions/role-permissions.service';
 import { AttributeService } from '../attribute/attribute.service';
 import { LovService } from '../lov/lov.service';
@@ -35,9 +34,6 @@ export class UserService {
   constructor(
     @InjectRepository(User)
     private readonly users: Repository<User>,
-
-    @InjectRepository(BusinessRole)
-    private readonly businessRoles: Repository<BusinessRole>,
 
     private readonly rolePermissionService: RolePermissionsService,
 
@@ -77,15 +73,6 @@ export class UserService {
       );
 
 
-    const businessRole =
-      dto.businessRoleId
-        ? await this.businessRoles.findOne({
-          where: {
-            id: dto.businessRoleId,
-          },
-        })
-        : null;
-
     const reportingManager =
       dto.reportingManagerId
         ? await this.users.findOne({
@@ -98,8 +85,6 @@ export class UserService {
     const user = new User();
 
     user.role = role;
-    user.businessRole =
-      businessRole ?? undefined;
 
     user.reportingManager =
       reportingManager ??
@@ -270,7 +255,6 @@ export class UserService {
       where: { id },
       relations: {
         role: true,
-        businessRole: true,
         reportingManager: true,
       },
     });
@@ -310,15 +294,10 @@ export class UserService {
 
     return users.map((user) => ({
       id: user.id,
-      name: [
-        user.firstName,
-        user.middleName,
-        user.lastName,
-      ]
-        .filter(Boolean)
-        .join(" "),
-      employeeCode:
-        user.employeeCode,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      employeeCode: user.employeeCode,
+      roleName: user.role?.roleName ?? null,
     }));
   }
   async getProfile(id: number) {
@@ -417,20 +396,6 @@ export class UserService {
     if (dto.roleId) {
       user.role = await this.roles.findOne(dto.roleId);
     }
-    if (dto.businessRoleId) {
-      const businessRole =
-        await this.businessRoles.findOne({
-          where: {
-            id: dto.businessRoleId,
-          },
-        });
-
-      if (businessRole) {
-        user.businessRole =
-          businessRole;
-      }
-    }
-
 
     // Was previously commented out entirely, meaning an edit could never
     // actually change (or clear) a user's Reporting Manager. Checks

@@ -39,10 +39,6 @@ export class RoleService {
       await this.roles.findOne({
         where: {
           roleName: dto.roleName,
-          userCategoryId:
-            dto.userCategoryId,
-          userTypeId:
-            dto.userTypeId,
         },
       });
 
@@ -58,8 +54,6 @@ export class RoleService {
         dto.roleDescription,
       userCategoryId:
         dto.userCategoryId,
-      userTypeId:
-        dto.userTypeId,
       canBeReportingManager:
         dto.canBeReportingManager ??
         false,
@@ -92,24 +86,12 @@ export class RoleService {
       "userCategory",
     );
 
-    qb.leftJoinAndSelect(
-      "role.userType",
-      "userType",
-    );
-
     // Sorting
 
     switch (query.sortBy) {
       case "userCategory":
         qb.orderBy(
           "userCategory.label",
-          query.sortOrder,
-        );
-        break;
-
-      case "userType":
-        qb.orderBy(
-          "userType.label",
           query.sortOrder,
         );
         break;
@@ -163,15 +145,6 @@ export class RoleService {
       );
     }
 
-    // Filter - User Type (ID-based)
-
-    if (query.userTypeId) {
-      qb.andWhere(
-        "role.userTypeId = :userTypeId",
-        { userTypeId: query.userTypeId },
-      );
-    }
-
     // Search - Created Date
 
     if (query["search.createdAt"]) {
@@ -201,9 +174,6 @@ export class RoleService {
           userCategoryType:
             role.userCategory
               ?.label ?? null,
-          userType:
-            role.userType
-              ?.label ?? null,
           created:
             role.createdAt,
         }),
@@ -213,33 +183,30 @@ export class RoleService {
     };
   }
 
+  // userCategoryId is an optional filter, not a required cascade — Role is
+  // the only thing a User Creation form picks directly; Scope is a read-only
+  // fact inherited from that Role, not a separate selection the caller
+  // narrows by beforehand. Omitting it returns every active role so the
+  // frontend can show Scope as derived display text.
   async getRoleDropdown(
-    userCategoryId: number,
-    userTypeId: number,
+    userCategoryId?: number,
   ) {
-    const roles = await this.roles
+    const qb = this.roles
       .createQueryBuilder('role')
-      .select([
-        'role.id',
-        'role.roleName',
-      ])
-      .where(
-        'role.userCategoryId = :userCategoryId',
-        { userCategoryId },
-      )
-      .andWhere(
-        'role.userTypeId = :userTypeId',
-        { userTypeId },
-      )
-      .orderBy(
-        'role.roleName',
-        'ASC',
-      )
-      .getMany();
+      .leftJoinAndSelect('role.userCategory', 'userCategory');
+
+    if (userCategoryId) {
+      qb.andWhere('role.userCategoryId = :userCategoryId', { userCategoryId });
+    }
+
+    const roles = await qb.orderBy('role.roleName', 'ASC').getMany();
 
     return roles.map((role) => ({
       id: role.id,
       name: role.roleName,
+      userCategoryId: role.userCategoryId,
+      userCategoryLabel: role.userCategory?.label ?? null,
+      canBeReportingManager: role.canBeReportingManager,
     }));
   }
 
@@ -263,14 +230,10 @@ export class RoleService {
   }
 
   async getFilterMetadata() {
-    const [userCategories, userTypes] = await Promise.all([
-      this.lovService.findByCategory('USER_CATEGORY'),
-      this.lovService.findByCategory('USER_TYPE'),
-    ]);
+    const userCategories = await this.lovService.findByCategory('USER_CATEGORY');
 
     return {
       userCategories: userCategories.map((lv) => ({ id: lv.id, name: lv.label })),
-      userTypes: userTypes.map((lv) => ({ id: lv.id, name: lv.label })),
     };
   }
 
@@ -310,14 +273,6 @@ export class RoleService {
           roleName:
             dto.roleName ??
             role.roleName,
-
-          userCategoryId:
-            dto.userCategoryId ??
-            role.userCategoryId,
-
-          userTypeId:
-            dto.userTypeId ??
-            role.userTypeId,
         },
       });
 
@@ -341,10 +296,6 @@ export class RoleService {
     role.userCategoryId =
       dto.userCategoryId ??
       role.userCategoryId;
-
-    role.userTypeId =
-      dto.userTypeId ??
-      role.userTypeId;
 
     role.canBeReportingManager =
       dto.canBeReportingManager ??
