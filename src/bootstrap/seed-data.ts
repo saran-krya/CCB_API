@@ -263,7 +263,7 @@ export const SCREENS: SeedScreen[] = [
     subModuleCode: 'TARIFF_CONFIG',
     name: 'Tariff Configuration',
     code: 'TARIFF_CONFIG',
-    url: '/admin/business/tariff-config/overview',
+    url: '/admin/business/tariff-config',
     displayOrder: 1,
   },
   {
