@@ -28,9 +28,6 @@ import {
 import { UnitDetailDto, UnitListDto } from './dto/unit-response.dto';
 import { UnitService } from './unit.service';
 
-// Route-level @Permission() — gates business routes by Screen Action
-// (UNIT screen) instead of hardcoded roles, so access is controlled
-// entirely through Role Permissions per role, not role names.
 @ApiBearerAuth()
 @ApiTags('Units')
 @Controller({ path: 'units', version: '1' })

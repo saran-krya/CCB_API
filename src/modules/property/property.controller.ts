@@ -28,9 +28,6 @@ import {
 import { PropertyDetailDto, PropertyListDto } from './dto/property-response.dto';
 import { PropertyService } from './property.service';
 
-// Route-level @Permission() — gates business routes by Screen Action
-// (PROPERTY screen) instead of hardcoded roles, so access is controlled
-// entirely through Role Permissions per role, not role names.
 @ApiBearerAuth()
 @ApiTags('Properties')
 @Controller({ path: 'properties', version: '1' })

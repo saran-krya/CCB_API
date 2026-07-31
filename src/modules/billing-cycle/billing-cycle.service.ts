@@ -195,11 +195,6 @@ export class BillingCycleService {
     };
   }
 
-  // Creates the master (if this property has never had one) plus its first
-  // version — or, if this property's master already exists but nothing is
-  // currently governing it (every prior version deprecated), adds the next
-  // version onto that SAME master instead of fragmenting into a second,
-  // disconnected master for the same property.
   async create(dto: CreateBillingCycleDto, actorId?: number) {
     let master = await this.masters.findOne({ where: { propertyId: dto.propertyId } });
     if (master?.currentVersionId) {
@@ -238,13 +233,6 @@ export class BillingCycleService {
         billGenerationDays: dto.billGenerationDays,
         billIssueDays: dto.billIssueDays,
         billDueDays: dto.billDueDays,
-        // A newly created cycle immediately governs its property (no
-        // approval gate applies to initial creation — that's Business Rule
-        // 4's territory, which only covers newVersion()) and Active is what
-        // getStats()/dashboard due-date calculations actually key off, so a
-        // freshly created cycle must default to Active to take effect at
-        // all rather than silently billing nothing until someone remembers
-        // to flip it on.
         status: dto.status ?? BillingCycleStatus.ACTIVE,
         version: versionNumber,
       });
@@ -312,10 +300,6 @@ export class BillingCycleService {
     return this.mapToResponse(bc);
   }
 
-  // Direct FK lookup to whichever version is currently governing this
-  // property — the whole reason BillingCycleMaster.currentVersionId exists.
-  // Replaces the old single-table design's "prefer ACTIVE, else most recent
-  // non-deprecated" scan with an O(1) pointer dereference.
   async findByProperty(propertyId: number) {
     const master = await this.masters.findOne({ where: { propertyId } });
     if (!master?.currentVersionId) {
@@ -371,10 +355,6 @@ export class BillingCycleService {
     return this.mapToResponse(saved);
   }
 
-  // Business Rule 3/5 — the only way to change the reading window: clone the
-  // property's current governing version into a new PENDING version awaiting
-  // Finance approval, effective from a not-yet-reached date. Always lands
-  // under the SAME master as its source — never creates a new master.
   async newVersion(id: number, dto: NewVersionBillingCycleDto, actorId?: number) {
     const source = await this.versions.findOne({
       where: { id },
@@ -438,11 +418,6 @@ export class BillingCycleService {
     if (cycle.status !== BillingCycleStatus.PENDING) {
       throw new BadRequestException('Only a pending billing cycle version can be approved');
     }
-    // Who may approve is entirely a Role Permissions decision
-    // (BILLING_CYCLE_APPROVE grant), enforced by PermissionGuard at the
-    // route — no hardcoded role check here. assertNotSelfReview is a
-    // separate, role-independent maker-checker rule and stays regardless of
-    // who holds the grant.
     assertNotSelfReview(cycle.submittedBy?.id, actorId, 'approved');
 
     const oldValue = { ...cycle };
@@ -451,8 +426,6 @@ export class BillingCycleService {
 
     const today = new Date().toISOString().slice(0, 10);
     if (cycle.effectiveFrom && cycle.effectiveFrom <= today) {
-      // The effective date has already arrived — activate immediately
-      // rather than leaving it stuck in PENDING until the next midnight sweep.
       await this.activateVersion(cycle, actorId);
     } else {
       await this.versions.save(cycle);
@@ -468,11 +441,6 @@ export class BillingCycleService {
     if (cycle.status !== BillingCycleStatus.PENDING) {
       throw new BadRequestException('Only a pending billing cycle version can be rejected');
     }
-    // Who may reject is entirely a Role Permissions decision
-    // (BILLING_CYCLE_REJECT grant), enforced by PermissionGuard at the
-    // route — no hardcoded role check here. assertNotSelfReview is a
-    // separate, role-independent maker-checker rule and stays regardless of
-    // who holds the grant.
     assertNotSelfReview(cycle.submittedBy?.id, actorId, 'rejected');
 
     const oldValue = { ...cycle };
@@ -485,10 +453,6 @@ export class BillingCycleService {
     return this.findOne(id);
   }
 
-  // The only way out of REJECTED — re-enters the Finance approval queue
-  // after Super Admin/Admin fixes whatever the rejection notes called out
-  // (via a plain update() first, then resubmit()). Without this, REJECTED
-  // would be a dead end with no way back into review.
   async resubmit(id: number, actorId?: number) {
     const cycle = await this.versions.findOne({ where: { id } });
     if (!cycle) throw new NotFoundException('Billing cycle not found');
@@ -508,14 +472,6 @@ export class BillingCycleService {
     return this.findOne(id);
   }
 
-  // Super Admin only — the intended lifecycle-end action for a billing
-  // cycle version. Replaces the old unconditional soft-delete: a governing
-  // version should be superseded and audited, not silently removed. Per
-  // the doc, "effective deprecation date... must be after current cycle
-  // end date" — implying the version keeps running until then, not that it
-  // dies on request. A same-day date deprecates now; a future date only
-  // records the decision (status untouched) and BillingCycleSchedulerService
-  // applies it for real once that date arrives.
   async deprecate(id: number, dto: DeprecateBillingCycleDto, actorId?: number) {
     const cycle = await this.versions.findOne({ where: { id }, relations: ['childVersions'] });
     if (!cycle) throw new NotFoundException('Billing cycle not found');
@@ -540,14 +496,10 @@ export class BillingCycleService {
       }
     }
 
-    // Mandatory on every deprecation, regardless of replacement status —
-    // "user must confirm they understand billing will stop for this
-    // property" (doc: Mandatory inputs before deprecation is confirmed).
     if (!dto.acknowledged) {
       throw new BadRequestException('You must acknowledge that billing will stop for this property before deprecating.');
     }
 
-    // "Effective deprecation date — cannot be a past date"
     const today = new Date().toISOString().slice(0, 10);
     const effectiveDate = dto.effectiveDeprecationDate ?? today;
     if (effectiveDate < today) {
@@ -573,12 +525,6 @@ export class BillingCycleService {
     return this.findOne(id);
   }
 
-  // The single place `status` is ever set to DEPRECATED — reused by the
-  // immediate path in deprecate() above, by autoDeprecateDueCycles() below,
-  // and by activateVersion()'s auto-supersede case, so there is exactly one
-  // implementation of "what deprecating a row means" in this service. Also
-  // the single place that clears BillingCycleMaster.currentVersionId when
-  // the version being deprecated was the one currently governing.
   private async applyDeprecation(
     cycle: BillingCycleVersion,
     reasonCode: string,
@@ -600,15 +546,11 @@ export class BillingCycleService {
     return saved;
   }
 
-  // True once deprecate() has recorded a future-dated decision that hasn't
-  // been applied yet — blocks a second, conflicting deprecate() call.
   private hasScheduledDeprecation(cycle: BillingCycleVersion): boolean {
     const today = new Date().toISOString().slice(0, 10);
     return !!cycle.deprecatedOn && cycle.deprecatedOn > today && cycle.status !== BillingCycleStatus.DEPRECATED;
   }
 
-  // Exposed for the scheduler — applies every deprecation that deprecate()
-  // recorded with a future effectiveDeprecationDate which has now arrived.
   async autoDeprecateDueCycles(): Promise<number> {
     const today = new Date().toISOString().slice(0, 10);
     const due = await this.versions
@@ -632,16 +574,6 @@ export class BillingCycleService {
     return due.length;
   }
 
-  // Shared by approve() (same-day case) and the scheduler (future-date
-  // catch-up): activates a pending version, points its master's
-  // currentVersionId at it, and deprecates the version it replaces, if any.
-  // `actorId` is undefined when called by the scheduler, which the audit
-  // trail then records as system-initiated.
-  //
-  // Order matters here: the master's pointer is moved to the NEW version
-  // before the OLD one is deprecated, so applyDeprecation()'s "clear the
-  // pointer if it still points at me" check on the old version correctly
-  // finds it already pointing elsewhere and leaves it alone.
   private async activateVersion(cycle: BillingCycleVersion, actorId?: number): Promise<BillingCycleVersion> {
     cycle.status = BillingCycleStatus.ACTIVE;
     const saved = await this.versions.save(cycle);
@@ -676,8 +608,6 @@ export class BillingCycleService {
     return saved;
   }
 
-  // Exposed for the scheduler — promotes every approved-but-still-pending
-  // version whose effectiveFrom date has arrived.
   async autoActivateDueVersions(): Promise<number> {
     const today = new Date().toISOString().slice(0, 10);
     const due = await this.versions
@@ -705,8 +635,6 @@ export class BillingCycleService {
     }
   }
 
-  // "Free text notes mandatory if OTHER is selected" — applies to any
-  // reason-code dropdown in this module (plain edits, new versions, deprecation).
   private assertNotesRequiredForOtherReason(reasonCode: string, notes: string | null | undefined): void {
     if (reasonCode === 'other' && !notes?.trim()) {
       throw new BadRequestException('Notes are required when selecting "Other" as the reason.');
@@ -722,11 +650,6 @@ export class BillingCycleService {
     }
   }
 
-  // A plain update() only ever means "turn this cycle on/off" for status —
-  // it must never be usable to fast-track a PENDING/REJECTED version to
-  // ACTIVE (that's approve()'s job) or to DEPRECATED (that's deprecate()'s,
-  // with its own reason-code and no-alternative-cycle checks). Without this,
-  // Business Rule 4's Finance approval gate could be bypassed entirely.
   private assertToggleOnlyStatusChange(bc: BillingCycleVersion, dto: UpdateBillingCycleDto): void {
     if (dto.status === undefined) return;
     const isToggle = dto.status === BillingCycleStatus.ACTIVE || dto.status === BillingCycleStatus.INACTIVE;

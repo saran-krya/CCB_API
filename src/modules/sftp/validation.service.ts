@@ -2,9 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { stat } from 'fs/promises';
 import { extname } from 'path';
 
-
 const REQUIRED_HEADERS = ['meter_id', 'reading_date', 'reading_value', 'unit'] as const;
-
 
 export enum AnomalySeverity {
   CRITICAL = 'critical',
@@ -125,7 +123,6 @@ export class ValidationService {
     };
   }
 
-
   private worstSeverityPerRow(errors: RowValidationError[]): Record<AnomalySeverity, number> {
     const worstByRow = new Map<number, AnomalySeverity>();
     for (const error of errors) {
@@ -147,11 +144,6 @@ export class ValidationService {
     return counts;
   }
 
-  // Same ranking as worstSeverityPerRow() above, but returns the full worst
-  // RowValidationError per row (field/message/severity) instead of just a
-  // count — used by IngestionService to persist per-reading anomaly detail.
-  // Purely additive: does not change validateRows()'s existing return shape
-  // or any of its current callers' behavior.
   getWorstErrorPerRow(errors: RowValidationError[]): Map<number, RowValidationError> {
     const worstByRow = new Map<number, RowValidationError>();
     for (const error of errors) {

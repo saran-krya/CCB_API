@@ -1,7 +1,6 @@
 import {
   Body,
   Controller,
-  Delete,
   Get,
   Param,
   Patch,
@@ -39,13 +38,11 @@ export class RolePermissionsController {
     return this.rolePermissionsService.create(dto);
   }
 
-  // Create Role Screen
   @Get("tree")
   getPermissionTree() {
     return this.rolePermissionsService.getPermissionTree();
   }
 
-  // Edit Role Screen
   @Get("role/:roleId")
   getRolePermissionByRoleId(
     @Param("roleId") roleId: number,
@@ -55,7 +52,6 @@ export class RolePermissionsController {
     );
   }
 
-  // Create Role
   @Post("save")
   savePermissions(
     @Body()
@@ -66,9 +62,6 @@ export class RolePermissionsController {
     );
   }
 
-  
-
-  // Update Role
   @Patch("role/:roleId")
   updateRolePermissions(
     @Param("roleId") roleId: number,
@@ -81,23 +74,6 @@ export class RolePermissionsController {
     );
   }
 
-  // @Get()
-  // findAll(
-  //   @Query() query: PaginationQueryDto,
-  // ) {
-  //   return this.rolePermissionsService.findAll(query);
-  // }
-
-  // @Get(":id")
-  // findOne(
-  //   @Param("id") id: number,
-  // ) {
-  //   return this.rolePermissionsService.findOne(
-  //     Number(id),
-  //   );
-  // }
-
-  // Login
   @Get("user")
   getUserPermissions(
     @Query("roleId") roleId: number,
@@ -107,30 +83,8 @@ export class RolePermissionsController {
     );
   }
 
-  // Super Admin Menu
   @Get("all-menus")
   getAllMenus() {
     return this.rolePermissionsService.getAllMenus();
   }
-
-  // @Patch(":id")
-  // update(
-  //   @Param("id") id: number,
-  //   @Body()
-  //   dto: UpdateRolePermissionDto,
-  // ) {
-  //   return this.rolePermissionsService.update(
-  //     Number(id),
-  //     dto,
-  //   );
-  // }
-
-  // @Delete(":id")
-  // remove(
-  //   @Param("id") id: number,
-  // ) {
-  //   return this.rolePermissionsService.remove(
-  //     Number(id),
-  //   );
-  // }
 }

@@ -209,12 +209,6 @@ export class SubModulesService {
     };
   }
 
-  // Backfills any SUB_MODULES seed row missing from an already-initialized
-  // database — mirrors ScreensService/ActionsService/PModulesService's
-  // ensureCriticalDefaults() pattern. Matched by code OR name (SubModule
-  // has no DB-level unique constraint on name, but create()'s own duplicate
-  // check treats the pair as effectively unique — same defensive lookup
-  // used elsewhere for this reason) so this never creates a duplicate row.
   async ensureCriticalDefaults(): Promise<void> {
     for (const sm of SUB_MODULES) {
       try {

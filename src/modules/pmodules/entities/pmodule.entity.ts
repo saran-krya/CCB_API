@@ -34,14 +34,12 @@ export class PModule extends BaseEntity {
     })
     isActive?: boolean;
 
-    // MENU | PAGE
     @Column({
         length: 20,
         default: 'MENU',
     })
     type!: string;
 
-    // Direct route if module opens a page
     @Column({
         nullable: true,
         length: 255,

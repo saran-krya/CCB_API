@@ -6,11 +6,6 @@ import { AuditService } from '../../audit/audit.service';
 import { TariffStatus, TariffVersion } from './entities/tariff-version.entity';
 import { TARIFF_AUDIT_MODULE_NAME, TariffAuditAction } from './tariff.constants';
 
-// Date-only transitions the Tariff module can own without a Billing Engine:
-// deprecating a version once its successor's effective date arrives, and
-// expiring a tariff once its own effective-to date has passed. Both are pure
-// functions of columns already on `tariff_versions` — no invoice/billing
-// data needed.
 @Injectable()
 export class TariffSchedulerService {
   private readonly logger = new Logger(TariffSchedulerService.name);
@@ -26,8 +21,6 @@ export class TariffSchedulerService {
     await this.autoExpirePastEffectiveTo();
   }
 
-  // Scenario 5: once a new version's effectiveFrom date arrives, the version
-  // it was cloned from is automatically deprecated.
   async autoDeprecateSupersededVersions(): Promise<number> {
     const today = new Date().toISOString().slice(0, 10);
 
@@ -62,8 +55,6 @@ export class TariffSchedulerService {
     return children.length;
   }
 
-  // Tariff Editing Rules: "Expired tariff = read only forever" once its
-  // effective-to date passes while still active.
   async autoExpirePastEffectiveTo(): Promise<number> {
     const today = new Date().toISOString().slice(0, 10);
 

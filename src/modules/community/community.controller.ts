@@ -28,9 +28,6 @@ import {
 } from './dto/create-community.dto';
 import { CommunityDetailDto, CommunityListDto } from './dto/community-response.dto';
 
-// Route-level @Permission() — gates business routes by Screen Action
-// (COMMUNITY screen) instead of hardcoded roles, so access is controlled
-// entirely through Role Permissions per role, not role names.
 @ApiBearerAuth()
 @ApiTags('Communities')
 @Controller({ path: 'communities', version: '1' })

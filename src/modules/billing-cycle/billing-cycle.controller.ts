@@ -30,16 +30,6 @@ import {
   UpdateBillingCycleDto,
 } from './dto/billing-cycle.dto';
 
-// Route-level @Permission() — gates business routes by Screen Action
-// (BILLING_CYCLE screen) instead of hardcoded roles, so access is
-// controlled entirely through Role Permissions per role, not role names.
-// PermissionGuard has no role bypass of any kind — approve/reject are
-// gated exactly like every other action, purely by whether the caller's
-// role holds the BILLING_CYCLE_APPROVE/BILLING_CYCLE_REJECT grant (seeded
-// to every role except SUPER_ADMIN/ADMIN by default; assign it to FINANCE
-// via Role Management to restore today's behavior). run-scheduler stays on
-// @Roles(SUPER_ADMIN) — it's an ops/testing utility, not a business action
-// a role would be granted.
 @ApiBearerAuth()
 @ApiTags('Billing Cycles')
 @Controller({ path: 'billing-cycles', version: '1' })

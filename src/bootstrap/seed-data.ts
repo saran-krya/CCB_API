@@ -1,18 +1,3 @@
-/**
- * Static seed definitions for the bootstrap process.
- *
- * These are inserted once on first startup (fresh database). Already-
- * initialized databases only get new rows via each module's
- * ensureCriticalDefaults() backfill (see BootstrapService) — that backfill
- * inserts-if-missing by code (or name), it never renames/restructures an
- * existing row, so this file's codes/hierarchy MUST match the live,
- * already-seeded database exactly, not the other way around. If you need to
- * change the shape of the menu tree, change it here AND write a
- * corresponding one-time correction into the owning service's
- * ensureCriticalDefaults() (see PModulesService.MODULE_NAME_CODE_FIXES for
- * the precedent) — editing this file alone has no effect on a database that
- * already has users.
- */
 
 export interface SeedPModule {
   moduleName: string
@@ -32,11 +17,6 @@ export interface SeedSubModule {
   displayOrder: number
 }
 
-/**
- * A Screen must belong to exactly one of:
- *   - subModuleCode  → Scenario 1: PModule → SubModule → Screen → Actions
- *   - pModuleCode    → Scenario 2: PModule → Screen → Actions (no SubModule)
- */
 export interface SeedScreen {
   subModuleCode?: string
   pModuleCode?: string
@@ -51,8 +31,8 @@ export interface SeedAction {
   name: string
   code: string
   description?: string
-  parentActionCode?: string // code of a top-level action on the SAME screen — nests this action as its child in the Role Permission tree. Omit for top-level actions. One level of nesting only.
-  displayOrder?: number // ordering among siblings — top-level actions on a screen, and independently, children within one parent
+  parentActionCode?: string 
+  displayOrder?: number 
 }
 
 export interface SeedRole {
@@ -62,11 +42,6 @@ export interface SeedRole {
   canBeReportingManager: boolean
 }
 
-// ---------------------------------------------------------------------------
-// Navigation modules (PModules)
-// type: PAGE  — module is itself a navigable page (no sub-menu)
-// type: MENU  — module opens a dropdown with SubModules
-// ---------------------------------------------------------------------------
 
 export const PMODULES: SeedPModule[] = [
   {
@@ -99,9 +74,6 @@ export const PMODULES: SeedPModule[] = [
     icon: 'Receipt',
     displayOrder: 4,
   },
-  // System Admin and Business Admin are their own top-level PModules (not
-  // submodules under one shared "Admin" grouper) — this matches the real,
-  // already-seeded application menu structure.
   {
     moduleName: 'System Admin',
     code: 'SYSTEM_ADMIN',
@@ -118,14 +90,8 @@ export const PMODULES: SeedPModule[] = [
   },
 ]
 
-// ---------------------------------------------------------------------------
-// SubModules
-// Meter/Billing submodules have URLs (they ARE the pages).
-// Admin submodules are groupers (no URL — their Screens are the pages).
-// ---------------------------------------------------------------------------
 
 export const SUB_MODULES: SeedSubModule[] = [
-  // ── Meter Management ──────────────────────────────────────────────────────
   {
     pModuleCode: 'METER_MANAGEMENT',
     name: 'Meter Information',
@@ -175,7 +141,6 @@ export const SUB_MODULES: SeedSubModule[] = [
     displayOrder: 6,
   },
 
-  // ── Billing Management ────────────────────────────────────────────────────
   {
     pModuleCode: 'BILLING_MANAGEMENT',
     name: 'Billing Dashboard',
@@ -217,7 +182,6 @@ export const SUB_MODULES: SeedSubModule[] = [
     displayOrder: 5,
   },
 
-  // ── System Admin (groupers — Screens below define the actual pages) ──────
   {
     pModuleCode: 'SYSTEM_ADMIN',
     name: 'User Mangement',
@@ -248,7 +212,6 @@ export const SUB_MODULES: SeedSubModule[] = [
     displayOrder: 4,
   },
 
-  // ── Business Admin (groupers — Screens below define the actual pages) ───
   {
     pModuleCode: 'BUSINESS_ADMIN',
     name: 'Tariff Configuration',
@@ -265,13 +228,8 @@ export const SUB_MODULES: SeedSubModule[] = [
   },
 ]
 
-// ---------------------------------------------------------------------------
-// Screens (children of SubModules — used for the Admin section where
-// each sub-module groups multiple navigable screens)
-// ---------------------------------------------------------------------------
 
 export const SCREENS: SeedScreen[] = [
-  // ── System Admin ──────────────────────────────────────────────────────────
   {
     subModuleCode: 'USER_MANAGEMENT',
     name: 'Userslist',
@@ -286,9 +244,6 @@ export const SCREENS: SeedScreen[] = [
     url: '/admin/system/roles',
     displayOrder: 1,
   },
-  // Attributes/LFM are groupers today with no live screen yet — one is
-  // created for each here so AttributeController/LovController's
-  // @Permission() codes have somewhere to attach their actions.
   {
     subModuleCode: 'ATTRIBUTES',
     name: 'Attributes',
@@ -304,10 +259,6 @@ export const SCREENS: SeedScreen[] = [
     displayOrder: 1,
   },
 
-  // ── Business Admin ────────────────────────────────────────────────────────
-  // TARIFF_CONFIG already exists live as a screen under the TARIFF_CONFIG
-  // submodule with the SAME code — matched here, not renamed, so this
-  // resolves the existing row instead of creating a second one.
   {
     subModuleCode: 'TARIFF_CONFIG',
     name: 'Tariff Configuration',
@@ -323,7 +274,6 @@ export const SCREENS: SeedScreen[] = [
     displayOrder: 1,
   },
 
-  // ── Community Management (Scenario 2 — direct PModule screens) ────────────
   {
     pModuleCode: 'COMMUNITY_MANAGEMENT',
     name: 'Community',
@@ -344,7 +294,6 @@ export const SCREENS: SeedScreen[] = [
     displayOrder: 3,
   },
 
-  // ── Meter Management (Scenario 1 — SubModule already lives at /meters) ───
   {
     subModuleCode: 'METER_LIST',
     name: 'Meter Information',
@@ -368,13 +317,8 @@ export const SCREENS: SeedScreen[] = [
   },
 ]
 
-// ---------------------------------------------------------------------------
-// Actions (fine-grained permission codes within a Screen)
-// Codes must match keys in ROUTE_CODE_MAP on the frontend.
-// ---------------------------------------------------------------------------
 
 export const ACTIONS: SeedAction[] = [
-  // ── User Management ───────────────────────────────────────────────────────
   {
     screenCode: 'USER_LIST',
     name: 'View Users',
@@ -406,7 +350,6 @@ export const ACTIONS: SeedAction[] = [
     description: 'Delete a user',
   },
 
-  // ── Role Management ───────────────────────────────────────────────────────
   {
     screenCode: 'ROLE',
     name: 'View Roles',
@@ -432,7 +375,6 @@ export const ACTIONS: SeedAction[] = [
     description: 'Delete a role',
   },
 
-  // ── Attributes ─────────────────────────────────────────────────────────────
   {
     screenCode: 'ATTRIBUTES',
     name: 'View Attribute',
@@ -458,13 +400,6 @@ export const ACTIONS: SeedAction[] = [
     description: 'Remove a custom (non-system-defined) attribute',
   },
 
-  // ── Tariff Configuration ──────────────────────────────────────────────────
-  // Regrouped under the screen's 3 real top-level actions (Create/Edit/View)
-  // so the Role Permission tree matches the application's own Tariff
-  // Configuration checkbox layout — Create/Edit/View each expand to reveal
-  // their related actions as independently grantable children, one level
-  // deep. No action was invented or duplicated; every code below already
-  // existed as a flat action — only parentActionCode/displayOrder are new.
   {
     screenCode: 'TARIFF_CONFIG',
     name: 'Create Tariff',
@@ -551,14 +486,6 @@ export const ACTIONS: SeedAction[] = [
     displayOrder: 3,
   },
 
-  // ── Billing Cycle Configuration ───────────────────────────────────────────
-  // Regrouped under the screen's 3 real top-level actions (Create/Edit/View)
-  // so the Role Permission tree matches the same Create/Edit/View grouping
-  // used for Tariff Configuration — each expands to reveal its related
-  // actions as independently grantable children, one level deep. No action
-  // was invented or duplicated; every code below already existed as a flat
-  // action — only parentActionCode/displayOrder are new. Export has no
-  // natural parent (it isn't a lifecycle or review action) so it stays flat.
   {
     screenCode: 'BILLING_CYCLE',
     name: 'Create Billing Cycle',
@@ -628,7 +555,6 @@ export const ACTIONS: SeedAction[] = [
     displayOrder: 4,
   },
 
-  // ── Community ─────────────────────────────────────────────────────────────
   {
     screenCode: 'COMMUNITY',
     name: 'View Community',
@@ -660,7 +586,6 @@ export const ACTIONS: SeedAction[] = [
     description: 'Activate or deactivate a community',
   },
 
-  // ── Property ──────────────────────────────────────────────────────────────
   {
     screenCode: 'PROPERTY',
     name: 'View Property',
@@ -692,7 +617,6 @@ export const ACTIONS: SeedAction[] = [
     description: 'Activate or deactivate a property',
   },
 
-  // ── Unit ──────────────────────────────────────────────────────────────────
   {
     screenCode: 'UNIT',
     name: 'View Unit',
@@ -724,7 +648,6 @@ export const ACTIONS: SeedAction[] = [
     description: 'Change a unit\'s occupancy status',
   },
 
-  // ── LOV Master ─────────────────────────────────────────────────────────────
   {
     screenCode: 'LFM',
     name: 'View LOV',
@@ -756,8 +679,6 @@ export const ACTIONS: SeedAction[] = [
     description: 'Reassign which module a lookup category belongs to',
   },
 
-  // ── Meter Management ──────────────────────────────────────────────────────
-  // Same Create/Edit/View grouping convention as Tariff/Billing Cycle.
   {
     screenCode: 'METER_LIST',
     name: 'View Meter Information',
@@ -796,18 +717,7 @@ export const ACTIONS: SeedAction[] = [
     parentActionCode: 'METER_CREATE',
     displayOrder: 1,
   },
-  // METER_EDIT deliberately does not exist on this screen — Meter Information
-  // is operational hierarchy/mapping only (View + Map/Unmap/Change Mapping);
-  // Meter Inventory (METER_INVENTORY_EDIT, below) is the sole place meter
-  // master data — including Activate/Deactivate — can be edited. See
-  // MeterInventoryShell.tsx and the removed Edit/status-toggle buttons on the
-  // Property/Unit hierarchy pages for the corresponding frontend change.
 
-  // Meter Inventory — the portfolio-wide Master/Sub Meter list, distinct from
-  // METER_LIST's community/property/unit drill-down. METER_INVENTORY_DELETE
-  // is reserved for permission completeness only — no hard-delete endpoint
-  // exists for meters yet (only activate/deactivate), so nothing in the UI
-  // calls it today.
   {
     screenCode: 'METER_INVENTORY',
     name: 'View Meter Inventory',
@@ -854,23 +764,7 @@ export const ACTIONS: SeedAction[] = [
   },
 ]
 
-// ---------------------------------------------------------------------------
-// Roles
-// SUPER_ADMIN and ADMIN are granted real RolePermission rows for every
-// active Action except ADMIN_GRANT_EXCLUDED_ACTION_CODES below (see
-// RolePermissionsService.ensureAdminGrants) — there is no role-name bypass
-// anywhere in PermissionGuard or UserService.getProfile(); Role →
-// Permissions is the single source of truth for every role. Other roles
-// (FINANCE, OPERATIONS, ...) start with no permissions; they, and the four
-// excluded actions for SUPER_ADMIN/ADMIN, are configured via the Role
-// Management UI.
-// ---------------------------------------------------------------------------
 
-// Business-rule exclusions from the otherwise-full SUPER_ADMIN/ADMIN grant
-// — approving/rejecting a Tariff or Billing Cycle is Finance's decision by
-// design, so neither role is auto-granted these two actions per module.
-// Whoever should be able to approve/reject (today: FINANCE) gets it via an
-// explicit Role Management grant, not a hardcoded role check in code.
 export const ADMIN_GRANT_EXCLUDED_ACTION_CODES = [
   'TARIFF_APPROVE',
   'TARIFF_REJECT',

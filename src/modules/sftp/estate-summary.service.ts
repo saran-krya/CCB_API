@@ -8,7 +8,6 @@ import { EstateIngestionStatus } from './entities/estate-ingestion-status.enum';
 import { MasterMeter } from '../meter/entities/master-meter.entity';
 import { SubMeter } from '../meter/entities/sub-meter.entity';
 
-
 const DUBAI_UTC_OFFSET_HOURS = 4;
 
 interface LogAggregate {
@@ -28,7 +27,6 @@ interface LogAggregate {
   summaryDate: string | null;
 }
 
-
 @Injectable()
 export class EstateSummaryService {
   private readonly logger = new Logger(EstateSummaryService.name);
@@ -40,16 +38,7 @@ export class EstateSummaryService {
     @InjectRepository(SubMeter) private readonly subMeters: Repository<SubMeter>,
   ) {}
 
-
   async generateSummaryForDate(date: string): Promise<SftpEstateSummary> {
-    // reading_date (parsed from the file's own name — see filename.util.ts) is
-    // the authoritative match. DATE(created_at) is a fallback for the rare
-    // row where reading_date is still unknown (e.g. an unparseable filename),
-    // NOT a second unconditional match path — a file with a real reading_date
-    // must be counted under its own date only, even if it happened to be
-    // ingested on a different calendar day (this was a real bug: a file for
-    // 07-21 ingested on 07-23 was being double-counted into 07-23's summary
-    // via this OR, inflating that day's numbers with a previous day's data).
     const rows = await this.ingestionLogs
       .createQueryBuilder('log')
       .where('log.reading_date = :date', { date })
@@ -81,7 +70,6 @@ export class EstateSummaryService {
   async recalculateSummary(date: string): Promise<SftpEstateSummary> {
     return this.generateSummaryForDate(date);
   }
-
 
   async recordFailedPoll(jobId: string): Promise<SftpEstateSummary> {
     const summaryDate = this.toDateString(new Date());
@@ -236,11 +224,9 @@ export class EstateSummaryService {
     return saved;
   }
 
-
   private async countRegisteredDtus(): Promise<number> {
     return this.masterMeters.createQueryBuilder('m').where('m.dtu_id IS NOT NULL').getCount();
   }
-
 
   private async sumExpectedMeters(): Promise<number> {
     const registry = await this.masterMeters
@@ -265,7 +251,6 @@ export class EstateSummaryService {
     return date.toISOString().slice(0, 10);
   }
 
-
   async getSummaryForDate(date: string): Promise<SftpEstateSummary | null> {
     return this.summaries.findOne({ where: { summaryDate: date } });
   }
@@ -281,10 +266,6 @@ export class EstateSummaryService {
   }
 
   async getFailedLogsForDate(date: string): Promise<SftpIngestionLog[]> {
-    // Same reading_date-first rule as generateSummaryForDate() above — a
-    // failed file now carries its own real reading_date (see
-    // ingestion.service.ts), so it must be listed under its own date, not
-    // whatever day it happened to be ingested on.
     return this.ingestionLogs
       .createQueryBuilder('log')
       .leftJoinAndSelect('log.property', 'property')
@@ -294,7 +275,6 @@ export class EstateSummaryService {
       .getMany();
   }
 
-
   async getSummariesBetween(fromDate: string, toDate: string): Promise<SftpEstateSummary[]> {
     return this.summaries.find({
       where: { summaryDate: Between(fromDate, toDate) },
@@ -302,11 +282,9 @@ export class EstateSummaryService {
     });
   }
 
-
   async getLatestSummary(): Promise<SftpEstateSummary | null> {
     return this.summaries.findOne({ where: {}, order: { summaryDate: 'DESC' } });
   }
-
 
   getNextScheduledPoll(now: Date = new Date()): string {
     const dubaiNow = new Date(now.getTime() + DUBAI_UTC_OFFSET_HOURS * 60 * 60 * 1000);

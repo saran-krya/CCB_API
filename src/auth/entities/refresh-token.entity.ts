@@ -18,7 +18,6 @@ export class RefreshToken {
   @Column({ name: 'user_id', type: 'int' })
   userId!: number;
 
-  /** Groups all tokens issued from the same login — used for reuse-attack revocation. */
   @Index()
   @Column({ name: 'family', type: 'varchar', length: 36 })
   family!: string;

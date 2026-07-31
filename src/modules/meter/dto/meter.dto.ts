@@ -189,17 +189,7 @@ export class MeterQueryDto extends BasePaginationDto {
   status?: MeterStatus;
 }
 
-// ─── Meter Information — paginated Communities / Properties overview ────────
-// `search` (inherited from BasePaginationDto) matches by name; `sortBy` is
-// whitelisted server-side to real base-table columns only (name, status) —
-// the coverage/count columns are computed via separate grouped queries per
-// page of results, not part of the base table, so they aren't sortable.
 
-// The "All" option in the status filter dropdown clears the filter by
-// sending status="" rather than omitting the param — @IsOptional() only
-// skips validation when the value is undefined, not for an empty string, so
-// without this transform @IsEnum() rejects "" with a 400 and the table
-// renders empty. Blank out empty strings to undefined before @IsEnum runs.
 const emptyStringToUndefined = ({ value }: { value: unknown }) => (value === '' ? undefined : value);
 
 export class MeterCommunitiesOverviewQueryDto extends BasePaginationDto {
@@ -226,12 +216,6 @@ export class MeterUnitsOverviewQueryDto extends BasePaginationDto {
   status?: UnitStatus;
 }
 
-// ─── Import result report generation ────────────────────────────────────────
-// The frontend already holds the full ImportSummary returned by the import
-// endpoint (failedRecords with their original cell values, importedIds) —
-// these two DTOs just carry that same data back to the server so the actual
-// .xlsx generation stays server-side (ExcelJS, same as the template/export
-// endpoints), rather than duplicating workbook-building logic in the browser.
 
 export class ImportFailedRecordDto {
   @IsNumber()
@@ -266,7 +250,6 @@ export class DownloadSuccessReportDto {
   ids!: number[];
 }
 
-// ─── Import Center — filtered/paginated import history ──────────────────────
 
 export class ImportHistoryQueryDto {
   @ApiPropertyOptional({ enum: ['master_meter', 'sub_meter'] })
@@ -321,7 +304,6 @@ export class DailyMeterReadingSummaryQueryDto {
   propertyId?: number;
 }
 
-// ─── Daily Meter Readings — paginated, filterable list ──────────────────────
 
 export type DailyReadingValidationStatus = 'clean' | 'anomaly' | 'missing';
 
@@ -349,19 +331,11 @@ export class DailyMeterReadingQueryDto extends BasePaginationDto {
   @IsInt()
   unitId?: number;
 
-  // 'anomaly' always returns an empty page today — invalid rows are never
-  // persisted as MeterReading, so no anomalous reading can ever be found
-  // this way (see DailyMeterReadingsService.getDailyMeterReadings). 'missing'
-  // is synthesized separately by diffing the SubMeter registry against
-  // meter_ids that actually reported for the date.
   @ApiPropertyOptional({ enum: ['clean', 'anomaly', 'missing'] })
   @IsOptional()
   @IsIn(['clean', 'anomaly', 'missing'])
   validationStatus?: DailyReadingValidationStatus;
 
-  // Accepted for forward compatibility with the UI's existing filter bar —
-  // no billing_status data exists anywhere yet (billing logic is explicitly
-  // out of scope for this milestone), so this currently has no effect.
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()

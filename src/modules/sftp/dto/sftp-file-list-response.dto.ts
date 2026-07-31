@@ -1,11 +1,6 @@
 import { SftpIngestionLog } from '../entities/sftp-ingestion-log.entity';
 import { PaginatedResult } from '../../../common/interfaces/paginated-result.interface';
 
-// Same snake_case exception as estate-summary-response.dto.ts (see that
-// file's own comment) — this module's Dashboard-facing responses are
-// snake_case by explicit spec requirement, unlike the rest of this
-// codebase's default camelCase JSON.
-
 export interface SftpFileListItemDto {
   id: number;
   file_name: string | null;
@@ -34,13 +29,6 @@ export interface SftpFileListResponseDto {
   };
 }
 
-// Per-file Community/Property computed dynamically from the readings a file
-// actually produced (see SftpFileListService.resolveFileLocations) — never
-// persisted, always recomputed at read time from meter_readings + the
-// existing meter/property/community tables. `null` means no meter_reading
-// resolved to a known meter (nothing to show); the literal string
-// "Multiple" means the file's readings span more than one property/
-// community.
 export interface ResolvedFileLocation {
   property: string | null;
   community: string | null;

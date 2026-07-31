@@ -3,10 +3,6 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { DashboardService } from './dashboard.service';
 import { DashboardConsumptionQueryDto } from './dto/dashboard-query.dto';
 
-// No @Roles()/@Permission() here on purpose — this is the platform landing
-// page, visible to every authenticated user regardless of role. The global
-// auth guard still requires a valid session; there is simply no additional
-// module-level restriction layered on top of it.
 @ApiBearerAuth()
 @ApiTags('Dashboard')
 @Controller({ path: 'dashboard', version: '1' })

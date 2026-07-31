@@ -86,7 +86,6 @@ export class RoleService {
       "userCategory",
     );
 
-    // Sorting
 
     switch (query.sortBy) {
       case "userCategory":
@@ -112,11 +111,6 @@ export class RoleService {
         break;
     }
 
-    // Search - Role Name
-    // A multiselect on the frontend sends multiple exact names as a
-    // comma-separated list — matched with IN. A single value (whether typed
-    // free-text or one multiselect pick) still uses LIKE, so this covers both
-    // without changing the param shape ("search.roleName" stays a string).
 
     if (query["search.roleName"]) {
       const roleNames = query["search.roleName"]
@@ -136,7 +130,6 @@ export class RoleService {
       }
     }
 
-    // Filter - User Category (ID-based)
 
     if (query.userCategoryId) {
       qb.andWhere(
@@ -145,7 +138,6 @@ export class RoleService {
       );
     }
 
-    // Search - Created Date
 
     if (query["search.createdAt"]) {
       qb.andWhere(
@@ -183,11 +175,6 @@ export class RoleService {
     };
   }
 
-  // userCategoryId is an optional filter, not a required cascade — Role is
-  // the only thing a User Creation form picks directly; Scope is a read-only
-  // fact inherited from that Role, not a separate selection the caller
-  // narrows by beforehand. Omitting it returns every active role so the
-  // frontend can show Scope as derived display text.
   async getRoleDropdown(
     userCategoryId?: number,
   ) {

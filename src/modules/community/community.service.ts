@@ -124,7 +124,6 @@ export class CommunityService {
 
     const result = await paginate(qb, query);
 
-    // Batch-fetch unit counts for the current page (avoids N+1)
     let totalUnitsMap: Record<number, number> = {};
     if (result.items.length > 0) {
       const ids = result.items.map((c) => c.id);
@@ -182,7 +181,6 @@ export class CommunityService {
       ),
     ]);
 
-    // Batch unit counts per property for the PropertiesTable totalUnits column
     let propertyUnitCountMap: Record<number, number> = {};
     if (properties.length > 0) {
       const pIds = properties.map((p) => p.id);

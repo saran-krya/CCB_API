@@ -129,12 +129,6 @@ export class ScreensService {
     return { message: 'Screen deleted successfully' };
   }
 
-  // Backfills any SCREENS seed row missing from an already-initialized
-  // database — the one-time bootstrap seed (BootstrapService.seedScreens)
-  // never runs again once a database has users, so a screen code added
-  // after first boot (e.g. LOV_MASTER_SCREEN) would otherwise never be
-  // inserted. Mirrors AttributeService/LovService's ensureCriticalDefaults()
-  // pattern: check-by-code, skip if present, insert if missing.
   async ensureCriticalDefaults(): Promise<void> {
     for (const sc of SCREENS) {
       try {
@@ -175,8 +169,6 @@ export class ScreensService {
         await this.screenRepository.save(entity);
         this.logger.debug(`Backfilled screen "${sc.code}"`);
       } catch (err) {
-        // One unexpected row must not abort the whole backfill loop or
-        // crash server startup — log it and keep going.
         this.logger.error(`Failed to backfill screen "${sc.code}" — skipping`, err as Error);
       }
     }

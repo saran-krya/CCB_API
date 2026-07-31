@@ -3,37 +3,11 @@ import { ConfigService } from '@nestjs/config';
 import { createReadStream } from 'fs';
 import { mkdir, stat } from 'fs/promises';
 import { extname, join } from 'path';
-// ssh2-sftp-client's type definitions declare `export = sftp` (CommonJS-style,
-// not an ES default export) — esModuleInterop is not enabled in this project
-// (only allowSyntheticDefaultImports, a type-checking-only flag), so
-// `import SftpClient from 'ssh2-sftp-client'` compiles but reads `.default`
-// off the real require() result at runtime, which doesn't exist and throws
-// "is not a constructor". `import ... = require(...)` matches `export =`
-// exactly, at both the type and runtime level.
 import SftpClient = require('ssh2-sftp-client');
-// Same export shape as ssh2-sftp-client above (`export = csvParser`, a bare
-// CommonJS function export with no `.default`) — same import form for the
-// same reason.
 import csvParser = require('csv-parser');
 
-// Where downloadFile() saves files locally — the one hardcoded path the
-// Download milestone explicitly calls for (everything else is
-// ConfigService-driven). Resolved against process.cwd() so it lands at
-// <project root>/storage/sftp/temp regardless of which file invokes this
-// service (this module, and later the Cron Job that will call the same
-// downloadFile() method).
 const LOCAL_DOWNLOAD_DIR = join(process.cwd(), 'storage', 'sftp', 'temp');
 
-// Milestone 1 of the SFTP File Monitor module: prove connectivity and list
-// what's on the remote server. Milestone 2 adds downloadFile(). Both
-// deliberately stop short of parsing, validating, inserting, moving, or
-// scheduling anything — see the module-level comment in sftp.controller.ts
-// for the full list of what's still out of scope.
-//
-// Kept as a single reusable service (connect/disconnect/listFiles/
-// downloadFile) rather than one-off scripts so the eventual Cron Job can
-// inject this same service and call downloadFile() directly instead of
-// duplicating the connection setup.
 @Injectable()
 export class SftpService {
   private readonly logger = new Logger(SftpService.name);
@@ -52,8 +26,6 @@ export class SftpService {
     const password = this.config.getOrThrow<string>('SFTP_PASSWORD');
 
     try {
-      // Password is passed straight to the client, never logged — the log
-      // line below only ever names host/port/username.
       await client.connect({ host, port, username, password });
       this.logger.log(`Connected to SFTP server ${host}:${port} as ${username}`);
       return client;
@@ -68,9 +40,6 @@ export class SftpService {
     try {
       await client.end();
     } catch (err) {
-      // Disconnection failures are logged, not thrown — by the time this
-      // runs, the caller already has (or has failed to get) what it needed;
-      // a failed cleanup shouldn't mask the real result.
       const message = err instanceof Error ? err.message : 'Unknown error';
       this.logger.warn(`SFTP disconnect encountered an issue: ${message}`);
     }
@@ -92,10 +61,6 @@ export class SftpService {
     }
   }
 
-  // Reusable by design — the future Cron Job calls this exact method
-  // instead of duplicating the connect/verify/get/disconnect sequence.
-  // fileName is a bare name (e.g. "DTU_DTU-RIV-01_20260720.csv"), always
-  // resolved against SFTP_REMOTE_PATH — callers never pass a full remote path.
   async downloadFile(fileName: string): Promise<{ fileName: string; localPath: string; size: number }> {
     const remotePath = this.config.getOrThrow<string>('SFTP_REMOTE_PATH');
     const remoteFilePath = `${remotePath.replace(/\/+$/, '')}/${fileName}`;
@@ -103,10 +68,6 @@ export class SftpService {
 
     const client = await this.connect();
     try {
-      // Verify existence via the same list() call listFiles() already uses
-      // (not client.exists(), which the "read files from configured remote
-      // path" step in the spec doesn't call for) — this also gives the
-      // remote size back for the response without a second round trip.
       const files = await client.list(remotePath);
       const remoteFile = files.find((f) => f.name === fileName);
       if (!remoteFile) {
@@ -130,7 +91,6 @@ export class SftpService {
     }
   }
 
-
   async parseCsv(localFilePath: string): Promise<{ fileName: string; rowCount: number; rows: Record<string, string>[] }> {
     const fileName = localFilePath.split(/[/\\]/).pop() ?? localFilePath;
 
@@ -143,7 +103,6 @@ export class SftpService {
     } catch {
       throw new NotFoundException(`File "${fileName}" was not found at ${localFilePath}`);
     }
-
 
     try {
       const rows = await new Promise<Record<string, string>[]>((resolve, reject) => {

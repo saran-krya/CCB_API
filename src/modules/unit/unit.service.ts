@@ -134,9 +134,6 @@ export class UnitService {
       handoverDate: unit.handoverDate ?? null,
       ownerId: unit.ownerId ?? null,
       tenantId: unit.tenantId ?? null,
-      // Sourced from the real SubMeter.unit / SubMeter.masterMeter relations
-      // (see unit.entity.ts's Unit.subMeter comment) — never a denormalized
-      // copy, so this can never drift from the actual mapping.
       subMeterId: unit.subMeter?.id ?? null,
       subMeterCode: unit.subMeter?.businessCode ?? null,
       masterMeterId: unit.subMeter?.masterMeter?.id ?? null,

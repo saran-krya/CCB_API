@@ -1,6 +1,3 @@
-// Structured result of a bulk import run — returned by MeterService.importMeters
-// and persisted (as JSON) on the AuditLog row it writes, so the same shape
-// backs both the immediate API response and the Import History list later.
 
 export enum ImportFailureReason {
   MISSING_REQUIRED = 'missing_required',

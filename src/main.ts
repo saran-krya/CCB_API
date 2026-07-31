@@ -31,16 +31,6 @@ async function bootstrap() {
     .setDescription('Enterprise backend APIs for Dubai apartment HVAC and BTU metering operations.')
     .setVersion('1.0')
     .addBearerAuth()
-    // .addOAuth2({
-    //   type: 'oauth2',
-    //   flows: {
-    //     authorizationCode: {
-    //       authorizationUrl: config.get<string>('SSO_AUTHORIZATION_URL', ''),
-    //       tokenUrl: config.get<string>('SSO_TOKEN_URL', ''),
-    //       scopes: {},
-    //     },
-    //   },
-    // })
     .build();
 
   const document = SwaggerModule.createDocument(app, swaggerConfig);

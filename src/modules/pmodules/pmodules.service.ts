@@ -15,12 +15,6 @@ import {
 } from './dto/create-pmodule.dto';
 import { PMODULES } from '../../bootstrap/seed-data';
 
-// One-time correction for a module created through the admin UI with a
-// literal "NULL" typed into its code field instead of an actual code (the
-// column allows any string, so nothing prevented this) — matched by its
-// already-correct, unique moduleName, not by the bad code itself, so this
-// stays safe even if the exact bad string ever changes. Reconciles
-// existing data instead of creating a duplicate module.
 const MODULE_NAME_CODE_FIXES: Record<string, string> = {
   'System Admin': 'SYSTEM_ADMIN',
 };
@@ -142,12 +136,6 @@ async findAll() {
     };
   }
 
-  // Backfills any PMODULES seed row missing from an already-initialized
-  // database, and corrects the one known bad-code row (see
-  // MODULE_NAME_CODE_FIXES) — mirrors ScreensService/ActionsService's
-  // ensureCriticalDefaults() pattern. Never inserts a duplicate: existing
-  // rows are matched by moduleName (unique) for the fix step, and by code
-  // for the insert-if-missing step.
   async ensureCriticalDefaults(): Promise<void> {
     for (const [moduleName, correctCode] of Object.entries(MODULE_NAME_CODE_FIXES)) {
       try {

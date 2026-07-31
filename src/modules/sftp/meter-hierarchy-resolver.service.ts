@@ -10,13 +10,6 @@ export interface ResolvedMeterHierarchy {
   communityId: number;
 }
 
-// Resolves a CSV row's meter_id (matched against SubMeter.businessCode) up
-// through Property/Community, in one batched query per file rather than one
-// lookup per row. A meter_id with no matching SubMeter is simply absent
-// from the returned map — callers must treat that as "not resolvable this
-// run", never as an error; existing row-level validation/anomaly handling
-// in IngestionService is entirely unaffected by resolution success or
-// failure.
 @Injectable()
 export class MeterHierarchyResolverService {
   private readonly logger = new Logger(MeterHierarchyResolverService.name);

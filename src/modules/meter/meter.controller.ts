@@ -38,7 +38,7 @@ import { MeterImportType } from './entities/meter-import-type.enum';
 import { MeterService } from './meter.service';
 
 const EXCEL_CONTENT_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
-const MAX_IMPORT_UPLOAD_BYTES = 10 * 1024 * 1024; // 10 MB — mirrors MeterService's own guard, enforced earlier by Multer
+const MAX_IMPORT_UPLOAD_BYTES = 10 * 1024 * 1024; 
 
 @ApiBearerAuth()
 @ApiTags('Meters')
@@ -46,7 +46,6 @@ const MAX_IMPORT_UPLOAD_BYTES = 10 * 1024 * 1024; // 10 MB — mirrors MeterServ
 export class MeterController {
   constructor(private readonly meters: MeterService) {}
 
-  // ─── Dashboard / drill-down ────────────────────────────────────────────────
 
   @Get('stats')
   @Permission('METER_VIEW')
@@ -94,7 +93,6 @@ export class MeterController {
     return this.meters.getUnitsOverview(propertyId, query);
   }
 
-  // ─── Import history ─────────────────────────────────────────────────────────
 
   @Get('import-history')
   @Permission('METER_VIEW')
@@ -117,7 +115,6 @@ export class MeterController {
     return this.meters.getImportHistoryMetaFilters();
   }
 
-  // ─── Master Meters ──────────────────────────────────────────────────────────
 
   @Get('master-meters')
   @Permission('METER_VIEW', 'METER_INVENTORY_VIEW')
@@ -126,9 +123,6 @@ export class MeterController {
     return this.meters.findMasterMeters(query);
   }
 
-  // Registered before master-meters/:id (same reason export/import-template
-  // already are) so the literal 'metaFilters' segment can never be swallowed
-  // by the :id param route.
   @Get('master-meters/metaFilters')
   @Permission('METER_VIEW', 'METER_INVENTORY_VIEW')
   @ApiOperation({ summary: 'Filter option metadata (Community, Property, Status) for the Master Meter inventory list' })
@@ -213,7 +207,6 @@ export class MeterController {
     return this.meters.setMasterMeterStatus(id, dto, user?.sub);
   }
 
-  // ─── Sub Meters ─────────────────────────────────────────────────────────────
 
   @Get('sub-meters')
   @Permission('METER_VIEW', 'METER_INVENTORY_VIEW')
@@ -222,7 +215,6 @@ export class MeterController {
     return this.meters.findSubMeters(query);
   }
 
-  // Registered before sub-meters/:id — same reason as master-meters/metaFilters above.
   @Get('sub-meters/metaFilters')
   @Permission('METER_VIEW', 'METER_INVENTORY_VIEW')
   @ApiOperation({ summary: 'Filter option metadata (Community, Property, Status) for the Sub Meter inventory list' })
@@ -291,12 +283,6 @@ export class MeterController {
     return this.meters.createSubMeter(dto, user?.sub);
   }
 
-  // Shared by two distinct callers with two distinct permissions — Meter
-  // Inventory's full attribute edit (METER_INVENTORY_EDIT) and Meter
-  // Information's mapping-only dialog (METER_MAPPING, which only ever sends
-  // { unitId }). The DTO/route can't tell them apart field-by-field, so this
-  // is a route-level OR, not true field-level authorization — consistent
-  // with how every other permission check in this codebase already works.
   @Patch('sub-meters/:id')
   @Permission('METER_INVENTORY_EDIT', 'METER_MAPPING')
   @ApiOperation({ summary: 'Edit a sub meter, including mapping/unmapping it to a unit' })
@@ -313,9 +299,6 @@ export class MeterController {
     return this.meters.setSubMeterStatus(id, dto, user?.sub);
   }
 
-  // ─── Daily Meter Readings — read-only list (Phase 2) ────────────────────────
-  // Registered before any future daily-readings/:id route, same reason as
-  // master-meters/metaFilters above.
 
   @Get('daily-readings/metaFilters')
   @Permission('METER_VIEW')

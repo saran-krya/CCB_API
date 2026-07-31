@@ -15,16 +15,6 @@ import {
 import { TariffSchedulerService } from './tariff-scheduler.service';
 import { TariffService } from './tariff.service';
 
-// Route-level @Permission() — gates business routes by Screen Action
-// (TARIFF_MANAGEMENT screen) instead of hardcoded roles, so access is
-// controlled entirely through Role Permissions per role, not role names.
-// PermissionGuard has no role bypass of any kind — approve/reject are
-// gated exactly like every other action, purely by whether the caller's
-// role holds the TARIFF_APPROVE/TARIFF_REJECT grant (seeded to every role
-// except SUPER_ADMIN/ADMIN by default; assign it to FINANCE via Role
-// Management to restore today's behavior). run-scheduler stays on
-// @Roles(SUPER_ADMIN) — it's an ops/testing utility, not a business action
-// a role would be granted, so it's excluded from this migration.
 
 @ApiBearerAuth()
 @ApiTags('Tariffs')

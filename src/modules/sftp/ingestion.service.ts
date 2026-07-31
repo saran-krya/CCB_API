@@ -18,10 +18,6 @@ import { Property } from '../property/entities/property.entity';
 import { Community } from '../community/entities/community.entity';
 import { parseReadingDateFromFilename } from './filename.util';
 
-// Maps a row-validation failure to a stable anomaly code. Deliberately a
-// small, honest scheme reflecting exactly what ValidationService.validateRows()
-// checks (field presence/format) — see ReadingAnomalyCode's own comment for
-// why this isn't the Daily Meter Readings mock UI's ANM-101..110 codes.
 function toAnomalyCode(error: RowValidationError): ReadingAnomalyCode {
   switch (error.field) {
     case 'meter_id':
@@ -57,10 +53,6 @@ export interface IngestDuplicateResult {
   message: string;
 }
 
-// A checksum match against an already-PROCESSED row, on a routine (non-
-// retrigger) call — no new sftp_ingestion_logs row is written at all, unlike
-// IngestDuplicateResult (which still records an audit row for every other
-// kind of checksum match, e.g. re-encountering a previously FAILED file).
 export interface IngestSkippedResult {
   outcome: 'skipped';
   success: true;
@@ -105,12 +97,6 @@ export class IngestionService {
 
     const processingStartedAt = new Date();
 
-    // The date this file's data is FOR (parsed from its own filename,
-    // DTU_<dtuId>_<YYYYMMDD>.csv) — distinct from processingStartedAt, which
-    // is only when ingestion happened to run. Without this, EstateSummaryService
-    // falls back to grouping by ingestion timestamp instead of the file's real
-    // date, silently mis-bucketing the SFTP dashboard whenever a file is
-    // ingested on a different calendar day than the one its data covers.
     const readingDate = parseReadingDateFromFilename(fileName);
 
     const { localPath } = await this.sftp.downloadFile(fileName);
@@ -120,12 +106,6 @@ export class IngestionService {
 
     const existing = await this.ingestionLogs.findOne({ where: { fileChecksumSha256 } });
 
-    // A file whose exact bytes already succeeded gets skipped outright on a
-    // routine run — no new row at all, not even a DUPLICATE audit entry —
-    // so the Files List doesn't accumulate a fresh record every time an
-    // already-processed file happens to still be sitting in /incoming.
-    // isRetrigger is the explicit, user-initiated escape hatch: it forces
-    // the file all the way back through validation regardless of history.
     if (existing?.fileStatus === SftpIngestionStatus.PROCESSED && !options.isRetrigger) {
       this.logger.log(`Skipping "${fileName}" — already successfully processed as log #${existing.id} (hash ${fileChecksumSha256}); no new record created`);
       return {
@@ -220,22 +200,11 @@ export class IngestionService {
       };
     }
 
-    // Every row becomes a MeterReading now — Clean (passed validation) or
-    // Anomaly (failed) — never discarded. SftpIngestionLog's own aggregate
-    // counts/file-level status are computed exactly as before from
-    // rowResult; this only changes what gets persisted per row.
     const worstErrorByRow = this.validation.getWorstErrorPerRow(rowResult.errors);
 
     const processingNode = hostname();
     const { size: fileSizeBytes } = await stat(localPath);
 
-    // Meter hierarchy resolution (meter_id -> SubMeter -> Unit -> Property ->
-    // Community), batched once per file rather than once per row, over EVERY
-    // row (Clean and Anomaly alike) — an Anomaly row can still have a
-    // resolvable meter_id (e.g. its reading_value failed, not meter_id
-    // itself). A meter_id with no matching SubMeter (including a blank one)
-    // is simply absent from the map — that reading still gets saved below,
-    // just without the resolved hierarchy.
     const distinctMeterIds = Array.from(new Set(rows.map((row) => row.meter_id?.trim()).filter((id): id is string => !!id)));
     const hierarchyByMeterId = await this.hierarchyResolver.resolveBatch(distinctMeterIds);
 
@@ -277,12 +246,6 @@ export class IngestionService {
           const worstError = worstErrorByRow.get(index + 1);
           const validationStatus = worstError ? ReadingValidationStatus.ANOMALY : ReadingValidationStatus.CLEAN;
 
-          // Auto-approval, decided from validationStatus alone, at the exact
-          // moment each row is built — before this entity is ever persisted.
-          // Clean readings need no human judgment call and are immediately
-          // billable; Anomaly readings always stay Pending for Operations to
-          // review manually. There is no path that leaves a Clean reading
-          // Pending, and no path that auto-approves an Anomaly reading.
           const isAutoApproved = validationStatus === ReadingValidationStatus.CLEAN;
 
           return manager.create(MeterReading, {
@@ -313,12 +276,6 @@ export class IngestionService {
     const processingCompletedAt = new Date();
     const processingDurationMs = processingCompletedAt.getTime() - processingStartedAt.getTime();
 
-    // One file can only ever belong to a single Property/Community. If
-    // every resolved reading in this file agrees, stamp it onto the log row
-    // (this is what lets Files List/dashboards filter by property/community
-    // without a per-row join). If readings resolved to more than one
-    // Property or Community — or none resolved at all — leave both null
-    // rather than guess; a single file cannot represent multiple properties.
     const resolvedPropertyId = resolvedPropertyIds.size === 1 ? [...resolvedPropertyIds][0] : null;
     const resolvedCommunityId = resolvedCommunityIds.size === 1 ? [...resolvedCommunityIds][0] : null;
 

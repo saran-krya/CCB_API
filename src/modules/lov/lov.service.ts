@@ -40,21 +40,10 @@ const LOV_SEED: {
   { category: 'BILLING_CYCLE_DEPRECATION_REASON', code: 'replaced-by-new-version', label: 'Replaced by New Version',   displayOrder: 3 },
   { category: 'BILLING_CYCLE_DEPRECATION_REASON', code: 'regulatory',            label: 'Regulatory Requirement',      displayOrder: 4 },
   { category: 'BILLING_CYCLE_DEPRECATION_REASON', code: 'other',                 label: 'Other',                       displayOrder: 5 },
-  // General Lookup — Language. label holds the NATIVE name (matches every
-  // other category's convention of label = the text actually shown in a
-  // dropdown). No LOV_CATEGORY_MODULES entry below — leaving it unmapped is
-  // what surfaces it under General Lookup rather than a specific module.
-  // isSystem: true — these two are platform-defined, not admin-authored;
-  // the LFM admin UI shows them locked/read-only (matching CCB_Template's
-  // system-value pattern) instead of editable like ordinary lookup rows.
   { category: 'LANGUAGE', code: 'en', label: 'English',  displayOrder: 1, direction: 'ltr', localeCode: 'en-US', isSystem: true },
   { category: 'LANGUAGE', code: 'ar', label: 'العربية', displayOrder: 2, direction: 'rtl', localeCode: 'ar-AE', isSystem: true },
 ];
 
-// Module assignment for the Lookup Field Master "Module Lookup" tab — keeps
-// each category grouped under the screen that actually consumes it instead
-// of defaulting to "General". Keys match lib/constants/app-modules.ts
-// (CCB_Web) — the same canonical list also used by the Attributes screen.
 const LOV_CATEGORY_MODULES: Record<string, string> = {
   BILLING_FREQUENCY: 'billing-cycle',      // Billing Cycle Configuration
   USER_CATEGORY: 'user-management',
@@ -90,9 +79,6 @@ export class LovService {
     });
   }
 
-  // Backs the unguarded GET /lov/languages self-service endpoint — every
-  // authenticated user needs the active language list for the Settings page
-  // switcher, not just users granted LOV_VIEW for admin LFM management.
   async findActiveLanguages(): Promise<LovValue[]> {
     return this.findByCategory('LANGUAGE', false);
   }
@@ -142,10 +128,6 @@ export class LovService {
     const entity = await this.lovValues.findOne({ where: { id } });
     if (!entity) throw new NotFoundException(`LOV value #${id} not found`);
 
-    // System-defined rows (e.g. the seeded LANGUAGE values) may still be
-    // enabled/disabled, but their identity/content is platform-owned —
-    // matches the read-only UI, enforced here too since the frontend lock
-    // is only UX, not the actual guarantee.
     if (entity.isSystem) {
       const attemptsContentChange =
         (dto.code !== undefined && dto.code !== entity.code) ||
@@ -179,13 +161,6 @@ export class LovService {
     await this.lovValues.softRemove(entity);
   }
 
-  // Self-heals databases that were initialized before a given LOV category
-  // existed in LOV_SEED — e.g. TARIFF_UNIT_TYPE, added after this
-  // deployment's users table was already populated, so the one-time
-  // bootstrap seed (seedValues, above) never ran again to pick it up. Only
-  // called for the "database already initialized" branch of bootstrap — a
-  // fresh database gets these from seedValues() instead, so calling both
-  // would insert duplicate rows.
   async ensureCriticalDefaults(): Promise<void> {
     const criticalCategories = [
       'TARIFF_UNIT_TYPE',
@@ -208,15 +183,6 @@ export class LovService {
     await this.correctSystemFlags();
   }
 
-  // One-time correction for rows inserted by an earlier bootstrap pass,
-  // before isSystem existed as a concept — e.g. LANGUAGE's en/ar, seeded
-  // when this database was first initialized, before this column/seed flag
-  // existed. The insert-if-missing loop above only ever fires for a
-  // category with zero rows, so it can never retrofit isSystem onto rows
-  // that already exist. Matches the same one-time-correction precedent as
-  // PModulesService.MODULE_NAME_CODE_FIXES — reconciles existing data
-  // instead of relying on insert-if-missing to do something it structurally
-  // can't.
   private async correctSystemFlags(): Promise<void> {
     for (const seed of LOV_SEED.filter((v) => v.isSystem)) {
       const existing = await this.lovValues.findOne({

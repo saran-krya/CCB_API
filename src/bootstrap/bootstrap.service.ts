@@ -47,21 +47,6 @@ export class BootstrapService implements OnApplicationBootstrap {
 
     if (userCount > 0) {
       this.logger.log('Bootstrap skipped — database already initialized')
-      // Fresh databases get every General Attribute / LOV category / Module /
-      // SubModule / Screen / Action from seedValues()/seed() below. Already-
-      // initialized ones only get what existed at the time they were first
-      // bootstrapped — this backfills anything added since, e.g. Session
-      // Timeout, TARIFF_UNIT_TYPE, or (for the permission migration) new
-      // Screen/Action rows like the LFM/Attributes/Tariff screens' actions,
-      // plus the one-time PModule code correction (see
-      // PModulesService.MODULE_NAME_CODE_FIXES). Modules must backfill
-      // before SubModules before Screens before Actions before Admin
-      // grants — each step's FK lookups depend on the previous one already
-      // existing. A failure here must never crash startup of an already-
-      // running system — each service's own ensureCriticalDefaults()/
-      // ensureAdminGrants() already catches per-row errors internally, but
-      // this outer guard covers anything unexpected escaping one of them
-      // anyway.
       try {
         await this.attributeService.ensureCriticalDefaults()
         await this.lovService.ensureCriticalDefaults()
@@ -81,10 +66,6 @@ export class BootstrapService implements OnApplicationBootstrap {
     try {
       await this.dataSource.transaction((manager) => this.seed(manager))
 
-      // Runs after the seed transaction commits, not inside it —
-      // ensureAdminGrants() reads through the service's own repositories
-      // (a separate connection from the transaction's EntityManager), so it
-      // would see nothing yet if run before commit.
       await this.rolePermissionsService.ensureAdminGrants(ADMIN_GRANT_EXCLUDED_ACTION_CODES)
 
       const adminEmail = this.config.get<string>(
@@ -101,9 +82,6 @@ export class BootstrapService implements OnApplicationBootstrap {
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // Seeding — runs inside a single transaction
-  // ---------------------------------------------------------------------------
 
   private async seed(manager: EntityManager): Promise<void> {
     const pModuleMap = await this.seedPModules(manager)
@@ -116,9 +94,6 @@ export class BootstrapService implements OnApplicationBootstrap {
     await this.seedSuperAdmin(manager, roleMap)
   }
 
-  // ---------------------------------------------------------------------------
-  // Step 1 — PModules (top-level navigation modules)
-  // ---------------------------------------------------------------------------
 
   private async seedPModules(
     manager: EntityManager,
@@ -143,9 +118,6 @@ export class BootstrapService implements OnApplicationBootstrap {
     return map
   }
 
-  // ---------------------------------------------------------------------------
-  // Step 2 — SubModules
-  // ---------------------------------------------------------------------------
 
   private async seedSubModules(
     manager: EntityManager,
@@ -177,9 +149,6 @@ export class BootstrapService implements OnApplicationBootstrap {
     return map
   }
 
-  // ---------------------------------------------------------------------------
-  // Step 3 — Screens
-  // ---------------------------------------------------------------------------
 
   private async seedScreens(
     manager: EntityManager,
@@ -230,9 +199,6 @@ export class BootstrapService implements OnApplicationBootstrap {
     return map
   }
 
-  // ---------------------------------------------------------------------------
-  // Step 4 — Actions
-  // ---------------------------------------------------------------------------
 
   private async seedActions(
     manager: EntityManager,
@@ -241,8 +207,6 @@ export class BootstrapService implements OnApplicationBootstrap {
     let count = 0
     const actionMap = new Map<string, Action>()
 
-    // Pass 1 — top-level actions (no parentActionCode). Builds actionMap so
-    // pass 2 can resolve each child's real parentActionId.
     for (const ac of ACTIONS.filter((a) => !a.parentActionCode)) {
       const screen = screenMap.get(ac.screenCode)
       if (!screen) {
@@ -263,7 +227,6 @@ export class BootstrapService implements OnApplicationBootstrap {
       count++
     }
 
-    // Pass 2 — child actions, resolved against actionMap from pass 1.
     for (const ac of ACTIONS.filter((a) => a.parentActionCode)) {
       const screen = screenMap.get(ac.screenCode)
       if (!screen) {
@@ -294,9 +257,6 @@ export class BootstrapService implements OnApplicationBootstrap {
     this.logger.debug(`Seeded ${count} actions`)
   }
 
-  // ---------------------------------------------------------------------------
-  // Step 5 — Roles
-  // ---------------------------------------------------------------------------
 
   private async seedRoles(
     manager: EntityManager,
@@ -328,9 +288,6 @@ export class BootstrapService implements OnApplicationBootstrap {
     return map
   }
 
-  // ---------------------------------------------------------------------------
-  // Step 6 — Default Super Admin user
-  // ---------------------------------------------------------------------------
 
   private async seedSuperAdmin(
     manager: EntityManager,

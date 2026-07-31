@@ -13,12 +13,6 @@ import { RolePermissionsService } from '../role-permissions/role-permissions.ser
 import { AttributeService } from '../attribute/attribute.service';
 import { LovService } from '../lov/lov.service';
 
-// User Creation Rules (Module Attributes > User Management) that make a
-// field conditionally mandatory. Add an entry here — plus the matching
-// boolean attribute in AttributeService's seed — to make any other user
-// field (Department, Designation, Phone, Employee ID, ...) dynamically
-// required the same way, with no other code changes. The frontend mirrors
-// this exact list in components/validation/dynamic-field-requirements.ts.
 interface DynamicFieldRequirement {
   field: keyof CreateUserDto;
   attributeKey: string;
@@ -46,10 +40,6 @@ export class UserService {
     private readonly lov: LovService,
   ) { }
 
-  // Checks every field in DYNAMIC_FIELD_REQUIREMENTS that's present on this
-  // dto against its Module Attribute — only fields actually being set are
-  // validated, so a partial update() that doesn't touch a given field
-  // doesn't force it to be (re)filled.
   private async assertDynamicRequiredFields(dto: CreateUserDto | UpdateUserDto): Promise<void> {
     for (const spec of DYNAMIC_FIELD_REQUIREMENTS) {
       if (!(spec.field in dto)) continue;
@@ -146,7 +136,6 @@ export class UserService {
         "role",
       );
 
-    // Full Name Search
 
     if (query["search.fullName"]) {
       qb.andWhere(
@@ -165,7 +154,6 @@ export class UserService {
       );
     }
 
-    // Email Search
 
     if (query["search.email"]) {
       qb.andWhere(
@@ -176,7 +164,6 @@ export class UserService {
       );
     }
 
-    // Mobile Search
 
     if (query["search.mobile"]) {
       qb.andWhere(
@@ -187,7 +174,6 @@ export class UserService {
       );
     }
 
-    // Role Search
 
     if (query["search.role"]) {
       const roles =
@@ -303,13 +289,6 @@ export class UserService {
   async getProfile(id: number) {
     const user = await this.findOne(id);
 
-    // Every role, including SUPER_ADMIN/ADMIN, gets its permission tree from
-    // real granted RolePermission rows — no role-name bypass. SUPER_ADMIN/
-    // ADMIN are seeded with grants for every action except the approve/
-    // reject exclusions (BootstrapService/RolePermissionsService's
-    // ensureAdminGrants), so their day-to-day access is unchanged; it now
-    // comes from the same rows the backend PermissionGuard checks, instead
-    // of a hardcoded "force everything true" path.
     const permissions = await this.rolePermissionService.getUserPermissions(user.role.id);
 
     return {
@@ -341,9 +320,6 @@ export class UserService {
     if (dto.navTheme !== undefined) user.navTheme = dto.navTheme;
 
     if (dto.preferredLanguageCode !== undefined) {
-      // Validated against live LANGUAGE lookup rows, not a hardcoded array —
-      // new languages become valid the moment they're added via Lookup
-      // Field Master, no code change needed.
       const languages = await this.lov.findActiveLanguages();
       const isValid = languages.some((l) => l.code === dto.preferredLanguageCode);
       if (!isValid) {
@@ -397,10 +373,6 @@ export class UserService {
       user.role = await this.roles.findOne(dto.roleId);
     }
 
-    // Was previously commented out entirely, meaning an edit could never
-    // actually change (or clear) a user's Reporting Manager. Checks
-    // "in dto" rather than truthiness so an explicit null (clear the
-    // manager) is honored, not just ignored as "not provided".
     if ('reportingManagerId' in dto) {
       user.reportingManager = dto.reportingManagerId
         ? (await this.users.findOne({ where: { id: dto.reportingManagerId } })) ?? undefined

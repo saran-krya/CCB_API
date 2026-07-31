@@ -6,7 +6,6 @@ import { SftpIngestionStatus } from './sftp-ingestion-status.enum';
 import { TriggerSource } from './trigger-source.enum';
 import { MeterReading } from './meter-reading.entity';
 
-
 @Entity('sftp_ingestion_logs')
 @Index('UQ_sftp_ingestion_logs_file_checksum', ['fileChecksumSha256'], { unique: true })
 @Index('IDX_sftp_ingestion_logs_file_name', ['fileName'])
@@ -40,7 +39,6 @@ export class SftpIngestionLog extends BaseEntity {
     @Column({ name: 'received_meter_count', type: 'int', unsigned: true, default: 0 })
   receivedMeterCount!: number;
 
-
   @Column({ name: 'valid_reading_count', type: 'int', unsigned: true, default: 0 })
   validReadingCount!: number;
 
@@ -71,8 +69,6 @@ export class SftpIngestionLog extends BaseEntity {
   @Column({ name: 'error_message', type: 'text', nullable: true })
   errorMessage?: string | null;
 
-  // ─── Cron / job tracking (Phase 6-7) ───────────────────────────────────────
-
   @Column({ name: 'trigger_source', type: 'enum', enum: TriggerSource, default: TriggerSource.CRON })
   triggerSource!: TriggerSource;
 
@@ -95,7 +91,6 @@ export class SftpIngestionLog extends BaseEntity {
 
   @Column({ name: 'processing_node', type: 'varchar', length: 100, nullable: true })
   processingNode?: string | null;
-
 
   @Column({ name: 'dtu', type: 'varchar', length: 100, nullable: true })
   dtu?: string | null;

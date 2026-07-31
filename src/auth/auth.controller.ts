@@ -122,10 +122,6 @@ export class AuthController {
     return this.auth.getLoginHistory(user.sub);
   }
 
-  // Deliberately NOT @Roles-gated (unlike AttributeController, which is
-  // SUPER_ADMIN/ADMIN only) — every authenticated role needs this value to
-  // enforce its own idle-timeout client-side, not just admins managing
-  // Attributes config.
   @Get('session-config')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Session-related config for the authenticated user (e.g. idle timeout)' })

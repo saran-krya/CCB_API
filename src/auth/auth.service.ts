@@ -63,7 +63,6 @@ export class AuthService {
     }
 
     if (stored.revokedAt) {
-      // Reuse attack — revoke every token in this family immediately
       await this.revokeFamily(stored.family);
       if (stored.deviceId) {
         await this.devices.update({ deviceId: stored.deviceId, userId: stored.userId }, { isActive: false });
@@ -79,7 +78,6 @@ export class AuthService {
       throw new UnauthorizedException('Device mismatch');
     }
 
-    // Invalidate the consumed token before issuing the next pair
     await this.refreshTokens.update(stored.id, { revokedAt: new Date() });
 
     let user;
@@ -93,7 +91,6 @@ export class AuthService {
       throw new UnauthorizedException('Account is deactivated');
     }
 
-    // Carry forward the deviceId from the stored token when not sent in the request
     const effectiveCtx = deviceCtx ?? (stored.deviceId ? { deviceId: stored.deviceId } : undefined);
 
     return this.issueTokenPair(
@@ -231,13 +228,6 @@ export class AuthService {
     return url.toString();
   }
 
-  // ─── Private helpers ────────────────────────────────────────────────────────
-
-  /**
-   * Session Timeout is admin-configurable via System Admin → Attributes
-   * (SESSION_TIMEOUT_MINUTES) — falls back to the static JWT_EXPIRES_IN env
-   * var if the attribute is missing/invalid so login never breaks because of it.
-   */
   private async resolveAccessTokenExpiry(): Promise<string> {
     const raw = await this.attributes.getValueByKey('SESSION_TIMEOUT_MINUTES');
     const minutes = raw ? Number(raw) : NaN;
@@ -248,7 +238,6 @@ export class AuthService {
   }
 
   private async insertLoginHistory(userId: number, deviceCtx?: DeviceContext): Promise<void> {
-    // Close any stale open session for the same device (e.g. browser closed without logout)
     if (deviceCtx?.deviceId) {
       await this.loginHistory
         .createQueryBuilder()

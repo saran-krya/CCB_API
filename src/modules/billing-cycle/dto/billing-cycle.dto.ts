@@ -72,10 +72,6 @@ export class CreateBillingCycleDto {
   status?: BillingCycleStatus;
 }
 
-// readingStartDay/readingEndDay are structurally still present here (inherited
-// from CreateBillingCycleDto via PartialType) but are always rejected by
-// BillingCycleService.assertNoLockedFields() — Business Rule 1 locks the
-// reading window unconditionally; the only way to change it is newVersion().
 export class UpdateBillingCycleDto extends PartialType(
   OmitType(CreateBillingCycleDto, ['propertyId', 'communityId'] as const),
 ) {
@@ -92,9 +88,6 @@ export class UpdateBillingCycleDto extends PartialType(
   reasonCode?: string;
 }
 
-// Business Rule 3/5 — the only way to change the reading window on an
-// existing billing cycle: clone it into a new PENDING version awaiting
-// Finance approval, effective from a future date.
 export class NewVersionBillingCycleDto {
   @ApiProperty({ minimum: 1, maximum: 31 })
   @IsInt()
@@ -148,9 +141,6 @@ export class DeprecateBillingCycleDto {
   @IsDateString()
   effectiveDeprecationDate?: string;
 
-  // Mandatory on every deprecation — "user must confirm they understand
-  // billing will stop for this property" (doc: Mandatory inputs before
-  // deprecation is confirmed). Enforced as `=== true` in the service.
   @ApiProperty({ description: 'Confirms the user understands billing will stop for this property' })
   @IsBoolean()
   acknowledged!: boolean;

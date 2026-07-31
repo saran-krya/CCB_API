@@ -4,16 +4,6 @@ import {
   ValidationOptions,
 } from 'class-validator';
 
-// For a value whose valid range depends on a sibling "type" field being one
-// of two shapes — a flat amount (bounded by whatever the business considers
-// a sane ceiling for that field) or a percentage (always 0–100). Exists
-// because class-validator's @ValidateIf gates EVERY decorator on the same
-// property, not just the ones after it — so the previous approach here
-// (`@Min(0) @ValidateIf(isPercentage) @Max(100)`) silently skipped @Min(0)
-// too whenever the type was "amount", leaving that branch completely
-// unvalidated. This runs unconditionally and switches its own upper bound
-// internally instead, so there is exactly one way the value gets checked
-// regardless of which branch is active.
 export function IsAmountOrPercentage(
   typeField: string,
   percentageMarker: unknown,

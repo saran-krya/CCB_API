@@ -29,10 +29,6 @@ import { MeterStatus } from './entities/meter-status.enum';
 import { SubMeter } from './entities/sub-meter.entity';
 import { ImportFailedRecord, ImportFailureReason, ImportSummary } from './entities/import-result.types';
 
-// Import/export column mapping — sourced entirely from the Attributes module
-// (MASTER_METER_IMPORT_COLUMNS / SUB_METER_IMPORT_COLUMNS), never hardcoded
-// here. Adding, removing, reordering, or disabling a column is a config
-// change in System Admin → Attributes, not a code change.
 interface ColumnConfig {
   internalField: string;
   displayLabel: string;
@@ -44,21 +40,10 @@ interface ColumnConfig {
 const MASTER_METER_COLUMNS_KEY = 'MASTER_METER_IMPORT_COLUMNS';
 const SUB_METER_COLUMNS_KEY = 'SUB_METER_IMPORT_COLUMNS';
 
-// Matches the `business_code varchar(20)` column on both master_meters and
-// sub_meters — enforced pre-commit so a too-long uploaded ID fails as a
-// clean per-row validation message instead of a raw DB error aborting the
-// whole batch.
 const BUSINESS_CODE_MAX_LENGTH = 20;
-const MAX_IMPORT_FILE_SIZE_BYTES = 10 * 1024 * 1024; // 10 MB
-const FREE_TEXT_MAX_LENGTH = 100; // matches meterMake/meterModel column length
+const MAX_IMPORT_FILE_SIZE_BYTES = 10 * 1024 * 1024; 
+const FREE_TEXT_MAX_LENGTH = 100; 
 
-// The MIME type a browser/OS actually attaches to a .xlsx file varies by
-// platform — the official OOXML type plus two legacy/generic types seen in
-// practice (some Windows configurations and older browsers send
-// application/octet-stream for any unrecognized-by-the-OS extension).
-// Checked only when the client sent a mimetype at all (some HTTP clients
-// omit it) — see the runImport call site for why this can never be the
-// sole gate against a malicious upload.
 const ACCEPTED_IMPORT_MIME_TYPES = new Set([
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   'application/octet-stream',
@@ -67,32 +52,15 @@ const ACCEPTED_IMPORT_MIME_TYPES = new Set([
 
 type ImportRow = Record<string, any>;
 
-// Resolves an internalField key back to its configured Excel Column Header
-// for a duplicate-value error message — falls back to the raw field name if
-// the column somehow isn't in the current config (defensive only).
 function columnLabel(columns: ColumnConfig[], internalField: string): string {
   return columns.find((c) => c.internalField === internalField)?.displayLabel ?? internalField;
 }
 
-// Excel/Sheets treats a cell whose text begins with =, +, -, or @ as a
-// formula — the Error Report echoes back the original cell values from the
-// user's own uploaded file verbatim (so they can be fixed and re-uploaded),
-// which means an untrusted value from that file would otherwise be written
-// into a brand-new .xlsx as a LIVE formula, executing if anyone opens the
-// generated report in Excel (the well-known CSV/Excel formula-injection
-// class). Prefixing with a leading apostrophe is the standard mitigation —
-// Excel displays the value as literal text instead of evaluating it.
 function sanitizeForExcel(value: string | null): string | null {
   if (value === null) return null;
   return /^[=+\-@]/.test(value) ? `'${value}` : value;
 }
 
-// Excel stores dates as either a native Date (when the cell is date-
-// formatted) or a serial day-count number (when it isn't) — both are valid
-// user input for an "Installation Date" column, so both are accepted and
-// normalized to an ISO yyyy-mm-dd string the `date`-type DB column accepts.
-// Anything else (a stray string like "next Monday") is rejected as invalid
-// rather than passed through and left to fail opaquely at the DB layer.
 const EXCEL_EPOCH_MS = Date.UTC(1899, 11, 30);
 function parseExcelDateCell(cellValue: unknown): { ok: true; value: string | null } | { ok: false } {
   if (cellValue === null || cellValue === undefined || cellValue === '') return { ok: true, value: null };
@@ -138,7 +106,6 @@ export class MeterService {
     private readonly dataSource: DataSource,
   ) {}
 
-  // ─── Stats / dashboard (Meter Information rollup) ──────────────────────────
 
   async getStats() {
     const [totalCommunities, totalProperties, totalUnits, totalMasterMeters, totalSubMeters] = await Promise.all([
@@ -148,16 +115,6 @@ export class MeterService {
       this.masterMeters.count(),
       this.subMeters.count(),
     ]);
-    // Coverage, not a meter tally: "Mapped" answers "how many Properties /
-    // Units have been assigned a meter", so the denominator is the parent
-    // entity count (Properties / Units), never the meter row count. A
-    // Property could in principle carry more than one Master Meter (no DB
-    // constraint forbids it), so this is COUNT(DISTINCT property_id), not
-    // COUNT(*) — one property with 2 master meters still counts as 1
-    // covered property. Sub Meter coverage mirrors this over Units; the
-    // DISTINCT is redundant there in practice (sub_meters.unit_id already
-    // carries a unique constraint — see MeterUniquenessMigrationService) but
-    // kept for the same defensive reason and symmetry with the Master Meter query.
     const [mappedMasterMeters, mappedSubMeters] = await Promise.all([
       this.masterMeters.createQueryBuilder('m').select('COUNT(DISTINCT m.property_id)', 'cnt').getRawOne<{ cnt: string }>(),
       this.subMeters.createQueryBuilder('s').where('s.unit_id IS NOT NULL').select('COUNT(DISTINCT s.unit_id)', 'cnt').getRawOne<{ cnt: string }>(),
@@ -177,10 +134,6 @@ export class MeterService {
     };
   }
 
-  // Sortable columns are limited to real base-table columns (name, status) —
-  // every coverage/count field is computed via separate grouped queries
-  // scoped to this page's community IDs, not part of the base `communities`
-  // table, so there's nothing meaningful to ORDER BY for those.
   private static readonly COMMUNITIES_OVERVIEW_SORTABLE = new Set(['name', 'status']);
 
   async getCommunitiesOverview(query: MeterCommunitiesOverviewQueryDto = new MeterCommunitiesOverviewQueryDto()) {
@@ -210,9 +163,6 @@ export class MeterService {
       this.properties.createQueryBuilder('p').where('p.community_id IN (:...ids)', { ids: communityIds }).select('p.community_id', 'communityId').addSelect('COUNT(*)', 'count').groupBy('p.community_id').getRawMany(),
       this.masterMeters.createQueryBuilder('m').innerJoin('m.property', 'p').where('p.community_id IN (:...ids)', { ids: communityIds }).select('p.community_id', 'communityId').addSelect('COUNT(*)', 'count').groupBy('p.community_id').getRawMany(),
       this.subMeters.createQueryBuilder('s').innerJoin('s.property', 'p').where('p.community_id IN (:...ids)', { ids: communityIds }).select('p.community_id', 'communityId').addSelect('COUNT(*)', 'count').groupBy('p.community_id').getRawMany(),
-      // Coverage, not a meter tally — see getStats()'s comment for why this
-      // is COUNT(DISTINCT ...) over the parent entity (Units here), not
-      // COUNT(*) over the meter rows.
       this.subMeters.createQueryBuilder('s').innerJoin('s.property', 'p').where('p.community_id IN (:...ids)', { ids: communityIds }).andWhere('s.unit_id IS NOT NULL').select('p.community_id', 'communityId').addSelect('COUNT(DISTINCT s.unit_id)', 'count').groupBy('p.community_id').getRawMany(),
       this.masterMeters.createQueryBuilder('m').innerJoin('m.property', 'p').where('p.community_id IN (:...ids)', { ids: communityIds }).select('p.community_id', 'communityId').addSelect('COUNT(DISTINCT m.property_id)', 'count').groupBy('p.community_id').getRawMany(),
     ]);
@@ -247,8 +197,6 @@ export class MeterService {
     const community = await this.communities.findOne({ where: { id: communityId } });
     if (!community) throw new NotFoundException('Community not found');
 
-    // Single-community summary — same shape/queries as getCommunitiesOverview(),
-    // just scoped to this one ID instead of a paginated page of communities.
     const [totalUnits, totalProperties, totalMasterMeters, totalSubMeters, mappedMeters, mappedMasterMeters] = await Promise.all([
       this.units.createQueryBuilder('u').innerJoin('u.property', 'p').where('p.community_id = :communityId', { communityId }).getCount(),
       this.properties.count({ where: { community: { id: communityId } } }),
@@ -276,9 +224,6 @@ export class MeterService {
     return { community: { id: community.id, name: community.name, code: community.businessCode ?? community.code, status: community.status }, summary };
   }
 
-  // Sortable columns limited to real base-table columns (name, status) — see
-  // COMMUNITIES_OVERVIEW_SORTABLE's comment for why the coverage/count
-  // fields aren't included.
   private static readonly PROPERTIES_OVERVIEW_SORTABLE = new Set(['name', 'status']);
 
   async getPropertiesOverview(communityId: number, query: MeterPropertiesOverviewQueryDto = new MeterPropertiesOverviewQueryDto()) {
@@ -307,8 +252,6 @@ export class MeterService {
       this.units.createQueryBuilder('u').where('u.property_id IN (:...ids)', { ids: propertyIds }).select('u.property_id', 'propertyId').addSelect('COUNT(*)', 'count').groupBy('u.property_id').getRawMany(),
       this.masterMeters.createQueryBuilder('m').where('m.property_id IN (:...ids)', { ids: propertyIds }).select('m.property_id', 'propertyId').addSelect('COUNT(*)', 'count').groupBy('m.property_id').getRawMany(),
       this.subMeters.createQueryBuilder('s').where('s.property_id IN (:...ids)', { ids: propertyIds }).select('s.property_id', 'propertyId').addSelect('COUNT(*)', 'count').groupBy('s.property_id').getRawMany(),
-      // Coverage, not a meter tally — see getStats()'s comment for why this
-      // is COUNT(DISTINCT unit_id) over Units, not COUNT(*) over Sub Meters.
       this.subMeters.createQueryBuilder('s').where('s.property_id IN (:...ids)', { ids: propertyIds }).andWhere('s.unit_id IS NOT NULL').select('s.property_id', 'propertyId').addSelect('COUNT(DISTINCT s.unit_id)', 'count').groupBy('s.property_id').getRawMany(),
     ]);
     const unitsMap = toMap(unitRows), mmMap = toMap(masterRows), smMap = toMap(subRows), mappedMap = toMap(mappedRows);
@@ -322,10 +265,6 @@ export class MeterService {
         name: p.name,
         totalUnits,
         totalMasterMeters: mmMap.get(p.id) ?? 0,
-        // A property has at most a small handful of master meters in
-        // practice — coverage at this level is a yes/no fact, not a count,
-        // so callers show a single "Has Master Meter" badge rather than a
-        // mapped/unmapped pair.
         hasMasterMeter: (mmMap.get(p.id) ?? 0) > 0,
         totalSubMeters: smMap.get(p.id) ?? 0,
         mappedMeters,
@@ -362,10 +301,6 @@ export class MeterService {
       stats: {
         totalUnits: units.length,
         mappedSubMeters,
-        // Coverage over Units, not a meter tally — a Unit that has no Sub
-        // Meter is unmapped even if this property's Sub Meter count happens
-        // to differ from its Unit count (e.g. 3 sub meters against 180
-        // units means 177 units unmapped, not "0 sub meters left over").
         unmappedSubMeters: units.length - mappedSubMeters,
         occupiedUnits: units.filter((u) => u.occupancyStatus === 'occupied').length,
         vacantUnits: units.filter((u) => u.occupancyStatus === 'vacant').length,
@@ -394,9 +329,6 @@ export class MeterService {
     };
   }
 
-  // Sortable columns limited to real base-table columns on `units` — see
-  // COMMUNITIES_OVERVIEW_SORTABLE's comment for why the meter-mapping fields
-  // (computed via a join, not part of this table) aren't included.
   private static readonly UNITS_OVERVIEW_SORTABLE = new Set(['unitNumber', 'status']);
 
   async getUnitsOverview(propertyId: number, query: MeterUnitsOverviewQueryDto = new MeterUnitsOverviewQueryDto()) {
@@ -447,14 +379,7 @@ export class MeterService {
     return { items, pagination };
   }
 
-  // ─── Meter Inventory filter metadata ────────────────────────────────────────
 
-  // Single shared metadata call for both the Master Meter and Sub Meter
-  // inventory tabs — they filter on the exact same three dimensions
-  // (community/property/status), so one method backs both
-  // 'master-meters/metaFilters' and 'sub-meters/metaFilters' routes, matching
-  // the "one metaFilters call feeds every filter dropdown" convention already
-  // established by BillingCycleService.getFilterMetadata().
   async getMeterInventoryFilterMetadata() {
     const [communities, properties] = await Promise.all([
       this.communities.find({ select: ['id', 'name'], order: { name: 'ASC' } }),
@@ -471,17 +396,7 @@ export class MeterService {
     };
   }
 
-  // ─── Master Meter CRUD ──────────────────────────────────────────────────────
 
-  // Maps each sortable response field to its real alias-prefixed ORM path —
-  // propertyName/communityName live on the joined Property/Community aliases,
-  // not a column directly on MasterMeter, so a plain `m.${sortBy}` template
-  // (as COMMUNITIES_OVERVIEW_SORTABLE uses for same-table columns) can't
-  // express this; every other field maps back onto the base 'm' alias. Same
-  // camelCase-ORM-property-name requirement as every other orderBy() in this
-  // codebase — passing a raw DB column name here fails deep inside TypeORM's
-  // combined-order-by resolution rather than with a clear error (see
-  // SftpFileListService's SORTABLE_COLUMNS for the exact same gotcha).
   private static readonly MASTER_METERS_SORTABLE: Record<string, string> = {
     code: 'm.businessCode',
     serialNumber: 'm.serialNumber',
@@ -534,17 +449,6 @@ export class MeterService {
       entity.lastModifiedByUser = { id: actorId } as any;
     }
 
-    // UQ_master_meters_property_id (one Master Meter per Property),
-    // UQ_master_meters_serial_number, UQ_master_meters_dtu_id, and
-    // UQ_master_meters_property_mbus are all real DB constraints (see
-    // MeterUniquenessMigrationService) that this single-record create path
-    // has no pre-check for — unlike bulk import, which validates against a
-    // snapshot first (see propertiesWithMasterMeter in runImport()). A
-    // collision here is rarer (no concurrent-batch race) but just as real —
-    // e.g. two admins creating a Master Meter for the same Property at
-    // nearly the same time — so it gets the same clean-message treatment
-    // toCommitFailure() already gives the import path, instead of a raw
-    // MySQL 500.
     let saved: MasterMeter;
     try {
       saved = await this.masterMeters.save(entity);
@@ -587,11 +491,7 @@ export class MeterService {
     return this.findOneMasterMeter(id);
   }
 
-  // ─── Sub Meter CRUD ─────────────────────────────────────────────────────────
 
-  // Same rationale as MASTER_METERS_SORTABLE above — propertyName/
-  // communityName/unitNumber/masterMeterCode all live on joined aliases, not
-  // directly on SubMeter.
   private static readonly SUB_METERS_SORTABLE: Record<string, string> = {
     code: 's.businessCode',
     serialNumber: 's.serialNumber',
@@ -710,14 +610,12 @@ export class MeterService {
     return this.findOneSubMeter(id);
   }
 
-  // ─── Column config (Attribute-driven) ───────────────────────────────────────
 
   private async getColumns(meterType: MeterImportType): Promise<ColumnConfig[]> {
     const key = meterType === MeterImportType.MASTER ? MASTER_METER_COLUMNS_KEY : SUB_METER_COLUMNS_KEY;
     return this.attributeService.getJsonValueByKey<ColumnConfig>(key);
   }
 
-  // ─── Download template ──────────────────────────────────────────────────────
 
   async getImportTemplate(meterType: MeterImportType): Promise<Buffer> {
     const columns = (await this.getColumns(meterType)).filter((c) => c.enabled);
@@ -731,7 +629,6 @@ export class MeterService {
     return Buffer.from(buffer);
   }
 
-  // ─── Export ─────────────────────────────────────────────────────────────────
 
   async exportMeters(meterType: MeterImportType, query: MeterQueryDto): Promise<Buffer> {
     const columns = (await this.getColumns(meterType)).filter((c) => c.enabled);
@@ -749,13 +646,6 @@ export class MeterService {
     return Buffer.from(buffer);
   }
 
-  // `ids` is used only by buildImportSuccessReport (the "Download Successful
-  // Records" report after an import) — narrows to exactly the rows just
-  // created instead of the caller's list filters, reusing this same
-  // row-mapping shape rather than a second copy of it. `query` is typed to
-  // only the 3 filter fields these builders actually read (not the full
-  // MeterQueryDto, which also requires pagination fields) so a caller with
-  // no list filters — like buildImportSuccessReport — can pass `{}`.
   private async buildMasterMeterExportRows(query: Pick<MeterQueryDto, 'propertyId' | 'communityId' | 'status'>, ids?: number[]) {
     const qb = this.masterMeters
       .createQueryBuilder('m')
@@ -809,15 +699,7 @@ export class MeterService {
     }));
   }
 
-  // ─── Import (upload → parse → validate → commit) ───────────────────────────
 
-  // Every import attempt gets an audit entry, including ones that never
-  // reach commitRows — a rejected file (wrong type, no valid rows, too
-  // large, etc.) is still something an admin reviewing the audit trail
-  // needs to see happened, not a silent no-op. runImport() (below) does the
-  // actual work and throws on total failure same as before; this wrapper's
-  // only job is to make sure that throw still produces a FAILED audit
-  // record before propagating to the controller.
   async importMeters(
     meterType: MeterImportType,
     fileBuffer: Buffer,
@@ -856,14 +738,6 @@ export class MeterService {
     if (fileBuffer.length > MAX_IMPORT_FILE_SIZE_BYTES) {
       throw new BadRequestException(`Uploaded file exceeds the ${MAX_IMPORT_FILE_SIZE_BYTES / (1024 * 1024)}MB import size limit`);
     }
-    // Both the extension AND the browser-declared MIME type must say
-    // "xlsx" — neither is trustworthy alone (both come straight from the
-    // client and are trivially spoofable), but requiring agreement between
-    // two independently-set fields rejects the common accidental case (a
-    // renamed .csv/.xls) earlier and with a clearer message, before ever
-    // reaching ExcelJS's own structural parse, which is the actual
-    // authoritative check (a file that lies about both but isn't valid
-    // OOXML still fails at workbook.xlsx.load() below).
     if (!/\.xlsx$/i.test(fileName)) {
       throw new BadRequestException('Only .xlsx files are accepted for import');
     }
@@ -899,15 +773,6 @@ export class MeterService {
       else unrecognizedHeaders.push(trimmed);
     });
 
-    // Every header must match a currently enabled column's Excel Column
-    // Header exactly (case-insensitive) — an unrecognized header is rejected
-    // outright rather than silently skipped, so a stray/renamed/extra column
-    // in the uploaded file surfaces immediately instead of quietly losing
-    // data. Columns disabled in the Attribute config are correctly absent
-    // from `columns` (already filtered by `.filter((c) => c.enabled)` above),
-    // so a disabled column's old header is treated the same as any other
-    // unrecognized header — reflecting that it's no longer part of the
-    // template at all.
     if (unrecognizedHeaders.length > 0) {
       throw new BadRequestException(
         `Unrecognized column(s): ${unrecognizedHeaders.join(', ')}. Only columns configured in Attributes > Meter Management are accepted.`,
@@ -919,30 +784,11 @@ export class MeterService {
       throw new BadRequestException(`Missing required column(s): ${missingMandatory.map((c) => c.displayLabel).join(', ')}`);
     }
 
-    // Duplicate detection scope — matches the DB-level UNIQUE constraints
-    // added in MeterUniquenessMigrationService exactly (confirmed with the
-    // business owner):
-    //   - serialNumber: unique per table (Master Meters among themselves,
-    //     Sub Meters among themselves) — NOT shared across the two tables.
-    //   - dtuId: unique across all Master Meters (Sub Meters don't have one).
-    //   - mBusAddress: NOT global — unique per Property for Master Meters
-    //     (each Property is its own M-Bus segment), unique per Master Meter
-    //     for Sub Meters (each Master Meter is its own segment). The same
-    //     address value legitimately repeats across different
-    //     segments/properties, matching real M-Bus protocol conventions.
-    // Checked both within the uploaded file itself and against whatever's
-    // already committed — this is app-layer defense-in-depth; the DB
-    // constraints are what actually close the concurrent-import race (see
-    // toCommitFailure), this is just what gives a clean per-row message
-    // instead of a raw DB error for the common (non-racing) case.
     const seenInFile = {
       serialNumber: new Set<string>(),
       dtuId: new Set<string>(),
       businessCode: new Set<string>(),
     };
-    // Master Meter mBusAddress is scoped per-Property; Sub Meter
-    // mBusAddress is scoped per-Master-Meter — the map key is whichever
-    // scope applies to `meterType`, never mixed.
     const seenMBusAddressByScope = new Map<number, Set<string>>();
 
     const existingSerialNumbers =
@@ -953,10 +799,6 @@ export class MeterService {
       meterType === MeterImportType.MASTER
         ? new Set((await this.masterMeters.find({ where: {}, select: ['dtuId'] })).map((m) => m.dtuId).filter((v): v is string => !!v))
         : new Set<string>();
-    // Existing mBusAddress usage grouped by its scope key (property_id for
-    // Master, master_meter_id for Sub) — a Map<scopeId, Set<address>>,
-    // mirroring seenMBusAddressByScope's shape so both are checked the same
-    // way in the row loop below.
     const existingMBusAddressByScope =
       meterType === MeterImportType.MASTER
         ? (await this.masterMeters.createQueryBuilder('m').select(['m.property_id AS propertyId', 'm.m_bus_address AS mBusAddress']).where('m.m_bus_address IS NOT NULL').getRawMany<{ propertyId: number; mBusAddress: string }>())
@@ -971,24 +813,12 @@ export class MeterService {
               map.get(r.masterMeterId)!.add(r.mBusAddress);
               return map;
             }, new Map<number, Set<string>>());
-    // The uploaded Master Meter ID / Sub-Meter ID column IS the entity's real
-    // businessCode (see importType-specific commit logic below) — both share
-    // the same physical column across both tables, so a Master Meter import
-    // must also be checked against every existing Sub Meter code and vice
-    // versa (a business_code collision across the two tables would still
-    // violate the shared naming expectation even though no single DB
-    // uniqueness constraint spans both tables).
     const existingBusinessCodes = new Set(
       (await this.masterMeters.find({ where: {}, select: ['businessCode'] }))
         .map((m) => m.businessCode)
         .concat((await this.subMeters.find({ where: {}, select: ['businessCode'] })).map((s) => s.businessCode))
         .filter((v): v is string => !!v),
     );
-    // Property → Master Meter is a 1:1 business rule (a tower has exactly one
-    // Master Meter) that has no DB-level uniqueness constraint on
-    // master_meters.property_id — enforced here instead, both against
-    // already-committed rows and against other rows in this same file
-    // claiming the same Property.
     const propertiesWithMasterMeter =
       meterType === MeterImportType.MASTER
         ? new Set(
@@ -998,10 +828,6 @@ export class MeterService {
           )
         : new Set<number>();
     const propertiesClaimedInFile = new Set<number>();
-    // Unit → Sub Meter mapping is similarly a 1:1 business rule (one sub
-    // meter per unit) with no DB-level uniqueness constraint on
-    // sub_meters.unit_id — see the comment on SubMeter.unit in
-    // entities/sub-meter.entity.ts.
     const unitsAlreadyMapped =
       meterType === MeterImportType.SUB
         ? new Set(
@@ -1021,11 +847,6 @@ export class MeterService {
       if (isBlank) continue;
 
       const record: ImportRow = {};
-      // Each row collects (message, reasonType) pairs rather than plain
-      // strings, so the API response can report a genuine category per
-      // failure (Missing Required / Not Found / Mismatch / Duplicate) — the
-      // underlying checks below are unchanged from the original
-      // implementation, only the error accumulation is richer.
       const rowIssues: Array<{ message: string; reasonType: ImportFailureReason }> = [];
 
       for (const col of columns) {
@@ -1050,9 +871,6 @@ export class MeterService {
         }
       }
 
-      // Status must be one of the actual MeterStatus enum values — anything
-      // else (a typo like "Actve", or a value from an unrelated system) is
-      // rejected instead of silently defaulting to Active in commitRows().
       if (record.status && !Object.values(MeterStatus).includes(record.status.toLowerCase())) {
         rowIssues.push({
           message: `Status "${record.status}" is invalid — must be one of: ${Object.values(MeterStatus).join(', ')}`,
@@ -1060,9 +878,6 @@ export class MeterService {
         });
       }
 
-      // Meter Make/Model are free-text but still bounded by the DB column
-      // length (varchar(100)) — checked here so an over-length value fails
-      // as a clean per-row message instead of an opaque DB error.
       for (const field of ['meterMake', 'meterModel'] as const) {
         const value = record[field];
         if (value && value.length > FREE_TEXT_MAX_LENGTH) {
@@ -1073,9 +888,6 @@ export class MeterService {
         }
       }
 
-      // The uploaded Master Meter ID / Sub-Meter ID becomes the entity's
-      // real businessCode (see commitRows) — bounded by the same
-      // business_code varchar(20) column both tables share.
       const idField = meterType === MeterImportType.MASTER ? 'masterMeterId' : 'subMeterId';
       const uploadedCode: string | null = record[idField];
       if (uploadedCode && uploadedCode.length > BUSINESS_CODE_MAX_LENGTH) {
@@ -1085,13 +897,6 @@ export class MeterService {
         });
       }
 
-      // Community Code is validated on its own first (so a typo'd community
-      // surfaces as its own error) and then re-checked against the resolved
-      // Property's actual community below — Community itself is never
-      // persisted on Master/Sub Meter (it's only reachable via
-      // property.community), so this column exists purely as a
-      // cross-reference to catch a Property Code typed under the wrong
-      // Community.
       let resolvedCommunityId: number | undefined;
       if (record.community) {
         const community = await this.communities
@@ -1121,9 +926,6 @@ export class MeterService {
       }
 
       if (meterType === MeterImportType.MASTER && record._resolvedPropertyId !== undefined) {
-        // One Master Meter per Property — see propertiesWithMasterMeter/
-        // propertiesClaimedInFile above for why this needs both a DB check
-        // and an in-file check.
         if (propertiesWithMasterMeter.has(record._resolvedPropertyId)) {
           rowIssues.push({
             message: `Property "${record.property}" already has a Master Meter`,
@@ -1181,14 +983,6 @@ export class MeterService {
         }
       }
 
-      // Duplicate checks — against both already-committed DB rows and other
-      // rows already seen earlier in this same file. Checked last so a row
-      // that's already failing for another reason doesn't also get a
-      // confusing secondary "duplicate" message layered on top of an
-      // unrelated problem — though in practice a value can trip both a
-      // not-found check (for a different column) and a duplicate check
-      // (for this one) simultaneously, which is intentional: they're
-      // different columns' problems, both real.
       for (const [field, existingSet] of [
         ['serialNumber', existingSerialNumbers],
         ['dtuId', existingDtuIds],
@@ -1205,12 +999,6 @@ export class MeterService {
         }
       }
 
-      // M-Bus Address is scoped to a segment, not global — Property for
-      // Master Meters, Master Meter for Sub Meters (see the comment where
-      // seenMBusAddressByScope/existingMBusAddressByScope are built). Only
-      // checked once the row's scope has actually resolved (a row that
-      // failed to resolve its Property/Master Meter already has a NOT_FOUND
-      // issue and there's no scope to check the address within).
       const mBusScopeId = meterType === MeterImportType.MASTER ? record._resolvedPropertyId : record._resolvedMasterMeterId;
       if (record.mBusAddress && mBusScopeId !== undefined) {
         const seenInScope = seenMBusAddressByScope.get(mBusScopeId);
@@ -1231,9 +1019,6 @@ export class MeterService {
         }
       }
 
-      // The uploaded Master Meter ID / Sub-Meter ID is this row's intended
-      // businessCode — duplicate-checked the same way as serial/DTU/M-Bus
-      // above, against both tables (see existingBusinessCodes comment).
       if (uploadedCode) {
         if (seenInFile.businessCode.has(uploadedCode)) {
           rowIssues.push({
@@ -1251,9 +1036,6 @@ export class MeterService {
       }
 
       if (rowIssues.length > 0) {
-        // First issue's category represents the row for summary counting —
-        // a row can have multiple problems, but "Duplicate Records" etc.
-        // need one bucket per row, not per issue.
         failedRecords.push({
           rowNumber,
           reason: rowIssues.map((i) => i.message).join('; '),
@@ -1261,10 +1043,6 @@ export class MeterService {
           values: Object.fromEntries(columns.map((c) => [c.internalField, record[c.internalField] ?? null])),
         });
       } else {
-        // Carries the original Excel row number through to commitRows() so
-        // a DB-level failure there (a genuine race against a concurrent
-        // import — see commitRows' per-row transaction) can still be
-        // reported against the correct row instead of being lost.
         record._rowNumber = rowNumber;
         validRows.push(record);
       }
@@ -1279,11 +1057,6 @@ export class MeterService {
     }
 
     const { created, failed: commitFailures } = await this.commitRows(meterType, validRows, actorId, columns);
-    // Rows that failed at the DB layer (post pre-commit-validation — see
-    // commitRows/toCommitFailure) are merged into the same failedRecords
-    // list the response and audit log both read, so a concurrent-import
-    // race is reported identically to a validation failure rather than
-    // being a second, invisible category of failure.
     const allFailedRecords = [...failedRecords, ...commitFailures];
     const durationMs = Date.now() - startedAt;
     const duplicateRows = allFailedRecords.filter((r) => r.reasonType === ImportFailureReason.DUPLICATE).length;
@@ -1343,9 +1116,6 @@ export class MeterService {
         successfulRows: summary.successfulRows ?? 0,
         failedRows: summary.failedRows ?? 0,
         durationMs: summary.durationMs ?? 0,
-        // A rejected import (IMPORT_FAILED) never produced a row count to
-        // reason about — it's unconditionally 'failed', not derived from
-        // successfulRows/failedRows the way a committed IMPORT row is.
         status: isRejected
           ? ('failed' as const)
           : (summary.failedRows ?? 0) > 0 && (summary.successfulRows ?? 0) === 0
@@ -1361,18 +1131,8 @@ export class MeterService {
     return this.loadImportHistoryRows(limit);
   }
 
-  // Bounds how much audit-log history is ever pulled into memory for
-  // filtering/pagination — the Import Center screen doesn't need to search
-  // arbitrarily far back; this caps a pathological "give me page 9999" query
-  // from scanning the entire audit log table.
   private static readonly IMPORT_HISTORY_SCAN_LIMIT = 500;
 
-  // Columns the Recent Imports table may sort by — every one of these lives
-  // only inside the audit log's parsed JSON blob (fileName/importType/
-  // totalRows/failedRows/status) or is resolved after the fact (importedBy),
-  // so there's no real DB column to ORDER BY; this whitelist guards which
-  // in-memory field name we're allowed to read off a row before sorting,
-  // mirroring BillingCycleService.findAll()'s SORTABLE-set guard idiom.
   private static readonly IMPORT_HISTORY_SORTABLE = new Set([
     'fileName',
     'importType',
@@ -1429,12 +1189,6 @@ export class MeterService {
     };
   }
 
-  // Filter option metadata for the Import Center's Type/Status dropdowns —
-  // mirrors TariffService.getFilterMetadata() / BillingCycleService's
-  // metaFilters endpoint: both are fixed, system-defined workflow values
-  // (MeterImportType is a real backend enum; status is a runtime-derived
-  // 3-state union, never business-configurable), so this stays a plain
-  // enum-reflecting endpoint rather than a LOV Master category.
   async getImportHistoryMetaFilters() {
     return {
       types: [
@@ -1449,12 +1203,6 @@ export class MeterService {
     };
   }
 
-  // ─── Import error / success reports ─────────────────────────────────────────
-  // Both reuse the same enabled-columns config as the template/import path
-  // (getColumns()) so a re-downloaded error report has the exact same
-  // columns as the original template plus one trailing "Failure Reason"
-  // column — ready to fix and re-upload through the normal import endpoint,
-  // no separate re-import code path needed.
 
   async buildImportErrorReport(meterType: MeterImportType, failedRecords: ImportFailedRecord[], batchId?: string): Promise<Buffer> {
     const columns = (await this.getColumns(meterType)).filter((c) => c.enabled);
@@ -1495,10 +1243,6 @@ export class MeterService {
     sheet.getRow(1).font = { bold: true };
 
     if (ids.length > 0) {
-      // Reuses the same row-shape builders the regular Export button already
-      // uses (buildMasterMeterExportRows/buildSubMeterExportRows), scoped to
-      // just this import's ids instead of the list screen's filters — no
-      // second copy of the entity→row mapping.
       const rows =
         meterType === MeterImportType.MASTER
           ? await this.buildMasterMeterExportRows({}, ids)
@@ -1510,24 +1254,6 @@ export class MeterService {
     return Buffer.from(buffer);
   }
 
-  // Bulk-import rows carry their own business identifier (the uploaded
-  // Master Meter ID / Sub-Meter ID column, already validated for uniqueness
-  // and length in importMeters()) — unlike createMasterMeter/createSubMeter
-  // (the manual create-one-record UI form), which still auto-generates a
-  // businessCode via generateBusinessCode() when the caller doesn't supply
-  // one. Both paths converge on the same `business_code` column with the
-  // same DB-level uniqueness constraint; only the source of the value
-  // differs.
-  //
-  // Each row commits inside its OWN transaction (not one transaction for the
-  // whole batch) so a genuine DB-level failure on one row — most commonly a
-  // unique-constraint race against a second, concurrent import that both
-  // validated against the same pre-import snapshot and both chose the same
-  // business code — can never leave that row half-written, while still
-  // letting every other valid row commit normally. A batch-wide transaction
-  // would have made one bad row roll back the entire import, which is
-  // worse: 11 genuinely valid rows would be discarded because of 1 row that
-  // lost a race no validation pass could have foreseen.
   private async commitRows(
     meterType: MeterImportType,
     rows: ImportRow[],
@@ -1591,19 +1317,6 @@ export class MeterService {
     return { created, failed };
   }
 
-  // A row that passed every pre-commit validation can still fail at the DB
-  // layer — almost always a unique-constraint collision from a concurrent
-  // import (see the commitRows comment above). Reported the same way a
-  // validation failure is, so it shows up in the Failed Records grid and
-  // the downloadable error report identically, rather than crashing the
-  // whole request.
-  // MySQL's duplicate-key error message names the exact index that was
-  // violated (e.g. "Duplicate entry 'X' for key
-  // 'master_meters.UQ_master_meters_serial_number'") — mapped here to a
-  // human-readable field/scope description so a genuine concurrent-import
-  // race reports exactly which uniqueness rule was lost, the same way an
-  // app-layer validation failure would, instead of a generic "duplicate"
-  // message that doesn't say which field.
   private static readonly COMMIT_DUPLICATE_INDEX_MESSAGES: Record<string, string> = {
     UQ_master_meters_serial_number: 'Serial Number is already used by another Master Meter',
     UQ_master_meters_dtu_id: 'DTU ID is already used by another Master Meter',
@@ -1630,12 +1343,6 @@ export class MeterService {
     };
   }
 
-  // Single-record equivalent of toCommitFailure() above, for create paths
-  // outside bulk import (currently just createMasterMeter()) that have no
-  // pre-check against one of the named unique indexes and would otherwise
-  // let a raw MySQL duplicate-key error reach the client as a generic 500.
-  // A non-duplicate-key error is rethrown completely unchanged — this only
-  // ever translates the one error shape it actually understands.
   private toDuplicateKeyException(err: unknown): Error {
     const message = err instanceof Error ? err.message : String(err);
     const isDuplicateKey = /duplicate entry/i.test(message) || (err as { code?: string })?.code === 'ER_DUP_ENTRY';
@@ -1645,7 +1352,6 @@ export class MeterService {
     return new BadRequestException(violatedIndex ? MeterService.COMMIT_DUPLICATE_INDEX_MESSAGES[violatedIndex] : 'This record could not be saved because it duplicates an existing one');
   }
 
-  // ─── Response mappers ───────────────────────────────────────────────────────
 
   private mapMasterMeterResponse(m: MasterMeter) {
     return {
@@ -1690,11 +1396,6 @@ export class MeterService {
     };
   }
 
-  // ─── Daily Meter Readings — read-only list ──────────────────────────────────
-  // Reads meter_readings (+ the sub_meter/unit/property/community FKs the
-  // SFTP ingestion pipeline's MeterHierarchyResolverService already resolves
-  // at ingest time) — never writes it. Approval, billing, and
-  // AI-explanation fields are explicitly out of scope this milestone.
 
   private static readonly DAILY_READINGS_SORTABLE: Record<string, string> = {
     readingDate: 'r.readingDate',
@@ -1708,10 +1409,6 @@ export class MeterService {
     const limit = query.limit && query.limit > 0 ? Math.min(query.limit, 100) : 20;
 
     if (query.validationStatus === 'anomaly') {
-      // Invalid rows are never persisted as MeterReading (IngestionService
-      // filters them out before saving) — a "clean" meter_readings table
-      // cannot contain an anomalous row, so this is accurately always empty
-      // under today's schema, not a bug.
       return { items: [], pagination: { page, limit, total: 0, totalPages: 1 } };
     }
 
@@ -1766,12 +1463,6 @@ export class MeterService {
     };
   }
 
-  // Honestly-computable dashboard summary — expected/received/missing/quality
-  // (registered SubMeters vs MeterReading rows), plus validReadings and
-  // anomaliesPending+severity breakdown (real, since validation_status/
-  // anomaly_severity have been persisted since Phase 2b). Properties Ready /
-  // Readings Approved / Readings On Hold still need an approval_status
-  // column that doesn't exist yet — deliberately not included here.
   async getDailyMeterReadingsSummary(date: string, communityId?: number, propertyId?: number) {
     const expectedQb = this.subMeters
       .createQueryBuilder('s')
@@ -1913,11 +1604,6 @@ export class MeterService {
     });
   }
 
-  // Anomalies-by-community breakdown for the Dashboard chart — real aggregation
-  // over validation_status/anomaly_severity/community_id, all persisted since
-  // the ingestion pipeline started writing Clean/Anomaly rows (Phase 2b).
-  // Communities with zero anomalies for the date are included at zero (not
-  // omitted) so the chart's x-axis is stable across days.
   async getAnomaliesByCommunity(date: string) {
     const communities = await this.communities.find({ select: ['id', 'name'], order: { name: 'ASC' } });
 
@@ -1948,10 +1634,6 @@ export class MeterService {
     }));
   }
 
-  // Trailing daily-consumption history for one specific meter, chart-ready
-  // (ascending by date). Reuses the exact same "last 31 readings, compute
-  // consecutive deltas" logic as the list's own 30-Day Avg computation —
-  // there's no separate stored history table, this is derived every time.
   async getMeterReadingHistory(meterId: string, upToDate?: string): Promise<{ date: string; consumption: number }[]> {
     const date = upToDate ?? new Date().toISOString().slice(0, 10);
     const history = (await this.getReadingHistoryByMeterId([meterId], date)).get(meterId) ?? [];
@@ -1966,10 +1648,6 @@ export class MeterService {
     return points.reverse();
   }
 
-  // Batches the last 31 readings (today + up to 30 priors) per distinct
-  // meter_id in one query — bounded by the current page's distinct meter
-  // count (≤100), not the whole table. Used to derive Opening/Consumption/
-  // 30-Day Avg/Deviation without any of those being stored columns.
   private async getReadingHistoryByMeterId(meterIds: string[], upToDate: string): Promise<Map<string, MeterReading[]>> {
     const distinctIds = Array.from(new Set(meterIds));
     const rows = await this.meterReadings
@@ -1989,10 +1667,6 @@ export class MeterService {
     return byMeter;
   }
 
-  // history[0] is always `reading` itself (today's row); history[1], if
-  // present, is the immediately-preceding reading for the same meter
-  // ("Opening"). Consumption/30-Day Avg/Deviation are all derived here —
-  // none of them are stored columns.
   private mapDailyReadingToItem(reading: MeterReading, history: MeterReading[]) {
     const closing = Number(reading.readingValue);
     const opening = history[1] ? Number(history[1].readingValue) : null;
@@ -2018,9 +1692,6 @@ export class MeterService {
       consumption,
       thirtyDayAvg,
       deviationPercent,
-      // Real per-row status — Anomaly rows have been persisted (not
-      // discarded) since Phase 2b's ingestion rewrite; this used to be
-      // hardcoded to 'clean' before that change and was never updated.
       validationStatus: reading.validationStatus,
       approvalStatus: reading.approvalStatus,
       approvedAt: reading.approvedAt?.toISOString() ?? null,
@@ -2035,10 +1706,6 @@ export class MeterService {
     };
   }
 
-  // Registered SubMeters (with a real business code) in scope that have no
-  // MeterReading for `date` at all — synthesized virtual rows, mirroring
-  // the SFTP module's own Missing File Engine pattern but at Unit/SubMeter
-  // granularity for this feature specifically. Nothing is persisted here.
   private async getMissingDailyReadings(
     query: DailyMeterReadingQueryDto,
     date: string,
@@ -2086,8 +1753,6 @@ export class MeterService {
         thirtyDayAvg: null,
         deviationPercent: null,
         validationStatus: 'missing' as const,
-        // A Missing row is a synthesized virtual row — there's no real
-        // MeterReading, so no approval concept applies to it at all.
         approvalStatus: null,
         approvedAt: null,
         approvedBy: null,

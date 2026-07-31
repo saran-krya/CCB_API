@@ -14,11 +14,6 @@ export const ATTRIBUTE_MODULE_KEYS = [
   'tariff',
 ] as const;
 
-// Attribute.value is stored as text regardless of valueType. Attributes are
-// developer-defined and seeded (see AttributeService.buildAttributeSeed) —
-// there is no runtime attribute creation, so this only ever validates a
-// value being written to an attribute that already exists, against its
-// already-persisted valueType.
 export function isValueValidForType(value: string, valueType: AttributeValueType | undefined): boolean {
   if (typeof value !== 'string') return false;
   if (valueType === AttributeValueType.NUMBER) {
@@ -36,9 +31,6 @@ export function attributeValueErrorMessage(valueType: AttributeValueType | undef
   return 'value must be a non-empty string';
 }
 
-// Admins configure the VALUE of a predefined attribute only — label, type,
-// grouping, and editability are set by the developer at seed time and are
-// intentionally not part of this payload.
 export class UpdateAttributeDto {
   @ApiPropertyOptional({ description: 'New value to persist for this attribute' })
   @IsOptional()

@@ -1,13 +1,6 @@
 import { SftpEstateSummary } from '../entities/sftp-estate-summary.entity';
 import { SftpIngestionLog } from '../entities/sftp-ingestion-log.entity';
 
-// Every Dashboard-facing response in this module is snake_case, by explicit
-// spec requirement — a deliberate one-module exception to the rest of this
-// codebase's camelCase JSON convention (every other controller returns its
-// entities/DTOs as-is). These mapping functions are the ONLY place that
-// snake_case translation happens; nothing upstream (the entities, the
-// service) is snake_case internally.
-
 export interface MissingDtuDto {
   dtu: string;
   community: string | null;

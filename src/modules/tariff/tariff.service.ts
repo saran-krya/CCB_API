@@ -178,27 +178,9 @@ export class TariffService {
         name: property.name,
         communityName: property.community?.name ?? null,
       })),
-      // Every wizard field's business rules (required/min/max/allowZero/...)
-      // in one place — see TARIFF_FIELD_METADATA's own comment. The wizard's
-      // `*` indicators, HTML5 min/max attributes and step-completion checks
-      // all read from this instead of a hand-duplicated copy, so they can
-      // never drift from what the DTO actually enforces.
       fieldMetadata: TARIFF_FIELD_METADATA,
-      // Business-Admin-configurable via Attributes > Tariff Config — see
-      // getActiveLockedFields(). Lets the wizard grey out / footnote exactly
-      // the fields the backend will actually reject on an active tariff.
       activeLockedFields,
-      // VAT percentage a brand-new tariff's Step 3 initializes to — see
-      // getDefaultVat(). The wizard must only apply this while creating a
-      // new tariff; an existing tariff's own persisted vat always wins once
-      // loaded (see TariffCreateForm's seed-effect).
       defaultVat,
-      // Closed set of field names TARIFF_ACTIVE_LOCKED_FIELDS is allowed to
-      // contain, with display labels — lets the Module Attributes screen
-      // render a checkbox list instead of a free-text input, so an admin can
-      // only ever select real field names (see
-      // AttributeService.assertValidLockableTariffFields, the write-time
-      // counterpart to this same allowlist).
       lockableFields: ACTIVE_LOCKED_TARIFF_FIELDS.map((field) => ({
         value: field,
         label: LOCKABLE_TARIFF_FIELD_LABELS[field] ?? field,
@@ -298,11 +280,6 @@ export class TariffService {
 
     const result = await paginate(qb, query);
 
-    // tiers/units are deliberately NOT joined into the paginated query above
-    // — a leftJoinAndSelect on a to-many relation combined with skip/take
-    // multiplies rows before TypeORM re-groups them, which can silently
-    // shrink or corrupt a page. A second, un-paginated aggregate query
-    // scoped to just this page's ids has no such hazard and stays cheap.
     const counts = await this.getRelationCounts(result.items.map((v) => v.id));
 
     return {
@@ -336,11 +313,6 @@ export class TariffService {
     return this.mapToResponse(version, true);
   }
 
-  // Every version of the same lineage (same master), oldest first — the
-  // "Visible in tariff history for audit purposes" requirement for a
-  // deprecated tariff, generalized to work from any version's detail page,
-  // not just the deprecated one. Lightweight by design: full detail is
-  // already one click away via each row's own id.
   async getVersionHistory(id: number) {
     const version = await this.versions.findOne({ where: { id } });
     if (!version) throw new NotFoundException('Tariff not found');
@@ -367,10 +339,6 @@ export class TariffService {
   }
 
 
-  // The DTO only checks propertyType is a non-empty string (it's dynamic, not
-  // a fixed enum) — this confirms it's actually an active code in the
-  // Lookup Field Master's TARIFF_UNIT_TYPE category, the same source the
-  // create-form dropdown and list filter both read from.
   private async assertValidUnitType(propertyType: string): Promise<void> {
     const validValues = await this.lovService.findByCategory(TARIFF_UNIT_TYPE_LOV_CATEGORY);
     if (!validValues.some((v) => v.code === propertyType)) {
@@ -380,10 +348,6 @@ export class TariffService {
     }
   }
 
-  // The DTO only checks rejectionReason is a non-empty string — this
-  // confirms it's actually an active code in the Lookup Field Master's
-  // TARIFF_REJECTION_REASON category, the same source the Reject dialog's
-  // dropdown reads from — identical reasoning to assertValidUnitType above.
   private async assertValidRejectionReason(rejectionReason: string): Promise<void> {
     const validValues = await this.lovService.findByCategory(TARIFF_REJECTION_REASON_LOV_CATEGORY);
     if (!validValues.some((v) => v.code === rejectionReason)) {
@@ -393,13 +357,6 @@ export class TariffService {
     }
   }
 
-  // Whether a tier SET exists at all is a completeness concern (deferrable
-  // to a Draft — see getValidationIssues); whether the tiers that DO exist
-  // make sense as a slab structure is not, and is rejected immediately
-  // whenever tiers are provided, same as any other malformed input. Returns
-  // the tiers sorted by minKwh — callers persist THIS order (not whatever
-  // order the client happened to send), so tierOrder always follows the
-  // consumption progression regardless of client-side array order.
   private assertTiersValid(tiers: TariffTierDto[]): TariffTierDto[] {
     const sorted = [...tiers].sort((a, b) => a.minKwh - b.minKwh);
     sorted.forEach((tier, index) => {
@@ -421,16 +378,6 @@ export class TariffService {
     return sorted;
   }
 
-  // Rate/scope shape is intentionally NOT validated here — a tariff can be
-  // created as an incomplete draft (e.g. the wizard creates it right after
-  // Step 1, before Step 2's rate values exist). submit() re-validates the
-  // full persisted entity via getValidationIssues before it's allowed into
-  // the approval queue, which is the point completeness actually matters.
-  //
-  // Every create() call starts a brand-new lineage — a new TariffMaster with
-  // its own business code plus that master's first (v1.0) version — since,
-  // unlike a property's billing cycle, there is no natural "one tariff per X"
-  // identity for a fresh tariff to be reconciled against.
   async create(dto: CreateTariffDto, actorId?: number) {
     await this.assertValidUnitType(dto.propertyType);
     const sortedTiers = dto.rateType === TariffRateType.TIERED && dto.tiers && dto.tiers.length > 0
@@ -512,9 +459,6 @@ export class TariffService {
     });
     if (!version) throw new NotFoundException('Tariff not found');
 
-    // PENDING is locked unconditionally — not even the submitter can edit
-    // it while Finance review is in progress; Finance must Approve or
-    // Reject first (see EDITABLE_TARIFF_STATUSES).
     if (!EDITABLE_TARIFF_STATUSES.has(version.status)) {
       throw new BadRequestException(
         version.status === TariffStatus.PENDING
@@ -581,21 +525,6 @@ export class TariffService {
         version.units = [];
       }
 
-      // PDF Scenario 3: a live tariff has no "no invoices generated yet"
-      // signal to check without a Billing Engine, so every edit to an
-      // active tariff is treated as that narrow, lower-stakes case — bump a
-      // minor version and send it back to Finance rather than mutating a
-      // record billing may already depend on without any review at all.
-      // Locked fields (rate/scope/effectiveFrom) are already blocked above
-      // by assertActiveEditAllowed, so only non-rate fields ever reach here.
-      //
-      // TODO(Billing Engine): this branch currently fires for EVERY Active
-      // tariff. Once invoice usage tracking exists, this must first check
-      // whether the tariff has any invoices (Scenario 4). If it does, this
-      // whole update() call should be rejected outright — the tariff must be
-      // fully read-only, and Create New Version (newVersion()) must be the
-      // only allowed path. Only when there are zero invoices (true Scenario
-      // 3) should this minor-version-bump-and-resubmit behavior still apply.
       if (originalStatus === TariffStatus.ACTIVE) {
         version.version = nextMinorVersion(version.version);
         version.status = TariffStatus.PENDING;
@@ -635,9 +564,6 @@ export class TariffService {
     return this.findOne(id);
   }
 
-  // Business Admin action — moves a Draft, corrected, or rejected tariff
-  // into the Finance approval queue. Distinct from create() so a tariff can
-  // be saved and refined before ever entering the queue (PDF Scenario 1).
   async submit(id: number, actorId?: number) {
     const version = await this.versions.findOne({
       where: { id },
@@ -656,13 +582,6 @@ export class TariffService {
       });
     }
 
-    // Scope/date conflict is deliberately not enforced at create()/update()
-    // time — a Draft may be freely edited even while a conflict exists with
-    // another tariff. Submit is the point this tariff's scope becomes "real"
-    // enough to actually compete for billing precedence, so it's checked
-    // here instead — the same conflict check reactivate() already runs for
-    // the identical reason. Covers both Submit and Resubmit for free, since
-    // both call this same method.
     const conflict = await this.checkConflict({
       propertyType: version.propertyType,
       applicability: version.applicability,
@@ -696,11 +615,6 @@ export class TariffService {
     if (version.status !== TariffStatus.PENDING) {
       throw new BadRequestException('Only pending tariffs can be approved');
     }
-    // Who may approve is entirely a Role Permissions decision
-    // (TARIFF_APPROVE grant), enforced by PermissionGuard at the route —
-    // no hardcoded role check here. assertNotSelfReview is a separate,
-    // role-independent maker-checker rule and stays regardless of who holds
-    // the grant.
     assertNotSelfReview(version.submittedBy?.id, actorId, 'approved');
     const oldValue = { ...version };
     version.status = TariffStatus.ACTIVE;
@@ -718,11 +632,6 @@ export class TariffService {
       throw new BadRequestException('Only pending tariffs can be rejected');
     }
     await this.assertValidRejectionReason(dto.rejectionReason);
-    // Who may reject is entirely a Role Permissions decision
-    // (TARIFF_REJECT grant), enforced by PermissionGuard at the route — no
-    // hardcoded role check here. assertNotSelfReview is a separate,
-    // role-independent maker-checker rule and stays regardless of who holds
-    // the grant.
     assertNotSelfReview(version.submittedBy?.id, actorId, 'rejected');
     const oldValue = { ...version };
     version.status = TariffStatus.REJECTED;
@@ -748,12 +657,6 @@ export class TariffService {
     return this.findOne(id);
   }
 
-  // Business rule chosen for this gap (PDF doesn't specify one): reactivating
-  // resumes a previously-approved tariff without a second Finance review,
-  // but re-runs the same scope/date conflict check used at creation time, in
-  // case another tariff has since taken its exact scope. Gated behind the
-  // TARIFF_REACTIVATION_CONFLICT_CHECK module attribute so it can be relaxed
-  // per deployment.
   async reactivate(id: number, actorId?: number) {
     const version = await this.versions.findOne({ where: { id }, relations: ['properties', 'units'] });
     if (!version) throw new NotFoundException('Tariff not found');
@@ -786,10 +689,6 @@ export class TariffService {
     return this.findOne(id);
   }
 
-  // Manual deprecation — PDF: "Manual deprecation by Super Admin". The
-  // PDF's companion guard ("cannot deprecate if active billing cycle uses
-  // it") is not enforced here since there is no Billing Engine to check
-  // against yet.
   async deprecate(id: number, actorId?: number) {
     const version = await this.versions.findOne({ where: { id } });
     if (!version) throw new NotFoundException('Tariff not found');
@@ -803,10 +702,6 @@ export class TariffService {
     return this.findOne(id);
   }
 
-  // Scenario 5 — the only way to change a locked (ACTIVE_LOCKED_TARIFF_FIELDS)
-  // field on an active tariff: clone it into a new editable Draft that
-  // stays under the same master (so it shares the same business code) and
-  // links back to its source via parentVersion.
   async newVersion(id: number, actorId?: number) {
     const source = await this.versions.findOne({
       where: { id },
@@ -898,28 +793,6 @@ export class TariffService {
     });
   }
 
-  // Field list is Business-Admin-configurable (Attributes > Tariff Config >
-  // "Fields Locked for Active Tariffs") so ops can add/relax locked fields
-  // without a deploy — ACTIVE_LOCKED_TARIFF_FIELDS is only the fallback for
-  // a missing/corrupt attribute value, not the source of truth.
-  //
-  // Defensive on read as well as on write: AttributeService.update() already
-  // rejects an invalid field name at save time (see
-  // assertValidLockableTariffFields), but this filters against the same
-  // LOCKABLE_TARIFF_FIELDS allowlist again here so a value that reached the
-  // database some other way (a direct DB edit, a restored backup predating
-  // the write-time validation, ...) can never silently disable a field's
-  // lock — an unrecognized name is dropped rather than trusted, and this
-  // never returns the unchecked type assertion the CSV parsing used to
-  // produce.
-  //
-  // TEMPORARY SCOPE (pending Billing Engine): TARIFF_ACTIVE_LOCKED_FIELDS is
-  // meant to govern Scenario 3 only (Active, not yet used for billing).
-  // There is currently no invoice-usage tracking to detect Scenario 4
-  // (Active + one or more invoices already generated), so this field list is
-  // applied to every Active tariff unconditionally. See the TODO on
-  // assertActiveEditAllowed() below for what must change once that tracking
-  // exists.
   private async getActiveLockedFields(): Promise<(keyof UpdateTariffDto)[]> {
     const raw = await this.attributeService.getValueByKey('TARIFF_ACTIVE_LOCKED_FIELDS');
     if (!raw?.trim()) return ACTIVE_LOCKED_TARIFF_FIELDS;
@@ -932,17 +805,6 @@ export class TariffService {
     return fields.length ? fields : ACTIVE_LOCKED_TARIFF_FIELDS;
   }
 
-  // TODO(Billing Engine): once invoice usage tracking exists, insert a check
-  // here BEFORE consulting TARIFF_ACTIVE_LOCKED_FIELDS:
-  //   - If the tariff has one or more invoices generated against it
-  //     (Scenario 4), reject the entire update unconditionally — do not
-  //     fall through to the locked-fields check at all. The only allowed
-  //     action at that point is Create New Version (newVersion()).
-  //   - Only when the tariff has zero invoices (true Scenario 3) should the
-  //     existing partial field-lock behavior below continue to apply.
-  // Today this method cannot distinguish Scenario 3 from Scenario 4 (no
-  // Billing Engine / invoice relationship exists yet — see this module's
-  // CLAUDE.md), so it currently treats every Active tariff as Scenario 3.
   private async assertActiveEditAllowed(dto: UpdateTariffDto) {
     const lockedFields = await this.getActiveLockedFields();
     const locked = lockedFields.filter((field) => dto[field] !== undefined);
@@ -979,19 +841,6 @@ export class TariffService {
     return units;
   }
 
-  // Single source of truth for "is this tariff complete enough to submit" —
-  // a Draft is explicitly allowed to be missing any of this (PDF Scenario 1:
-  // "a wizard creates it right after Step 1, before Step 2's rate values
-  // exist"), but submit() must refuse to move it into the Finance queue
-  // until every issue here is resolved. Returns every issue at once rather
-  // than throwing on the first one, so the caller can show the user a
-  // complete list in one pass instead of a fix-one-resubmit-repeat loop.
-  // Field names match the frontend form's own field/state names exactly, so
-  // the UI can highlight the right input directly off this list.
-  // `counts` lets a caller that hasn't loaded the tiers/units relations
-  // (findAll()'s list rows — see getRelationCounts) supply their existence
-  // as plain numbers instead. Callers that DO have the relations loaded
-  // (findOne(), submit()) simply omit it.
   private getValidationIssues(
     version: TariffVersion,
     counts?: { tierCount: number; unitCount: number },
@@ -1000,9 +849,6 @@ export class TariffService {
     const hasTiers = counts ? counts.tierCount > 0 : !!version.tiers?.length;
     const hasUnits = counts ? counts.unitCount > 0 : !!version.units?.length;
 
-    // name is enforced at the DTO level (CreateTariffDto) too — checked
-    // again here for any row that predates that change, and because this
-    // is the one place that's supposed to know everything required to submit.
     if (!version.name?.trim()) {
       issues.push({ field: 'name', message: 'Tariff name is required.' });
     }
@@ -1027,21 +873,10 @@ export class TariffService {
       issues.push({ field: 'unitIds', message: 'At least one unit must be selected.' });
     }
 
-    // Not a DTO-level rule deliberately: vat defaults to 5 (non-zero) from
-    // the very first create() call, before Step 3 — where the TRN field
-    // lives — has ever been visited. Enforcing this unconditionally would
-    // break the same Step-1-completion auto-save that flatRate/tiers'
-    // deferred checks exist to support. Charging VAT without a registered
-    // TRN isn't just incomplete, it's not legally chargeable, so this is
-    // checked here rather than left as a soft recommendation.
     if (Number(version.vat) > 0 && !version.vatRegistrationNumber) {
       issues.push({ field: 'vatRegistrationNumber', message: 'A VAT registration number (TRN) is required when VAT is greater than 0%.' });
     }
 
-    // Stamped from TARIFF_FIELD_METADATA here, in one place, rather than at
-    // every push() above — adding a new check above never requires
-    // touching a step number by hand, only that registry if it's a
-    // genuinely new field.
     return issues.map((issue) => ({ ...issue, step: TARIFF_FIELD_METADATA[issue.field]?.step ?? 0 }));
   }
 
@@ -1115,12 +950,6 @@ export class TariffService {
       units: (version.units ?? []).map((unit) => ({ id: unit.id, unitNumber: unit.unitNumber })),
       isComplete: validationIssues.length === 0,
       validationIssues,
-      // Single source of truth for "can this be edited / (re)submitted right
-      // now" — both TariffList and the Tariff Detail page used to mirror
-      // EDITABLE_TARIFF_STATUSES/SUBMITTABLE_TARIFF_STATUSES by hand as
-      // hardcoded status-string comparisons; reading it from here instead
-      // means the two can never drift from what update()/submit() will
-      // actually accept.
       isEditable: EDITABLE_TARIFF_STATUSES.has(version.status),
       isSubmittable: SUBMITTABLE_TARIFF_STATUSES.has(version.status),
       createdAt: version.createdAt,

@@ -41,13 +41,6 @@ export enum TariffPenaltyType {
   PERCENTAGE = 'percentage',
 }
 
-// One row per version (v1.0, v2.0, ...) of a tariff lineage. Everything that
-// actually varies by version lives here, including name/description (PDF:
-// "edit in place allowed", so it's ordinary version content, not identity)
-// — only the business code and the "current version" pointer live on
-// TariffMaster. tiers/properties/units are version-scoped: newVersion()
-// clones them, matching the PDF's "all fields copied from v1.0 as starting
-// point" (Scenario 5).
 @Entity('tariff_versions')
 export class TariffVersion extends BaseEntity {
   @ManyToOne(() => TariffMaster, (master) => master.versions, { nullable: false })
@@ -66,9 +59,6 @@ export class TariffVersion extends BaseEntity {
   @Column({ name: 'version', type: 'varchar', length: 10, default: '1.0' })
   version!: string;
 
-  // Self-reference to the version this one was cloned from via the
-  // new-version flow (Scenario 5). Scoped purely to version lineage now —
-  // never points across masters. Null for a tariff's first version.
   @ManyToOne(() => TariffVersion, { nullable: true, eager: false })
   @JoinColumn({ name: 'parent_version_id' })
   parentVersion?: TariffVersion | null;
@@ -76,8 +66,6 @@ export class TariffVersion extends BaseEntity {
   @OneToMany(() => TariffVersion, (version) => version.parentVersion)
   childVersions!: TariffVersion[];
 
-  // Code from the LOV category TARIFF_UNIT_TYPE (Lookup Field Master) —
-  // not a native enum, so admins can add unit types without a code change.
   @Column({ name: 'property_type', type: 'varchar', length: 100 })
   propertyType!: string;
 
@@ -183,10 +171,6 @@ export class TariffVersion extends BaseEntity {
   @OneToMany(() => TariffTier, (tier) => tier.version, { cascade: true })
   tiers!: TariffTier[];
 
-  // Physical join-table column is still named tariff_id (see migration
-  // notes) — only its FK target moved, from tariffs(id) to
-  // tariff_versions(id). Row values are unchanged since version IDs equal
-  // the legacy tariff IDs exactly.
   @ManyToMany(() => Property)
   @JoinTable({
     name: 'tariff_properties',

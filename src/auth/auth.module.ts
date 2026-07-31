@@ -40,10 +40,6 @@ import { JwtStrategy } from './strategies/jwt.strategy';
     JwtStrategy,
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: RolesGuard },
-    // Runs after JwtAuthGuard/RolesGuard (APP_GUARD providers apply in
-    // array order) — request.user is guaranteed populated by this point.
-    // Gates business routes carrying @Permission(...); routes with no
-    // such metadata pass through untouched, same as RolesGuard today.
     { provide: APP_GUARD, useClass: PermissionGuard },
   ],
   exports: [AuthService],

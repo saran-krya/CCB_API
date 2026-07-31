@@ -8,12 +8,6 @@ import { CreateUserDto, UpdateUserDto } from './dto/create-user.dto';
 import { UpdatePreferencesDto } from './dto/update-preferences.dto';
 import { UserService } from './user.service';
 
-// Route-level @Permission() — gates the admin-CRUD routes by Screen Action
-// (USER_LIST screen) instead of hardcoded roles, so access is controlled
-// entirely through Role Permissions per role, not role names. Self-service
-// routes (profile, reporting-managers, me/preferences) are intentionally
-// unguarded, as before — any authenticated user manages their own profile
-// regardless of role or grants.
 @ApiBearerAuth()
 @ApiTags('Users')
 @Controller({ path: 'users', version: '1' })
@@ -45,8 +39,6 @@ export class UserController {
     return this.users.getReportingManagers();
   }
 
-  // Self-service — any authenticated user manages their own appearance and
-  // language preferences, regardless of role.
   @Patch("me/preferences")
   updateOwnPreferences(
     @Body() dto: UpdatePreferencesDto,

@@ -13,11 +13,6 @@ import { MeterService } from './meter.service';
 
 @Module({
   imports: [
-    // MeterReading is already registered in SftpModule too — TypeORM allows
-    // the same entity registered in multiple modules' forFeature() calls,
-    // both just point at the same underlying repository/table. Registered
-    // here (read-only queries only) so MeterService never has to import
-    // anything from SftpModule — keeps the two modules fully decoupled.
     TypeOrmModule.forFeature([MasterMeter, SubMeter, Community, Property, Unit, User, MeterReading]),
     AttributeModule,
   ],

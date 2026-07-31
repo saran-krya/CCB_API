@@ -29,7 +29,6 @@ export class BusinessCodeMigrationService implements OnApplicationBootstrap {
           this.logger.log(`Backfilled ${affected} business codes in ${table}`);
         }
       } catch {
-        // Column not yet created (synchronize hasn't applied) — skip gracefully
       }
     }
   }

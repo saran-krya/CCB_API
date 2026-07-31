@@ -29,11 +29,6 @@ export class Action extends BaseEntity {
   })
   screen?: Screen;
 
-  // Self-referencing — supports exactly one level of nesting (a child action
-  // cannot itself be a parent, enforced in ActionsService). Lets a Screen's
-  // top-level action (e.g. "Edit Tariff") group its own related sub-actions
-  // (e.g. "Deactivate", "Reactivate") as independently grantable children in
-  // the Role Permission tree, instead of every action being a flat peer.
   @Column({
     nullable: true,
   })
