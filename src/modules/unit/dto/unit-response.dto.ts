@@ -1,4 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { UnitCustomerSummaryDto } from '../../customer/dto/customer-response.dto';
 import { OccupancyStatus, UnitStatus, UnitType } from '../entities/unit.entity';
 
 export class UnitListDto {
@@ -46,4 +47,7 @@ export class UnitDetailDto {
   @ApiProperty() propertyCode!: string;
   @ApiProperty() communityId!: number;
   @ApiProperty() communityName!: string;
+  // Owner/Tenant summary, composed server-side (CustomerService.findByUnitId) — see that method's
+  // own doc comment for why this replaces a separate GET /customers call from the frontend.
+  @ApiProperty({ type: () => [UnitCustomerSummaryDto] }) customers!: UnitCustomerSummaryDto[];
 }

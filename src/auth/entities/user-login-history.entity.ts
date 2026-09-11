@@ -5,6 +5,12 @@ export class UserLoginHistory {
   @PrimaryGeneratedColumn()
   id!: number;
 
+  /** See RefreshToken.principalType's own doc comment — `userId` alone collides across the two
+   *  independent id spaces (users.id vs customers.id), so every query here must filter on both
+   *  columns together. Defaults to 'staff' to backfill every pre-existing row correctly. */
+  @Column({ name: 'principal_type', type: 'varchar', length: 10, default: 'staff' })
+  principalType!: 'staff' | 'customer';
+
   @Index()
   @Column({ name: 'user_id', type: 'int' })
   userId!: number;

@@ -1,7 +1,7 @@
 import { CanActivate, ExecutionContext, Injectable } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { ROLES_KEY } from '../decorators/roles.decorator';
-import { AuthenticatedUser } from '../../auth/interfaces/authenticated-user.interface';
+import { AuthPrincipal } from '../../auth/interfaces/authenticated-user.interface';
 import { ROLES } from '../constants/global';
 
 @Injectable()
@@ -18,15 +18,19 @@ export class RolesGuard implements CanActivate {
       return true;
     }
 
-    const request = context.switchToHttp().getRequest<{ user?: AuthenticatedUser }>();
+    const request = context.switchToHttp().getRequest<{ user?: AuthPrincipal }>();
+    const user = request.user;
 
-    if (request.user?.roleName === ROLES.SUPER_ADMIN) {
+    // A customer session carries no roleName at all — every @Roles-guarded route today is
+    // staff-only, so a customer token can never satisfy one.
+    if (!user || user.type === 'customer') {
+      return false;
+    }
+
+    if (user.roleName === ROLES.SUPER_ADMIN) {
       return true;
     }
 
-    return Boolean(
-      request.user?.roleName &&
-      requiredRoles.includes(request.user.roleName),
-    );
+    return requiredRoles.includes(user.roleName);
   }
 }

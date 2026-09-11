@@ -6,9 +6,13 @@ import { PassportModule } from '@nestjs/passport';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { PermissionGuard } from '../common/guards/permission.guard';
+import { CustomerAccessGuard } from '../common/guards/customer-access.guard';
 import { UserModule } from '../modules/user/user.module';
+import { CustomerModule } from '../modules/customer/customer.module';
 import { AttributeModule } from '../modules/attribute/attribute.module';
 import { RolePermissionsModule } from '../modules/role-permissions/role-permissions.module';
+import { LovModule } from '../modules/lov/lov.module';
+import { RegistrationRequestModule } from '../modules/registration-request/registration-request.module';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { RefreshToken } from './entities/refresh-token.entity';
@@ -31,14 +35,18 @@ import { JwtStrategy } from './strategies/jwt.strategy';
       }),
     }),
     UserModule,
+    CustomerModule,
     AttributeModule,
     RolePermissionsModule,
+    LovModule,
+    RegistrationRequestModule,
   ],
   controllers: [AuthController],
   providers: [
     AuthService,
     JwtStrategy,
     { provide: APP_GUARD, useClass: JwtAuthGuard },
+    { provide: APP_GUARD, useClass: CustomerAccessGuard },
     { provide: APP_GUARD, useClass: RolesGuard },
     { provide: APP_GUARD, useClass: PermissionGuard },
   ],

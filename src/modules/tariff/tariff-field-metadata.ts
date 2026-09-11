@@ -25,6 +25,7 @@ export const TARIFF_FIELD_METADATA: FieldMetadataMap = {
   billingServiceFee: { step: 3, label: 'Billing Service Fee', required: false, allowZero: true, min: 0, max: RECURRING_FEE_MAX, format: 'currency' },
   activationFee: { step: 3, label: 'Activation Fee', required: false, allowZero: true, min: 0, max: ONE_TIME_FEE_MAX, format: 'currency' },
   securityDeposit: { step: 3, label: 'Security Deposit', required: false, allowZero: true, min: 0, max: ONE_TIME_FEE_MAX, format: 'currency' },
+  ownerLeaseoutSecurityDeposit: { step: 3, label: 'Owner Lease-out Security Deposit', required: false, allowZero: true, min: 0, max: ONE_TIME_FEE_MAX, format: 'currency' },
   nocFee: { step: 3, label: 'NOC Fee', required: false, allowZero: true, min: 0, max: ONE_TIME_FEE_MAX, format: 'currency' },
   moveOutFee: { step: 3, label: 'Move-Out Fee', required: false, allowZero: true, min: 0, max: ONE_TIME_FEE_MAX, format: 'currency' },
   meterVerificationFee: { step: 3, label: 'Meter Verification Fee', required: false, allowZero: true, min: 0, max: ONE_TIME_FEE_MAX, format: 'currency' },

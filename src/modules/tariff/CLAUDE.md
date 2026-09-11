@@ -1,49 +1,24 @@
 # Tariff Module — Future Implementation Note
 
-## Active-Tariff Edit Scope — Scenario 3 vs Scenario 4 (Pending Dependency)
+## Active-Tariff Edit Scope — resolved: Active is fully read-only
 
-**Business Rule (Pending Dependency)**
+**Current behavior**
 
-As per the Tariff functional specification, an Active tariff has two distinct edit scopes:
+An `active` (approved) tariff cannot be edited in place at all, regardless of whether any
+invoices/billing usage exist against it. `ACTIVE` is not in `EDITABLE_TARIFF_STATUSES`
+(`tariff.constants.ts`) — `TariffService.update()` rejects any attempt to edit it before ever
+inspecting individual fields. The only actions available on an active tariff are Deprecate
+(`deprecate()`) and Create New Version (`newVersion()`), matching the frontend's
+`getTariffActions()` gating.
 
-> - **Scenario 3** — Active tariff, no invoices generated yet: a bounded set of fields is locked
->   (see `TARIFF_ACTIVE_LOCKED_FIELDS`); everything else can still be edited in place.
-> - **Scenario 4** — Active tariff, one or more invoices already generated: the entire tariff must
->   become read-only. No field may be edited in place, regardless of the locked-fields list. The
->   only allowed action is Create New Version.
-
-**Current Status**
-
-- Implemented (`TariffService.update()`, `assertActiveEditAllowed()`, `getActiveLockedFields()`):
-  - Scenario 3's partial field lock, driven by the `TARIFF_ACTIVE_LOCKED_FIELDS` module attribute
-    (Attributes > Tariff Config > "Fields Locked for Active Tariffs").
-  - Non-locked-field edits to an Active tariff bump a minor version and resubmit for Finance
-    approval.
-- Pending:
-  - Detecting whether a tariff has any invoices generated against it (Scenario 4).
-  - Rejecting ALL edits outright once a tariff is in Scenario 4, instead of consulting
-    `TARIFF_ACTIVE_LOCKED_FIELDS` at all.
-
-**Reason**
-
-The current project does not yet include the Billing Engine / Invoice Generation module, so there
-is no reliable way to determine whether a tariff has been used to generate one or more invoices.
-As a result, `TariffService` currently treats **every** Active tariff as Scenario 3 — the
-`TARIFF_ACTIVE_LOCKED_FIELDS` partial lock applies universally, even to tariffs that (once invoice
-tracking exists) would actually be in Scenario 4 and should be fully read-only. This is a
-deliberate, accepted interim behavior, not an oversight — see the TODO comments on
-`TariffService.assertActiveEditAllowed()` and `getActiveLockedFields()`.
-
-**Future Implementation**
-
-When the Billing Engine is implemented:
-
-- Before consulting `TARIFF_ACTIVE_LOCKED_FIELDS`, check whether the tariff has one or more
-  invoices generated against it.
-- If yes (Scenario 4), reject the entire update unconditionally — do not fall through to the
-  field-lock check. Only Create New Version (`newVersion()`) remains available.
-- If no (true Scenario 3), keep today's behavior: consult `TARIFF_ACTIVE_LOCKED_FIELDS` and allow
-  editing every field not on that list.
+This deliberately supersedes an earlier interim design ("Scenario 3 vs Scenario 4") that allowed
+partial in-place editing of an active tariff via a configurable locked-fields list
+(`TARIFF_ACTIVE_LOCKED_FIELDS`, still present as a System Admin attribute and still returned by
+`getFilterMetadata()`/consulted by `TariffCreateForm.tsx`'s `isFieldLocked`, but now unreachable in
+practice since the edit form's own read-only guard — `!existingTariff.isEditable` — already blocks
+entry to the edit screen for any active tariff before that per-field logic would ever run). That
+attribute and the frontend code reading it were intentionally left in place rather than removed, to
+avoid a larger unrelated cleanup; they are inert, not broken.
 
 ## Manual Deprecation — Active Billing Usage Check (Pending Dependency)
 

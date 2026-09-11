@@ -44,16 +44,33 @@ export class PropertyController {
     return this.properties.create(dto, user?.sub);
   }
 
+  // Also CREATE_REGISTRATION_REQUEST/EDIT_REGISTRATION_REQUEST and TARIFF_CREATE/TARIFF_EDIT: same
+  // reasoning as the GET :id route below — Registration creation's unit-selection step and Tariff
+  // creation's applicability picker read this list as reference data, not to manage Property as a
+  // module. Does NOT grant create/edit/delete.
   @Get()
-  @Permission('VIEW_PROPERTY')
+  @Permission('VIEW_PROPERTY', 'CREATE_REGISTRATION_REQUEST', 'EDIT_REGISTRATION_REQUEST', 'TARIFF_CREATE', 'TARIFF_EDIT')
   @ApiOperation({ summary: 'List all properties with pagination and filters' })
   @ApiOkResponse({ type: PropertyListDto, isArray: true, description: 'Paginated list of properties' })
   findAll(@Query() query: PropertyQueryDto) {
     return this.properties.findAll(query);
   }
 
+  // Also VIEW_COMMUNITY: the Communities feature's own property drill-through page
+  // (communities/[id]/properties/[propertyId]) needs this same read-only detail — the Community
+  // module already summarizes each property inline on its own GET :id response
+  // (CommunityDetailDto.properties), so a Community viewer clicking through to see the full detail
+  // is reading data their own feature already anticipates, not managing Property as a module. This
+  // does NOT grant create/edit/delete (still CREATE_PROPERTY/EDIT_PROPERTY/DELETE_PROPERTY only) —
+  // mirrors the same OR-list pattern already used by registration-request/tariff endpoints for
+  // exactly this "read-only cross-module support" case.
+  // Also CREATE_REGISTRATION_REQUEST/EDIT_REGISTRATION_REQUEST: Registration creation's
+  // usePropertiesByIdsQuery re-fetches each selected unit's property detail by id
+  // (RegistrationWizard.tsx) as reference data, not to manage Property as a module. Tariff's
+  // applicability picker only calls the LIST endpoint above, never this by-id route, so
+  // TARIFF_CREATE/TARIFF_EDIT are deliberately not added here.
   @Get(':id')
-  @Permission('VIEW_PROPERTY')
+  @Permission('VIEW_PROPERTY', 'VIEW_COMMUNITY', 'CREATE_REGISTRATION_REQUEST', 'EDIT_REGISTRATION_REQUEST')
   @ApiOperation({ summary: 'Get property detail with stats and units' })
   @ApiOkResponse({ type: PropertyDetailDto })
   @ApiParam({ name: 'id', type: Number })

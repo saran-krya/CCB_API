@@ -52,8 +52,11 @@ export class LovController {
     return this.lovService.findActiveLanguages();
   }
 
+  // No @Permission — LOV values are shared read-only config consumed by ordinary feature pages
+  // (e.g. dropdown options in the registration wizard), not just the LOV management screen. Any
+  // authenticated user can read them (JwtAuthGuard still applies globally); only writes below stay
+  // permission-gated.
   @Get()
-  @Permission('LOV_VIEW')
   @ApiOkResponse({ type: LovValue, isArray: true })
   findByCategory(@Query() query: GetLovDto): Promise<LovValue[]> {
     if (!query.category) return this.lovService.findAll();

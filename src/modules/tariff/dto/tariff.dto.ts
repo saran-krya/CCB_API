@@ -104,6 +104,7 @@ export class CreateTariffDto {
   @IsOptional() @IsNumber() @Min(0) @Max(RECURRING_FEE_MAX) billingServiceFee?: number;
   @IsOptional() @IsNumber() @Min(0) @Max(ONE_TIME_FEE_MAX) activationFee?: number;
   @IsOptional() @IsNumber() @Min(0) @Max(ONE_TIME_FEE_MAX) securityDeposit?: number;
+  @IsOptional() @IsNumber() @Min(0) @Max(ONE_TIME_FEE_MAX) ownerLeaseoutSecurityDeposit?: number;
 
   @IsOptional() @IsEnum(TariffPenaltyType) latePaymentPenaltyType?: TariffPenaltyType;
   @IsOptional()

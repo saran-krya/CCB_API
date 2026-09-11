@@ -51,8 +51,14 @@ export class CommunityController {
     return this.communities.getStats();
   }
 
+  // Also CREATE_REGISTRATION_REQUEST/EDIT_REGISTRATION_REQUEST and TARIFF_CREATE/TARIFF_EDIT:
+  // Registration creation's unit-selection step and Tariff creation's applicability picker both
+  // read this list as reference data to let the user pick a community, not to manage Community as
+  // a module. Does NOT grant create/edit/delete (still CREATE_COMMUNITY/EDIT_COMMUNITY/
+  // DELETE_COMMUNITY only) — mirrors the same OR-list pattern already used by Property/Unit's
+  // GET :id routes for exactly this "read-only cross-module support" case.
   @Get()
-  @Permission('VIEW_COMMUNITY')
+  @Permission('VIEW_COMMUNITY', 'CREATE_REGISTRATION_REQUEST', 'EDIT_REGISTRATION_REQUEST', 'TARIFF_CREATE', 'TARIFF_EDIT')
   @ApiOperation({ summary: 'List all communities with pagination and filters' })
   @ApiOkResponse({ type: CommunityListDto, isArray: true, description: 'Paginated list of communities' })
   findAll(@Query() query: CommunityQueryDto) {

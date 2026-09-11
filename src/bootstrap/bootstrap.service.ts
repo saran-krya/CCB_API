@@ -16,6 +16,7 @@ import { ActionsService } from '../modules/actions/actions.service'
 import { RolePermissionsService } from '../modules/role-permissions/role-permissions.service'
 import { SubModule } from '../modules/sub-modules/entities/sub-module.entity'
 import { SubModulesService } from '../modules/sub-modules/sub-modules.service'
+import { RegistrationDocumentRuleService } from '../modules/registration-document-rule/registration-document-rule.service'
 import { User } from '../modules/user/entities/user.entity'
 import {
   ACTIONS,
@@ -40,6 +41,7 @@ export class BootstrapService implements OnApplicationBootstrap {
     private readonly screensService: ScreensService,
     private readonly actionsService: ActionsService,
     private readonly rolePermissionsService: RolePermissionsService,
+    private readonly registrationDocumentRuleService: RegistrationDocumentRuleService,
   ) {}
 
   async onApplicationBootstrap(): Promise<void> {
@@ -55,6 +57,7 @@ export class BootstrapService implements OnApplicationBootstrap {
         await this.screensService.ensureCriticalDefaults()
         await this.actionsService.ensureCriticalDefaults()
         await this.rolePermissionsService.ensureAdminGrants(ADMIN_GRANT_EXCLUDED_ACTION_CODES)
+        await this.registrationDocumentRuleService.ensureCriticalDefaults()
       } catch (err) {
         this.logger.error('Backfill of critical defaults failed — server will still start', err as Error)
       }
@@ -92,6 +95,7 @@ export class BootstrapService implements OnApplicationBootstrap {
     await this.attributeService.seedValues(manager)
     const roleMap = await this.seedRoles(manager, lovMap)
     await this.seedSuperAdmin(manager, roleMap)
+    await this.registrationDocumentRuleService.ensureCriticalDefaults()
   }
 
 

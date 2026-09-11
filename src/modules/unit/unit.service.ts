@@ -1,13 +1,16 @@
 import {
   ConflictException,
+  forwardRef,
+  Inject,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, In, Repository } from 'typeorm';
 import { AuditService } from '../../audit/audit.service';
 import { paginate } from '../../common/utils/pagination.util';
 import { PropertyService } from '../property/property.service';
+import { CustomerService } from '../customer/customer.service';
 import {
   CreateUnitDto,
   UnitQueryDto,
@@ -16,6 +19,7 @@ import {
 } from './dto/create-unit.dto';
 import { UnitDetailDto, UnitListDto } from './dto/unit-response.dto';
 import { OccupancyStatus, Unit, UnitStatus } from './entities/unit.entity';
+import { MyMeterDetailDto } from '../meter/dto/my-meter-detail.dto';
 
 @Injectable()
 export class UnitService {
@@ -23,6 +27,8 @@ export class UnitService {
     @InjectRepository(Unit)
     private readonly units: Repository<Unit>,
     private readonly properties: PropertyService,
+    @Inject(forwardRef(() => CustomerService))
+    private readonly customers: CustomerService,
     private readonly audit: AuditService,
     private readonly dataSource: DataSource,
   ) {}
@@ -117,6 +123,10 @@ export class UnitService {
       relations: { property: { community: true }, subMeter: { masterMeter: true } },
     });
     if (!unit) throw new NotFoundException('Unit not found');
+    // Composed here (not left to a separate GET /customers call from the caller) specifically so
+    // the Communities feature's own unit drill-through page never needs VIEW_CUSTOMER at all — see
+    // CustomerService.findByUnitId's own doc comment for the full reasoning.
+    const customers = await this.customers.findByUnitId(id);
     return {
       id: unit.id,
       unitNumber: unit.unitNumber,
@@ -146,7 +156,72 @@ export class UnitService {
       propertyCode: unit.property.code,
       communityId: unit.property.community.id,
       communityName: unit.property.community.name,
+      customers,
     };
+  }
+
+  /**
+   * The "Meter Details" shape a Customer actually needs — deliberately NOT UnitDetailDto (which
+   * only carries meter id/code pairs for the Portfolio/Profile pages). Same query shape as findOne
+   * (subMeter.masterMeter is already a real, always-loadable relation — see SubMeter/MasterMeter's
+   * own doc comments), just returning the meter's own fields instead of unit fields. Master Meter
+   * stays minimal (code + status only) — it has no unit relation of its own, so nothing beyond "the
+   * meter upstream of yours, and whether it's active" is genuinely useful here.
+   */
+  async findMeterDetail(unitId: number): Promise<MyMeterDetailDto> {
+    const unit = await this.units.findOne({
+      where: { id: unitId },
+      relations: { subMeter: { masterMeter: true } },
+    });
+    if (!unit) throw new NotFoundException('Unit not found');
+
+    return {
+      unitId: unit.id,
+      unitNumber: unit.unitNumber,
+      subMeter: unit.subMeter
+        ? {
+            id: unit.subMeter.id,
+            businessCode: unit.subMeter.businessCode ?? null,
+            status: unit.subMeter.status,
+            floor: unit.subMeter.floor ?? null,
+            meterMake: unit.subMeter.meterMake ?? null,
+            meterModel: unit.subMeter.meterModel ?? null,
+            installationDate: unit.subMeter.installationDate ?? null,
+          }
+        : null,
+      masterMeter: unit.subMeter?.masterMeter
+        ? {
+            id: unit.subMeter.masterMeter.id,
+            businessCode: unit.subMeter.masterMeter.businessCode ?? null,
+            status: unit.subMeter.masterMeter.status,
+          }
+        : null,
+    };
+  }
+
+  /**
+   * Display-label lookup only — never a substitute for the point-in-time propertyId/communityId
+   * snapshot RegistrationRequestUnit stores (see that entity's own doc comment on why it holds no
+   * live relation). This just resolves current unit/property/community NAMES for showing a
+   * human-readable label; unresolvable ids (a unit since deleted) are simply absent from the map,
+   * never guessed or defaulted.
+   */
+  async findLabelsByIds(unitIds: number[]): Promise<Record<number, { unitNumber: string; propertyName: string; communityName: string }>> {
+    const result: Record<number, { unitNumber: string; propertyName: string; communityName: string }> = {};
+    if (!unitIds.length) return result;
+
+    const units = await this.units.find({
+      where: { id: In([...new Set(unitIds)]) },
+      relations: { property: { community: true } },
+    });
+    for (const u of units) {
+      result[u.id] = {
+        unitNumber: u.unitNumber,
+        propertyName: u.property?.name ?? '',
+        communityName: u.property?.community?.name ?? '',
+      };
+    }
+    return result;
   }
 
   async update(id: number, dto: UpdateUnitDto, actorId?: number) {
@@ -218,6 +293,12 @@ export class UnitService {
     });
 
     return saved;
+  }
+
+  async findOneEntity(id: number): Promise<Unit> {
+    const unit = await this.units.findOne({ where: { id } });
+    if (!unit) throw new NotFoundException('Unit not found');
+    return unit;
   }
 
   async remove(id: number, actorId?: number) {

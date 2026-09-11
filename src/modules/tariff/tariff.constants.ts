@@ -54,12 +54,13 @@ export const TARIFF_SORT_COLUMN_MAP: Record<string, string> = {
   createdAt: 'version.createdAt',
 };
 
+// ACTIVE is deliberately excluded — an approved tariff is read-only. The only actions available on
+// an active tariff are Deprecate and Create New Version; no in-place edits, ever.
 export const EDITABLE_TARIFF_STATUSES = new Set([
   TariffStatus.DRAFT,
   TariffStatus.REQUEST_FOR_CORRECTION,
   TariffStatus.REJECTED,
   TariffStatus.INACTIVE,
-  TariffStatus.ACTIVE,
 ]);
 
 export const SUBMITTABLE_TARIFF_STATUSES = new Set([

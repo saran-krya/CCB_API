@@ -92,6 +92,9 @@ export class TariffVersion extends BaseEntity {
   @Column({ name: 'security_deposit', type: 'decimal', precision: 10, scale: 2, default: 0 })
   securityDeposit!: number;
 
+  @Column({ name: 'owner_leaseout_security_deposit', type: 'decimal', precision: 10, scale: 2, default: 0 })
+  ownerLeaseoutSecurityDeposit!: number;
+
   @Column({
     name: 'late_payment_penalty_type',
     type: 'enum',

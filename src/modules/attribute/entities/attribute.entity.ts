@@ -44,6 +44,13 @@ export class Attribute extends BaseEntity {
   @Column({ type: 'text' })
   value!: string;
 
+  /** Admin-configured Customer-facing override — NULL means no override is configured, so a
+   *  Customer-facing read falls back to `value` (see AttributeService.getCustomerValueByKey).
+   *  Staff/User reads (getValueByKey) never look at this column at all. Reused for any attribute
+   *  that genuinely needs Staff/User vs Customer configured independently — never a second key. */
+  @Column({ name: 'customer_value', type: 'text', nullable: true })
+  customerValue!: string | null;
+
   @Column({ name: 'true_label', type: 'varchar', length: 100, nullable: true })
   trueLabel!: string | null;
 

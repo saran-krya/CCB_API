@@ -1,7 +1,7 @@
 import { CanActivate, ExecutionContext, Injectable } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { PERMISSION_KEY } from '../decorators/permission.decorator';
-import { AuthenticatedUser } from '../../auth/interfaces/authenticated-user.interface';
+import { AuthPrincipal } from '../../auth/interfaces/authenticated-user.interface';
 import { RolePermissionsService } from '../../modules/role-permissions/role-permissions.service';
 
 @Injectable()
@@ -21,10 +21,15 @@ export class PermissionGuard implements CanActivate {
       return true;
     }
 
-    const request = context.switchToHttp().getRequest<{ user?: AuthenticatedUser }>();
+    const request = context.switchToHttp().getRequest<{ user?: AuthPrincipal }>();
     const user = request.user;
 
-    if (!user) {
+    // A customer session has no Role/RolePermission row at all — every @Permission-guarded route
+    // today is staff-only (RBAC action codes like VIEW_CUSTOMER, CREATE_REGISTRATION_REQUEST are
+    // all staff actions), so a customer token can never legitimately satisfy one. Denying here
+    // (rather than calling roleHasAction with an undefined roleId) is deliberate and explicit, not
+    // an accident of missing data.
+    if (!user || user.type === 'customer') {
       return false;
     }
 

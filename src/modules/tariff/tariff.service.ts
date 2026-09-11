@@ -8,7 +8,6 @@ import { BUSINESS_CODE_PREFIXES, generateBusinessCode } from '../../common/utils
 import {
   assertNotSelfReview,
   nextMajorVersion,
-  nextMinorVersion,
 } from '../../common/utils/versioning.util';
 import { LovService } from '../lov/lov.service';
 import { Property } from '../property/entities/property.entity';
@@ -57,6 +56,8 @@ const VERSION_RESPONSE_RELATIONS = [
   'properties',
   'properties.community',
   'units',
+  'units.property',
+  'units.property.community',
   'parentVersion',
 ];
 
@@ -403,6 +404,7 @@ export class TariffService {
         billingServiceFee: dto.billingServiceFee ?? 0,
         activationFee: dto.activationFee ?? 0,
         securityDeposit: dto.securityDeposit ?? 0,
+        ownerLeaseoutSecurityDeposit: dto.ownerLeaseoutSecurityDeposit ?? 0,
         latePaymentPenaltyType: dto.latePaymentPenaltyType ?? TariffPenaltyType.FLAT,
         latePaymentPenalty: dto.latePaymentPenalty ?? 0,
         disconnectionFee: dto.disconnectionFee ?? 0,
@@ -463,13 +465,10 @@ export class TariffService {
       throw new BadRequestException(
         version.status === TariffStatus.PENDING
           ? 'A tariff awaiting Finance approval is read-only — approve, reject, or wait for a decision.'
-          : `A tariff with status "${this.labelize(version.status)}" is read-only and cannot be edited.`,
+          : version.status === TariffStatus.ACTIVE
+            ? 'An approved tariff is read-only — deprecate it or create a new version to make changes.'
+            : `A tariff with status "${this.labelize(version.status)}" is read-only and cannot be edited.`,
       );
-    }
-
-    const originalStatus = version.status;
-    if (originalStatus === TariffStatus.ACTIVE) {
-      await this.assertActiveEditAllowed(dto);
     }
 
     if (dto.propertyType) {
@@ -495,6 +494,7 @@ export class TariffService {
         billingServiceFee: dto.billingServiceFee ?? version.billingServiceFee,
         activationFee: dto.activationFee ?? version.activationFee,
         securityDeposit: dto.securityDeposit ?? version.securityDeposit,
+        ownerLeaseoutSecurityDeposit: dto.ownerLeaseoutSecurityDeposit ?? version.ownerLeaseoutSecurityDeposit,
         latePaymentPenaltyType: dto.latePaymentPenaltyType ?? version.latePaymentPenaltyType,
         latePaymentPenalty: dto.latePaymentPenalty ?? version.latePaymentPenalty,
         disconnectionFee: dto.disconnectionFee ?? version.disconnectionFee,
@@ -523,15 +523,6 @@ export class TariffService {
         version.units = await this.findUnitsOrFail(manager, dto.unitIds);
       } else if (applicability !== TariffApplicability.UNIT) {
         version.units = [];
-      }
-
-      if (originalStatus === TariffStatus.ACTIVE) {
-        version.version = nextMinorVersion(version.version);
-        version.status = TariffStatus.PENDING;
-        version.approvedBy = null;
-        version.approvalDate = null;
-        version.submittedOn = new Date().toISOString().slice(0, 10);
-        if (actorId) version.submittedBy = { id: actorId } as any;
       }
 
       const saved = await manager.save(TariffVersion, version);
@@ -726,6 +717,7 @@ export class TariffService {
         billingServiceFee: source.billingServiceFee,
         activationFee: source.activationFee,
         securityDeposit: source.securityDeposit,
+        ownerLeaseoutSecurityDeposit: source.ownerLeaseoutSecurityDeposit,
         latePaymentPenaltyType: source.latePaymentPenaltyType,
         latePaymentPenalty: source.latePaymentPenalty,
         disconnectionFee: source.disconnectionFee,
@@ -803,16 +795,6 @@ export class TariffService {
       .filter((field): field is keyof UpdateTariffDto => LOCKABLE_TARIFF_FIELDS.has(field));
 
     return fields.length ? fields : ACTIVE_LOCKED_TARIFF_FIELDS;
-  }
-
-  private async assertActiveEditAllowed(dto: UpdateTariffDto) {
-    const lockedFields = await this.getActiveLockedFields();
-    const locked = lockedFields.filter((field) => dto[field] !== undefined);
-    if (locked.length) {
-      throw new BadRequestException(
-        `Cannot change ${locked.join(', ')} on an active tariff — these require creating a new version first.`,
-      );
-    }
   }
 
   private async getDefaultVat(): Promise<number> {
@@ -922,6 +904,7 @@ export class TariffService {
       billingServiceFee: Number(version.billingServiceFee),
       activationFee: Number(version.activationFee),
       securityDeposit: Number(version.securityDeposit),
+      ownerLeaseoutSecurityDeposit: Number(version.ownerLeaseoutSecurityDeposit),
       latePaymentPenaltyType: version.latePaymentPenaltyType,
       latePaymentPenalty: Number(version.latePaymentPenalty),
       disconnectionFee: Number(version.disconnectionFee),
@@ -946,13 +929,73 @@ export class TariffService {
       approvalDate: version.approvalDate,
       rejectionReason: version.rejectionReason,
       rejectionNotes: version.rejectionNotes,
-      properties: (version.properties ?? []).map((property) => ({ id: property.id, name: property.name })),
-      units: (version.units ?? []).map((unit) => ({ id: unit.id, unitNumber: unit.unitNumber })),
+      properties: (version.properties ?? []).map((property) => ({
+        id: property.id,
+        name: property.name,
+        communityId: property.community?.id ?? null,
+        communityName: property.community?.name ?? null,
+      })),
+      units: (version.units ?? []).map((unit) => ({
+        id: unit.id,
+        unitNumber: unit.unitNumber,
+        propertyId: unit.property?.id ?? null,
+        propertyName: unit.property?.name ?? null,
+        communityId: unit.property?.community?.id ?? null,
+        communityName: unit.property?.community?.name ?? null,
+      })),
       isComplete: validationIssues.length === 0,
       validationIssues,
       isEditable: EDITABLE_TARIFF_STATUSES.has(version.status),
       isSubmittable: SUBMITTABLE_TARIFF_STATUSES.has(version.status),
       createdAt: version.createdAt,
     };
+  }
+
+  /**
+   * Resolve the single ACTIVE tariff version that governs a given unit, for the Registration
+   * module's deposit-gate calc (spec §6.3, §10). Precedence: unit-level scope wins over
+   * property-level, which wins over a global (estate-wide) tariff for the unit's propertyType.
+   * Returns `null` when nothing active covers the unit — the caller must treat that as a genuine
+   * "no tariff resolves" block, never fall back to a guessed amount.
+   */
+  async resolveForUnit(unitId: number): Promise<TariffVersion | null> {
+    const unit = await this.unitRepo.findOne({
+      where: { id: unitId },
+      relations: { property: true },
+    });
+    if (!unit) return null;
+
+    // A tariff's `propertyType` is drawn from the TARIFF_UNIT_TYPE LOV (residential/commercial —
+    // see assertValidUnitType), the same coarse classification as Property.propertyType — NOT
+    // Unit.unitType (apartment/studio/office/shop/garage), which is a disjoint value set that can
+    // never match here. Every scope tier resolves through the unit's OWNING PROPERTY's type.
+    const propertyType = unit.property.propertyType;
+
+    const unitScoped = await this.versions
+      .createQueryBuilder('version')
+      .innerJoin('version.units', 'unit', 'unit.id = :unitId', { unitId })
+      .where('version.status = :status', { status: TariffStatus.ACTIVE })
+      .andWhere('version.applicability = :applicability', { applicability: TariffApplicability.UNIT })
+      .andWhere('version.propertyType = :propertyType', { propertyType })
+      .getOne();
+    if (unitScoped) return unitScoped;
+
+    const propertyScoped = await this.versions
+      .createQueryBuilder('version')
+      .innerJoin('version.properties', 'property', 'property.id = :propertyId', { propertyId: unit.property.id })
+      .where('version.status = :status', { status: TariffStatus.ACTIVE })
+      .andWhere('version.applicability = :applicability', { applicability: TariffApplicability.PROPERTY })
+      .andWhere('version.propertyType = :propertyType', { propertyType })
+      .getOne();
+    if (propertyScoped) return propertyScoped;
+
+    const globalScoped = await this.versions.findOne({
+      where: {
+        status: TariffStatus.ACTIVE,
+        applicability: TariffApplicability.GLOBAL,
+        propertyType,
+      },
+    });
+    return globalScoped ?? null;
   }
 }

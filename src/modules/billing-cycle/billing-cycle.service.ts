@@ -110,7 +110,7 @@ export class BillingCycleService {
 
   private async countBillsDueThisWeek(): Promise<number> {
     const cycles = await this.versions.find({
-      select: ['readingEndDay', 'billIssueDays', 'billDueDays'],
+      select: ['readingStartDay', 'readingEndDay', 'billGenerationDays', 'billIssueDays', 'billDueDays'],
       where: { status: BillingCycleStatus.ACTIVE },
     });
     const now = new Date();
@@ -120,27 +120,57 @@ export class BillingCycleService {
 
     let count = 0;
     for (const cycle of cycles) {
-      const dueDate = this.computeBillDueDateObj(cycle);
-      if (dueDate && dueDate >= weekStart && dueDate <= weekEnd) count++;
+      const dates = this.computeBillCycleDates(cycle);
+      if (dates && dates.dueDate >= weekStart && dates.dueDate <= weekEnd) count++;
     }
     return count;
   }
 
-  private computeBillDueDateObj(cycle: Pick<BillingCycleVersion, 'readingEndDay' | 'billIssueDays' | 'billDueDays'>): Date | null {
-    if (!cycle.readingEndDay) return null;
+  /** Resolves the full reading period (start + end) for a MONTHLY cycle, anchored on the period's
+   *  START falling in the current calendar month. readingStartDay/readingEndDay are day-of-month
+   *  integers with no stored year/month — a monthly cycle always spans exactly one calendar month
+   *  from start to end, so the end date lands in the month AFTER the start whenever
+   *  readingEndDay <= readingStartDay (covers both "same day, e.g. 1 -> 1" — a full month, like
+   *  01 Sep -> 01 Oct — and "wraps past month-end, e.g. 11 -> 10" — a sub-month window, like
+   *  11 May -> 10 Jun); otherwise both days fall in the same month (e.g. 5 -> 20 within one month).
+   *  new Date(year, month, day) itself correctly rolls year/month boundaries and different month
+   *  lengths (e.g. month index 12 becomes January of the next year), so no manual clamping is
+   *  needed beyond choosing the right month offset. This is the SINGLE source of "reading end" —
+   *  every downstream date (generation/issue/due) must offset from THIS end date, not recompute
+   *  its own, or they silently drift apart the way billIssueDate/billDueDate previously did.
+   */
+  private currentReadingPeriod(readingStartDay: number, readingEndDay: number): { start: Date; end: Date } {
     const now = new Date();
-    const year = now.getFullYear();
-    const month = now.getMonth();
-    const readingEndDate = new Date(year, month, cycle.readingEndDay);
-    const billIssueDate = new Date(readingEndDate);
-    billIssueDate.setDate(billIssueDate.getDate() + (cycle.billIssueDays ?? 0));
-    const billDueDate = new Date(billIssueDate);
-    billDueDate.setDate(billDueDate.getDate() + (cycle.billDueDays ?? 0));
-    return billDueDate;
+    const start = new Date(now.getFullYear(), now.getMonth(), readingStartDay);
+    const endMonthOffset = readingEndDay <= readingStartDay ? 1 : 0;
+    const end = new Date(start.getFullYear(), start.getMonth() + endMonthOffset, readingEndDay);
+    return { start, end };
   }
 
-  private formatBillDueDate(cycle: Pick<BillingCycleVersion, 'readingEndDay' | 'billIssueDays' | 'billDueDays'>): string | null {
-    const d = this.computeBillDueDateObj(cycle);
+  private addDays(d: Date, days: number): Date {
+    const result = new Date(d);
+    result.setDate(result.getDate() + days);
+    return result;
+  }
+
+  /** Business rule chain, all offsetting from the SAME resolved reading-end date:
+   *  Bill Generation = Reading End + billGenerationDays
+   *  Bill Issue      = Reading End + billIssueDays
+   *  Payment Due     = Bill Issue  + billDueDays
+   *  (Bill Generation and Bill Issue are independent offsets from Reading End, not chained off
+   *  each other — matches the Billing Cycle configuration screen's own field descriptions.) */
+  private computeBillCycleDates(
+    cycle: Pick<BillingCycleVersion, 'readingStartDay' | 'readingEndDay' | 'billGenerationDays' | 'billIssueDays' | 'billDueDays'>,
+  ): { periodStart: Date; periodEnd: Date; generationDate: Date; issueDate: Date; dueDate: Date } | null {
+    if (!cycle.readingStartDay || !cycle.readingEndDay) return null;
+    const { start: periodStart, end: periodEnd } = this.currentReadingPeriod(cycle.readingStartDay, cycle.readingEndDay);
+    const generationDate = this.addDays(periodEnd, cycle.billGenerationDays ?? 0);
+    const issueDate = this.addDays(periodEnd, cycle.billIssueDays ?? 0);
+    const dueDate = this.addDays(issueDate, cycle.billDueDays ?? 0);
+    return { periodStart, periodEnd, generationDate, issueDate, dueDate };
+  }
+
+  private formatDate(d: Date | null | undefined): string | null {
     if (!d) return null;
     const y = d.getFullYear();
     const m = String(d.getMonth() + 1).padStart(2, '0');
@@ -156,6 +186,7 @@ export class BillingCycleService {
     const name = (user?: { firstName: string; lastName: string } | null) =>
       user ? `${user.firstName} ${user.lastName}`.trim() : null;
     const master = v.master;
+    const dates = this.computeBillCycleDates(v);
 
     return {
       id: v.id,
@@ -172,7 +203,11 @@ export class BillingCycleService {
       billGenerationDays: v.billGenerationDays,
       billIssueDays: v.billIssueDays,
       billDueDays: v.billDueDays,
-      billDueDate: this.formatBillDueDate(v),
+      billCyclePeriodStart: this.formatDate(dates?.periodStart),
+      billCyclePeriodEnd: this.formatDate(dates?.periodEnd),
+      billGenerationDate: this.formatDate(dates?.generationDate),
+      billIssueDate: this.formatDate(dates?.issueDate),
+      billDueDate: this.formatDate(dates?.dueDate),
       status: v.status,
       version: v.version,
       parentBillingCycleId: v.parentVersion?.id ?? null,
@@ -306,6 +341,15 @@ export class BillingCycleService {
       throw new NotFoundException('Billing cycle not found for this property');
     }
     return this.findOne(master.currentVersionId);
+  }
+
+  /** Non-throwing counterpart to `findByProperty` — returns `null` rather than a 404 when no
+   *  billing cycle is configured for the property, so a caller doing an eligibility check (e.g.
+   *  Registration's unit-eligibility validation) can test for presence without catching an
+   *  exception as control flow. Mirrors `TariffService.resolveForUnit`'s null-on-unresolved shape. */
+  async resolveForProperty(propertyId: number): Promise<boolean> {
+    const master = await this.masters.findOne({ where: { propertyId } });
+    return !!master?.currentVersionId;
   }
 
   async update(id: number, dto: UpdateBillingCycleDto, actorId?: number) {

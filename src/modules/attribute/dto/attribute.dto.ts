@@ -37,6 +37,15 @@ export class UpdateAttributeDto {
   @IsString()
   value?: string;
 
+  @ApiPropertyOptional({
+    description:
+      'Admin-configured Customer-facing override — null/omitted means no override (Customer falls ' +
+      'back to `value`). Same value-type validation as `value`.',
+  })
+  @IsOptional()
+  @IsString()
+  customerValue?: string | null;
+
   @ApiPropertyOptional({ description: 'Required when editing a cycle-sensitive parameter' })
   @IsOptional()
   @IsString()

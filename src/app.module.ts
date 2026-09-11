@@ -1,15 +1,18 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { EventEmitterModule } from '@nestjs/event-emitter';
 import { ScheduleModule } from '@nestjs/schedule';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AuditModule } from './audit/audit.module';
 import { AuthModule } from './auth/auth.module';
 import { BootstrapModule } from './bootstrap/bootstrap.module';
+import { MailModule } from './mail/mail.module';
 import { typeOrmConfig } from './config/typeorm.config';
 import { CommunityModule } from './modules/community/community.module';
 import { PropertyModule } from './modules/property/property.module';
 import { RoleModule } from './modules/role/role.module';
 import { UnitModule } from './modules/unit/unit.module';
+import { CustomerModule } from './modules/customer/customer.module';
 import { UserModule } from './modules/user/user.module';
 import { SubModulesModule } from './modules/sub-modules/sub-modules.module';
 import { RolePermissionsModule } from './modules/role-permissions/role-permissions.module';
@@ -25,19 +28,26 @@ import { TariffModule } from './modules/tariff/tariff.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { MeterModule } from './modules/meter/meter.module';
 import { SftpModule } from './modules/sftp/sftp.module';
+import { RegistrationDocumentRuleModule } from './modules/registration-document-rule/registration-document-rule.module';
+import { RegistrationRequestModule } from './modules/registration-request/registration-request.module';
+import { OcrModule } from './modules/ocr/ocr.module';
+import { CustomerPortalModule } from './modules/customer-portal/customer-portal.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
+    EventEmitterModule.forRoot(),
     ScheduleModule.forRoot(),
     TypeOrmModule.forRootAsync(typeOrmConfig),
     AuditModule,
+    MailModule,
     AuthModule,
     RoleModule,
     UserModule,
     CommunityModule,
     PropertyModule,
     UnitModule,
+    CustomerModule,
     PModulesModule,
     SubModulesModule,
     ActionsModule,
@@ -52,7 +62,11 @@ import { SftpModule } from './modules/sftp/sftp.module';
     DashboardModule,
     MeterModule,
     SftpModule,
+    RegistrationDocumentRuleModule,
+    RegistrationRequestModule,
+    OcrModule,
     BootstrapModule,
+    CustomerPortalModule,
   ],
 })
 export class AppModule {}

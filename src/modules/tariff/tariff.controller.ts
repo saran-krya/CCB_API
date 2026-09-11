@@ -33,7 +33,7 @@ export class TariffController {
   }
 
   @Get('metaFilters')
-  @Permission('TARIFF_VIEW')
+  @Permission('TARIFF_VIEW', 'TARIFF_APPROVAL_VIEW')
   @ApiOperation({ summary: 'Get filter metadata for the tariff list and create-form UI' })
   getFilterMetadata() {
     return this.tariffs.getFilterMetadata();
@@ -47,14 +47,14 @@ export class TariffController {
   }
 
   @Get()
-  @Permission('TARIFF_VIEW')
+  @Permission('TARIFF_VIEW', 'TARIFF_APPROVAL_VIEW')
   @ApiOperation({ summary: 'List tariffs with pagination, search, sort and filters' })
   findAll(@Query() query: TariffQueryDto) {
     return this.tariffs.findAll(query);
   }
 
   @Get(':id')
-  @Permission('TARIFF_VIEW')
+  @Permission('TARIFF_VIEW', 'TARIFF_APPROVAL_VIEW')
   @ApiOperation({ summary: 'Get tariff detail by ID' })
   @ApiParam({ name: 'id', type: Number })
   findOne(@Param('id', ParseIntPipe) id: number) {
@@ -62,7 +62,7 @@ export class TariffController {
   }
 
   @Get(':id/versions')
-  @Permission('TARIFF_VIEW')
+  @Permission('TARIFF_VIEW', 'TARIFF_APPROVAL_VIEW')
   @ApiOperation({ summary: "Get every version of this tariff's lineage, oldest first" })
   @ApiParam({ name: 'id', type: Number })
   getVersionHistory(@Param('id', ParseIntPipe) id: number) {
@@ -97,16 +97,16 @@ export class TariffController {
   }
 
   @Patch(':id/approve')
-  @Permission('TARIFF_APPROVE')
-  @ApiOperation({ summary: 'Approve a pending tariff (requires the TARIFF_APPROVE grant)' })
+  @Permission('TARIFF_APPROVE', 'TARIFF_APPROVAL_APPROVE')
+  @ApiOperation({ summary: 'Approve a pending tariff (requires TARIFF_APPROVE or TARIFF_APPROVAL_APPROVE)' })
   @ApiParam({ name: 'id', type: Number })
   approve(@Param('id', ParseIntPipe) id: number, @CurrentUser() user?: AuthenticatedUser) {
     return this.tariffs.approve(id, user?.sub);
   }
 
   @Patch(':id/reject')
-  @Permission('TARIFF_REJECT')
-  @ApiOperation({ summary: 'Reject a pending tariff (requires the TARIFF_REJECT grant)' })
+  @Permission('TARIFF_REJECT', 'TARIFF_APPROVAL_REJECT')
+  @ApiOperation({ summary: 'Reject a pending tariff (requires TARIFF_REJECT or TARIFF_APPROVAL_REJECT)' })
   @ApiParam({ name: 'id', type: Number })
   reject(
     @Param('id', ParseIntPipe) id: number,

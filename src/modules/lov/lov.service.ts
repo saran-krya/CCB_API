@@ -5,6 +5,54 @@ import { CreateLovDto, UpdateLovDto } from './dto/lov.dto';
 import { LovCategory } from './entities/lov-category.entity';
 import { LovValue } from './entities/lov-value.entity';
 
+// Nationality list — kept separate from the main LOV_SEED literal purely for readability given its
+// size (~195 rows); merged into LOV_SEED below like every other category. Codes are ISO 3166-1
+// alpha-2 country codes; labels are the nationality adjective (what a registration form displays),
+// not the country name.
+const NATIONALITY_SEED: {
+  category: string;
+  code: string;
+  label: string;
+  displayOrder: number;
+}[] = [
+  'Afghan|AF', 'Albanian|AL', 'Algerian|DZ', 'American|US', 'Andorran|AD', 'Angolan|AO',
+  'Argentine|AR', 'Armenian|AM', 'Australian|AU', 'Austrian|AT', 'Azerbaijani|AZ', 'Bahamian|BS',
+  'Bahraini|BH', 'Bangladeshi|BD', 'Barbadian|BB', 'Belarusian|BY', 'Belgian|BE', 'Belizean|BZ',
+  'Beninese|BJ', 'Bhutanese|BT', 'Bolivian|BO', 'Bosnian|BA', 'Motswana|BW', 'Brazilian|BR',
+  'Bruneian|BN', 'Bulgarian|BG', 'Burkinabe|BF', 'Burmese|MM', 'Burundian|BI', 'Cambodian|KH',
+  'Cameroonian|CM', 'Canadian|CA', 'Cape Verdean|CV', 'Central African|CF', 'Chadian|TD',
+  'Chilean|CL', 'Chinese|CN', 'Colombian|CO', 'Comoran|KM', 'Congolese|CG', 'Costa Rican|CR',
+  'Croatian|HR', 'Cuban|CU', 'Cypriot|CY', 'Czech|CZ', 'Danish|DK', 'Djiboutian|DJ', 'Dominican|DO',
+  'Dutch|NL', 'Timorese|TL', 'Ecuadorian|EC', 'Egyptian|EG', 'Emirati|AE', 'Salvadoran|SV',
+  'Equatorial Guinean|GQ', 'Eritrean|ER', 'Estonian|EE', 'Ethiopian|ET', 'Fijian|FJ', 'Finnish|FI',
+  'French|FR', 'Gabonese|GA', 'Gambian|GM', 'Georgian|GE', 'German|DE', 'Ghanaian|GH', 'Greek|GR',
+  'Grenadian|GD', 'Guatemalan|GT', 'Guinean|GN', 'Bissau-Guinean|GW', 'Guyanese|GY', 'Haitian|HT',
+  'Honduran|HN', 'Hungarian|HU', 'Icelandic|IS', 'Indian|IN', 'Indonesian|ID', 'Iranian|IR',
+  'Iraqi|IQ', 'Irish|IE', 'Israeli|IL', 'Italian|IT', 'Ivorian|CI', 'Jamaican|JM', 'Japanese|JP',
+  'Jordanian|JO', 'Kazakhstani|KZ', 'Kenyan|KE', 'I-Kiribati|KI', 'Kuwaiti|KW', 'Kyrgyzstani|KG',
+  'Lao|LA', 'Latvian|LV', 'Lebanese|LB', 'Basotho|LS', 'Liberian|LR', 'Libyan|LY',
+  'Liechtensteiner|LI', 'Lithuanian|LT', 'Luxembourgish|LU', 'Malagasy|MG', 'Malawian|MW',
+  'Malaysian|MY', 'Maldivian|MV', 'Malian|ML', 'Maltese|MT', 'Marshallese|MH', 'Mauritanian|MR',
+  'Mauritian|MU', 'Mexican|MX', 'Micronesian|FM', 'Moldovan|MD', 'Monacan|MC', 'Mongolian|MN',
+  'Montenegrin|ME', 'Moroccan|MA', 'Mozambican|MZ', 'Namibian|NA', 'Nauruan|NR', 'Nepali|NP',
+  'New Zealander|NZ', 'Nicaraguan|NI', 'Nigerien|NE', 'Nigerian|NG', 'North Korean|KP',
+  'North Macedonian|MK', 'Norwegian|NO', 'Omani|OM', 'Pakistani|PK', 'Palauan|PW',
+  'Palestinian|PS', 'Panamanian|PA', 'Papua New Guinean|PG', 'Paraguayan|PY', 'Peruvian|PE',
+  'Filipino|PH', 'Polish|PL', 'Portuguese|PT', 'Qatari|QA', 'Romanian|RO', 'Russian|RU',
+  'Rwandan|RW', 'Kittitian|KN', 'Saint Lucian|LC', 'Vincentian|VC', 'Samoan|WS', 'Sammarinese|SM',
+  'Sao Tomean|ST', 'Saudi|SA', 'Senegalese|SN', 'Serbian|RS', 'Seychellois|SC', 'Sierra Leonean|SL',
+  'Singaporean|SG', 'Slovak|SK', 'Slovenian|SI', 'Solomon Islander|SB', 'Somali|SO',
+  'South African|ZA', 'South Korean|KR', 'South Sudanese|SS', 'Spanish|ES', 'Sri Lankan|LK',
+  'Sudanese|SD', 'Surinamese|SR', 'Swazi|SZ', 'Swedish|SE', 'Swiss|CH', 'Syrian|SY',
+  'Taiwanese|TW', 'Tajikistani|TJ', 'Tanzanian|TZ', 'Thai|TH', 'Togolese|TG', 'Tongan|TO',
+  'Trinidadian|TT', 'Tunisian|TN', 'Turkish|TR', 'Turkmen|TM', 'Tuvaluan|TV', 'Ugandan|UG',
+  'Ukrainian|UA', 'British|GB', 'Uruguayan|UY', 'Uzbekistani|UZ', 'Ni-Vanuatu|VU', 'Vatican|VA',
+  'Venezuelan|VE', 'Vietnamese|VN', 'Yemeni|YE', 'Zambian|ZM', 'Zimbabwean|ZW',
+].map((entry, i) => {
+  const [label, code] = entry.split('|');
+  return { category: 'NATIONALITY', code: code.toLowerCase(), label, displayOrder: i + 1 };
+});
+
 const LOV_SEED: {
   category: string;
   code: string;
@@ -42,6 +90,50 @@ const LOV_SEED: {
   { category: 'BILLING_CYCLE_DEPRECATION_REASON', code: 'other',                 label: 'Other',                       displayOrder: 5 },
   { category: 'LANGUAGE', code: 'en', label: 'English',  displayOrder: 1, direction: 'ltr', localeCode: 'en-US', isSystem: true },
   { category: 'LANGUAGE', code: 'ar', label: 'العربية', displayOrder: 2, direction: 'rtl', localeCode: 'ar-AE', isSystem: true },
+
+  { category: 'SALUTATION', code: 'mr', label: 'Mr', displayOrder: 1 },
+  { category: 'SALUTATION', code: 'mrs', label: 'Mrs', displayOrder: 2 },
+  { category: 'SALUTATION', code: 'ms', label: 'Ms', displayOrder: 3 },
+  { category: 'SALUTATION', code: 'dr', label: 'Dr', displayOrder: 4 },
+
+  { category: 'MARITAL_STATUS', code: 'single', label: 'Single', displayOrder: 1 },
+  { category: 'MARITAL_STATUS', code: 'married', label: 'Married', displayOrder: 2 },
+  { category: 'MARITAL_STATUS', code: 'divorced', label: 'Divorced', displayOrder: 3 },
+  { category: 'MARITAL_STATUS', code: 'widowed', label: 'Widowed', displayOrder: 4 },
+
+  { category: 'COMMUNICATION_CHANNEL', code: 'email', label: 'Email', displayOrder: 1 },
+  { category: 'COMMUNICATION_CHANNEL', code: 'sms', label: 'SMS', displayOrder: 2 },
+  { category: 'COMMUNICATION_CHANNEL', code: 'whatsapp', label: 'WhatsApp', displayOrder: 3 },
+  { category: 'COMMUNICATION_CHANNEL', code: 'phone-call', label: 'Phone Call', displayOrder: 4 },
+
+  { category: 'RELATIONSHIP', code: 'spouse', label: 'Spouse', displayOrder: 1 },
+  { category: 'RELATIONSHIP', code: 'parent', label: 'Parent', displayOrder: 2 },
+  { category: 'RELATIONSHIP', code: 'child', label: 'Child', displayOrder: 3 },
+  { category: 'RELATIONSHIP', code: 'sibling', label: 'Sibling', displayOrder: 4 },
+  { category: 'RELATIONSHIP', code: 'friend', label: 'Friend', displayOrder: 5 },
+  { category: 'RELATIONSHIP', code: 'relative', label: 'Relative', displayOrder: 6 },
+  { category: 'RELATIONSHIP', code: 'other', label: 'Other', displayOrder: 7 },
+
+  { category: 'LEGAL_STRUCTURE', code: 'llc', label: 'LLC', displayOrder: 1 },
+  { category: 'LEGAL_STRUCTURE', code: 'free-zone-company', label: 'Free Zone Company', displayOrder: 2 },
+  { category: 'LEGAL_STRUCTURE', code: 'sole-establishment', label: 'Sole Establishment', displayOrder: 3 },
+  { category: 'LEGAL_STRUCTURE', code: 'branch-of-foreign-company', label: 'Branch of Foreign Company', displayOrder: 4 },
+
+  { category: 'PAYMENT_METHOD_TYPE', code: 'card', label: 'Card', displayOrder: 1 },
+  { category: 'PAYMENT_METHOD_TYPE', code: 'direct-debit', label: 'Direct Debit', displayOrder: 2 },
+  { category: 'PAYMENT_METHOD_TYPE', code: 'bank-transfer', label: 'Bank Transfer', displayOrder: 3 },
+  { category: 'PAYMENT_METHOD_TYPE', code: 'cheque', label: 'Cheque', displayOrder: 4 },
+  { category: 'PAYMENT_METHOD_TYPE', code: 'cash', label: 'Cash', displayOrder: 5 },
+  { category: 'PAYMENT_METHOD_TYPE', code: 'online-portal', label: 'Online Portal', displayOrder: 6 },
+
+  { category: 'GENDER', code: 'male', label: 'Male', displayOrder: 1 },
+  { category: 'GENDER', code: 'female', label: 'Female', displayOrder: 2 },
+  { category: 'GENDER', code: 'other', label: 'Other', displayOrder: 3 },
+
+  { category: 'BILLING_TYPE', code: 'consolidated', label: 'Consolidated', displayOrder: 1 },
+  { category: 'BILLING_TYPE', code: 'per-unit', label: 'Per Unit', displayOrder: 2 },
+
+  ...NATIONALITY_SEED,
 ];
 
 const LOV_CATEGORY_MODULES: Record<string, string> = {
@@ -52,6 +144,15 @@ const LOV_CATEGORY_MODULES: Record<string, string> = {
   TARIFF_REJECTION_REASON: 'tariff',
   BILLING_CYCLE_CHANGE_REASON: 'billing-cycle',
   BILLING_CYCLE_DEPRECATION_REASON: 'billing-cycle',
+  SALUTATION: 'customer',                  // Registration Requests
+  MARITAL_STATUS: 'customer',
+  COMMUNICATION_CHANNEL: 'customer',
+  RELATIONSHIP: 'customer',
+  LEGAL_STRUCTURE: 'customer',
+  PAYMENT_METHOD_TYPE: 'customer',
+  GENDER: 'customer',
+  NATIONALITY: 'customer',
+  BILLING_TYPE: 'customer',
 };
 
 @Injectable()
@@ -168,6 +269,15 @@ export class LovService {
       'BILLING_CYCLE_CHANGE_REASON',
       'BILLING_CYCLE_DEPRECATION_REASON',
       'LANGUAGE',
+      'SALUTATION',
+      'MARITAL_STATUS',
+      'COMMUNICATION_CHANNEL',
+      'RELATIONSHIP',
+      'LEGAL_STRUCTURE',
+      'PAYMENT_METHOD_TYPE',
+      'GENDER',
+      'NATIONALITY',
+      'BILLING_TYPE',
     ];
     for (const category of criticalCategories) {
       const existing = await this.lovValues.count({ where: { category } });

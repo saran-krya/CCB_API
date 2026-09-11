@@ -315,8 +315,11 @@ export class MeterController {
     return this.meters.getDailyMeterReadingsSummary(date, query.communityId, query.propertyId);
   }
 
+  // Also VIEW_CUSTOMER: the Customer detail page's own Meter Readings tab calls this scoped to
+  // {unitId, date} — the one unit's readings for the customer already being viewed, not browsing
+  // the Daily Meter Readings feature itself. Does NOT grant any meter-management action.
   @Get('daily-readings')
-  @Permission('METER_VIEW')
+  @Permission('METER_VIEW', 'VIEW_CUSTOMER')
   @ApiOperation({ summary: 'Paginated, sortable, filterable Daily Meter Readings list — read-only' })
   getDailyMeterReadings(@Query() query: DailyMeterReadingQueryDto) {
     return this.meters.getDailyMeterReadings(query);

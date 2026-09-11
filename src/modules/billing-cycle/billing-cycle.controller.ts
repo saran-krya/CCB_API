@@ -60,8 +60,11 @@ export class BillingCycleController {
     return this.billingCycles.findAll(query);
   }
 
+  // Also CREATE_REGISTRATION_REQUEST/EDIT_REGISTRATION_REQUEST: Registration creation's
+  // per-unit billing cycle display needs this same read-only lookup as reference data, not to
+  // manage Billing Cycle as a module. Does NOT grant create/edit/approve.
   @Get('property/:propertyId')
-  @Permission('VIEW_BILLING_CYCLE')
+  @Permission('VIEW_BILLING_CYCLE', 'CREATE_REGISTRATION_REQUEST', 'EDIT_REGISTRATION_REQUEST')
   @ApiOperation({ summary: "Get the property's currently-governing billing cycle" })
   @ApiParam({ name: 'propertyId', type: Number })
   findByProperty(@Param('propertyId', ParseIntPipe) propertyId: number) {

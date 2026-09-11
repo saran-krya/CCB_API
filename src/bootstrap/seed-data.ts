@@ -42,6 +42,16 @@ export interface SeedRole {
   canBeReportingManager: boolean
 }
 
+export interface SeedRegistrationDocumentRule {
+  documentType: string
+  level: 'Identity' | 'Account' | 'Unit' | 'Payment'
+  appliesToResident: 'Owner' | 'Tenant' | 'Both'
+  appliesToAccount: 'Individual' | 'Corporate' | 'Both'
+  appliesToContactType: 'Self' | 'Authorized Representative' | 'Manager on License' | 'Any'
+  requirement: 'Mandatory' | 'Optional' | 'Not Applicable'
+  displayOrder: number
+}
+
 
 export const PMODULES: SeedPModule[] = [
   {
@@ -61,18 +71,25 @@ export const PMODULES: SeedPModule[] = [
     displayOrder: 2,
   },
   {
+    moduleName: 'Customer Management',
+    code: 'CUSTOMER_MANAGEMENT',
+    type: 'MENU',
+    icon: 'Users',
+    displayOrder: 3,
+  },
+  {
     moduleName: 'Meter Management',
     code: 'METER_MANAGEMENT',
     type: 'MENU',
     icon: 'Activity',
-    displayOrder: 3,
+    displayOrder: 4,
   },
   {
     moduleName: 'Billing Management',
     code: 'BILLING_MANAGEMENT',
     type: 'MENU',
     icon: 'Receipt',
-    displayOrder: 4,
+    displayOrder: 5,
   },
   {
     moduleName: 'System Admin',
@@ -88,10 +105,50 @@ export const PMODULES: SeedPModule[] = [
     icon: 'Briefcase',
     displayOrder: 100,
   },
+  {
+    moduleName: 'Finance',
+    code: 'FINANCE',
+    type: 'MENU',
+    icon: 'DollarSign',
+    displayOrder: 101,
+  },
 ]
 
 
 export const SUB_MODULES: SeedSubModule[] = [
+  {
+    pModuleCode: 'CUSTOMER_MANAGEMENT',
+    name: 'Customer List',
+    code: 'CUSTOMER_LIST',
+    icon: 'Users',
+    url: '/customers',
+    displayOrder: 1,
+  },
+  {
+    pModuleCode: 'CUSTOMER_MANAGEMENT',
+    name: 'Registration Requests',
+    code: 'REGISTRATION_REQUESTS',
+    icon: 'UserPlus',
+    url: '/customers/registration-requests',
+    displayOrder: 2,
+  },
+  {
+    pModuleCode: 'CUSTOMER_MANAGEMENT',
+    name: 'Service Requests & Tickets',
+    code: 'SERVICE_REQUESTS_TICKETS',
+    icon: 'Ticket',
+    url: '/customers/tickets',
+    displayOrder: 3,
+  },
+  {
+    pModuleCode: 'CUSTOMER_MANAGEMENT',
+    name: 'Registration Approval',
+    code: 'REGISTRATION_APPROVAL',
+    icon: 'ShieldCheck',
+    url: '/customers/registration-approval',
+    displayOrder: 4,
+  },
+
   {
     pModuleCode: 'METER_MANAGEMENT',
     name: 'Meter Information',
@@ -211,6 +268,13 @@ export const SUB_MODULES: SeedSubModule[] = [
     icon: 'ListChecks',
     displayOrder: 4,
   },
+  {
+    pModuleCode: 'SYSTEM_ADMIN',
+    name: 'Document Set Definition',
+    code: 'DOCUMENT_SET_DEFINITION',
+    icon: 'FileCheck2',
+    displayOrder: 5,
+  },
 
   {
     pModuleCode: 'BUSINESS_ADMIN',
@@ -225,6 +289,13 @@ export const SUB_MODULES: SeedSubModule[] = [
     code: 'BILLING_CYCLE_CONFIG',
     icon: 'CalendarRange',
     displayOrder: 2,
+  },
+  {
+    pModuleCode: 'FINANCE',
+    name: 'Tariff Approval',
+    code: 'TARIFF_APPROVAL',
+    icon: 'BadgeCheck',
+    displayOrder: 1,
   },
 ]
 
@@ -258,12 +329,26 @@ export const SCREENS: SeedScreen[] = [
     url: '/admin/system/lov-master',
     displayOrder: 1,
   },
+  {
+    subModuleCode: 'DOCUMENT_SET_DEFINITION',
+    name: 'Document Set Definition',
+    code: 'DOCUMENT_SET_DEFINITION',
+    url: '/admin/system/document-set-definition',
+    displayOrder: 1,
+  },
 
   {
     subModuleCode: 'TARIFF_CONFIG',
     name: 'Tariff Configuration',
     code: 'TARIFF_CONFIG',
     url: '/admin/business/tariff-config',
+    displayOrder: 1,
+  },
+  {
+    subModuleCode: 'TARIFF_APPROVAL',
+    name: 'Tariff Approval',
+    code: 'TARIFF_APPROVAL',
+    url: '/finance/tariff-approval',
     displayOrder: 1,
   },
   {
@@ -292,6 +377,35 @@ export const SCREENS: SeedScreen[] = [
     name: 'Unit',
     code: 'UNIT',
     displayOrder: 3,
+  },
+
+  {
+    subModuleCode: 'CUSTOMER_LIST',
+    name: 'Customer',
+    code: 'CUSTOMER',
+    url: '/customers',
+    displayOrder: 1,
+  },
+  {
+    subModuleCode: 'REGISTRATION_REQUESTS',
+    name: 'Registration Requests',
+    code: 'REGISTRATION_REQUESTS',
+    url: '/customers/registration-requests',
+    displayOrder: 1,
+  },
+  {
+    subModuleCode: 'SERVICE_REQUESTS_TICKETS',
+    name: 'Service Requests & Tickets',
+    code: 'SERVICE_REQUESTS_TICKETS',
+    url: '/customers/tickets',
+    displayOrder: 1,
+  },
+  {
+    subModuleCode: 'REGISTRATION_APPROVAL',
+    name: 'Registration Approval',
+    code: 'REGISTRATION_APPROVAL',
+    url: '/customers/registration-approval',
+    displayOrder: 1,
   },
 
   {
@@ -485,6 +599,29 @@ export const ACTIONS: SeedAction[] = [
     parentActionCode: 'TARIFF_VIEW',
     displayOrder: 3,
   },
+  {
+    screenCode: 'TARIFF_APPROVAL',
+    name: 'View Tariff Approval Queue',
+    code: 'TARIFF_APPROVAL_VIEW',
+    description: 'Access the Finance Tariff Approval screen',
+    displayOrder: 1,
+  },
+  {
+    screenCode: 'TARIFF_APPROVAL',
+    name: 'Approve Tariff (Finance)',
+    code: 'TARIFF_APPROVAL_APPROVE',
+    description: 'Approve a pending tariff from the Finance Tariff Approval screen — accepted as an alternate to TARIFF_APPROVE so Finance never depends on Business Admin access',
+    parentActionCode: 'TARIFF_APPROVAL_VIEW',
+    displayOrder: 2,
+  },
+  {
+    screenCode: 'TARIFF_APPROVAL',
+    name: 'Reject Tariff (Finance)',
+    code: 'TARIFF_APPROVAL_REJECT',
+    description: 'Reject a pending tariff from the Finance Tariff Approval screen — accepted as an alternate to TARIFF_REJECT so Finance never depends on Business Admin access',
+    parentActionCode: 'TARIFF_APPROVAL_VIEW',
+    displayOrder: 3,
+  },
 
   {
     screenCode: 'BILLING_CYCLE',
@@ -649,6 +786,106 @@ export const ACTIONS: SeedAction[] = [
   },
 
   {
+    screenCode: 'CUSTOMER',
+    name: 'View Customer',
+    code: 'VIEW_CUSTOMER',
+    description: 'View customer detail, profile, and meter readings',
+  },
+  {
+    screenCode: 'CUSTOMER',
+    name: 'Create Customer',
+    code: 'CREATE_CUSTOMER',
+    description: 'Access the create-customer form',
+  },
+  {
+    screenCode: 'CUSTOMER',
+    name: 'Edit Customer',
+    code: 'EDIT_CUSTOMER',
+    description: 'Access the edit-customer form',
+  },
+  {
+    screenCode: 'CUSTOMER',
+    name: 'Delete Customer',
+    code: 'DELETE_CUSTOMER',
+    description: 'Delete a customer',
+  },
+
+  {
+    screenCode: 'REGISTRATION_REQUESTS',
+    name: 'View Registration Requests',
+    code: 'VIEW_REGISTRATION_REQUESTS',
+    description: 'View customer registration requests',
+  },
+  {
+    screenCode: 'REGISTRATION_REQUESTS',
+    name: 'Create Registration Request',
+    code: 'CREATE_REGISTRATION_REQUEST',
+    description: 'Create/save a registration draft, send it to the resident, and upload documents',
+  },
+  {
+    screenCode: 'REGISTRATION_REQUESTS',
+    name: 'Edit Registration Request',
+    code: 'EDIT_REGISTRATION_REQUEST',
+    description: 'Return for correction, request/verify the security deposit, and submit for approval',
+  },
+  {
+    screenCode: 'REGISTRATION_REQUESTS',
+    name: 'Approve Registration Request',
+    code: 'APPROVE_REGISTRATION_REQUEST',
+    description: 'Approve a registration request, creating the Customer record',
+  },
+  {
+    screenCode: 'REGISTRATION_REQUESTS',
+    name: 'Reject Registration Request',
+    code: 'REJECT_REGISTRATION_REQUEST',
+    description: 'Reject a registration request',
+  },
+
+  {
+    screenCode: 'SERVICE_REQUESTS_TICKETS',
+    name: 'View Service Requests & Tickets',
+    code: 'VIEW_SERVICE_REQUESTS_TICKETS',
+    description: 'View customer service requests and support tickets',
+  },
+
+  {
+    screenCode: 'REGISTRATION_APPROVAL',
+    name: 'View Registration Approval Queue',
+    code: 'REGISTRATION_APPROVAL_VIEW',
+    description: 'Access the Registration Approval queue — every submitted registration request awaiting review',
+    displayOrder: 1,
+  },
+  {
+    screenCode: 'REGISTRATION_APPROVAL',
+    name: 'Approve Registration Request (Registration Approval)',
+    code: 'REGISTRATION_APPROVAL_APPROVE',
+    description: 'Approve a registration request from the Registration Approval screen — accepted as an alternate to APPROVE_REGISTRATION_REQUEST, the same underlying approve action',
+    parentActionCode: 'REGISTRATION_APPROVAL_VIEW',
+    displayOrder: 2,
+  },
+  {
+    screenCode: 'REGISTRATION_APPROVAL',
+    name: 'Reject Registration Request (Registration Approval)',
+    code: 'REGISTRATION_APPROVAL_REJECT',
+    description: 'Reject a registration request from the Registration Approval screen — accepted as an alternate to REJECT_REGISTRATION_REQUEST, the same underlying reject action',
+    parentActionCode: 'REGISTRATION_APPROVAL_VIEW',
+    displayOrder: 3,
+  },
+
+  {
+    screenCode: 'DOCUMENT_SET_DEFINITION',
+    name: 'View Document Set Definition',
+    code: 'VIEW_REGISTRATION_DOCUMENT_RULES',
+    description: 'View which documents the registration wizard requires per resident/account/contact-type combination',
+  },
+  {
+    screenCode: 'DOCUMENT_SET_DEFINITION',
+    name: 'Edit Document Set Definition',
+    code: 'EDIT_REGISTRATION_DOCUMENT_RULES',
+    description: 'Add, edit, or deactivate a registration document rule',
+  },
+
+  {
     screenCode: 'LFM',
     name: 'View LOV',
     code: 'LOV_VIEW',
@@ -801,9 +1038,53 @@ export const ROLES: SeedRole[] = [
     canBeReportingManager: false,
   },
   {
+    roleName: 'CUSTOMER_SERVICE_EXECUTIVE',
+    roleDescription: 'Creates and manages customer registration requests',
+    userCategoryName: 'Internal',
+    canBeReportingManager: false,
+  },
+  {
+    roleName: 'CUSTOMER_SERVICE_SUPERVISOR',
+    roleDescription: 'Reviews and approves or rejects submitted registration requests',
+    userCategoryName: 'Internal',
+    canBeReportingManager: true,
+  },
+  {
     roleName: 'CUSTOMER',
     roleDescription: 'End-customer self-service portal access',
     userCategoryName: 'External',
     canBeReportingManager: false,
   },
 ]
+
+// Document Set Definition ("Registration" set) — spec §8.3. Which documents the registration
+// wizard's Account/Identity/Unit/Payment steps require, per resident/account/contact-type
+// combination. Identity keyed with (documentType, appliesToResident, appliesToAccount,
+// appliesToContactType) — Emirates ID intentionally appears twice (Mandatory for Tenant, Optional
+// for Owner) since an owner may be a non-resident investor.
+export const REGISTRATION_DOCUMENT_RULES: SeedRegistrationDocumentRule[] = [
+  { documentType: 'Title Deed', level: 'Unit', appliesToResident: 'Owner', appliesToAccount: 'Both', appliesToContactType: 'Any', requirement: 'Mandatory', displayOrder: 1 },
+  { documentType: 'Tenancy Contract', level: 'Unit', appliesToResident: 'Tenant', appliesToAccount: 'Both', appliesToContactType: 'Any', requirement: 'Mandatory', displayOrder: 2 },
+  { documentType: 'Ejari', level: 'Unit', appliesToResident: 'Tenant', appliesToAccount: 'Both', appliesToContactType: 'Any', requirement: 'Optional', displayOrder: 3 },
+  { documentType: 'Trade License', level: 'Account', appliesToResident: 'Both', appliesToAccount: 'Corporate', appliesToContactType: 'Any', requirement: 'Mandatory', displayOrder: 4 },
+  { documentType: 'TRN Certificate', level: 'Account', appliesToResident: 'Both', appliesToAccount: 'Corporate', appliesToContactType: 'Any', requirement: 'Mandatory', displayOrder: 5 },
+  { documentType: 'Passport', level: 'Identity', appliesToResident: 'Both', appliesToAccount: 'Both', appliesToContactType: 'Any', requirement: 'Mandatory', displayOrder: 6 },
+  { documentType: 'Emirates ID', level: 'Identity', appliesToResident: 'Tenant', appliesToAccount: 'Both', appliesToContactType: 'Any', requirement: 'Mandatory', displayOrder: 7 },
+  { documentType: 'Emirates ID', level: 'Identity', appliesToResident: 'Owner', appliesToAccount: 'Both', appliesToContactType: 'Any', requirement: 'Optional', displayOrder: 8 },
+  { documentType: 'Power of Attorney', level: 'Identity', appliesToResident: 'Both', appliesToAccount: 'Both', appliesToContactType: 'Authorized Representative', requirement: 'Mandatory', displayOrder: 9 },
+  { documentType: "Owner's Emirates ID", level: 'Identity', appliesToResident: 'Owner', appliesToAccount: 'Individual', appliesToContactType: 'Authorized Representative', requirement: 'Optional', displayOrder: 10 },
+  { documentType: "Tenant's Emirates ID", level: 'Identity', appliesToResident: 'Tenant', appliesToAccount: 'Individual', appliesToContactType: 'Authorized Representative', requirement: 'Optional', displayOrder: 11 },
+  { documentType: 'Payment Receipt', level: 'Payment', appliesToResident: 'Both', appliesToAccount: 'Both', appliesToContactType: 'Any', requirement: 'Mandatory', displayOrder: 12 },
+  { documentType: 'Supporting Document', level: 'Payment', appliesToResident: 'Both', appliesToAccount: 'Both', appliesToContactType: 'Any', requirement: 'Optional', displayOrder: 13 },
+]
+
+// Terms & Conditions — default placeholder content for the registration wizard's Review & Submit
+// step, seeded as the REGISTRATION_TERMS_AND_CONDITIONS Attribute (see attribute.service.ts's
+// buildAttributeSeed, scope: SYSTEM). Editable thereafter via System Admin -> Attributes ->
+// General Attributes; this constant exists purely so the wizard never renders an empty acceptance
+// block on a fresh environment.
+export const REGISTRATION_TERMS_AND_CONDITIONS_DEFAULT = [
+  'The personal, unit, and payment details provided are accurate, and I am authorised to register the selected unit(s).',
+  'I consent to the community management verifying my documents and contacting me on my chosen communication channel, and to being billed for district-cooling (BTU) consumption per the applicable tariff — including a refundable security deposit and any activation fee where applicable.',
+  'I understand that submitting this registration request initiates a review by Customer Support and Business Admin, and that access to billing is granted only once the request is approved.',
+].join('\n\n')

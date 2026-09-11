@@ -13,6 +13,7 @@ export const typeOrmConfig: TypeOrmModuleAsyncOptions = {
     database: config.get<string>('DB_DATABASE'),
     autoLoadEntities: true,
     synchronize: config.get<string>('NODE_ENV') !== 'production',
+    migrations: [__dirname + '/../migrations/*{.ts,.js}'],
     migrationsRun: true,
     logging: config.get<string>('NODE_ENV') !== 'production',
     charset: 'utf8mb4',

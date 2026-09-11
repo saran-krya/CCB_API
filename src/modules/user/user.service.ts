@@ -348,6 +348,23 @@ export class UserService {
       .getOne();
   }
 
+  /**
+   * Same narrowly-scoped shape as findByEmailWithRole (addSelect the hidden passwordHash column),
+   * keyed by id instead of email, no role join — for AuthService.changePassword, which already has
+   * the authenticated principal's id and needs only the hash to verify the current password.
+   */
+  findByIdWithPasswordHash(id: number) {
+    return this.users
+      .createQueryBuilder('user')
+      .addSelect('user.passwordHash')
+      .where('user.id = :id', { id })
+      .getOne();
+  }
+
+  async setPasswordHash(userId: number, passwordHash: string): Promise<void> {
+    await this.users.update(userId, { passwordHash });
+  }
+
   async updateLastLogin(
     userId: number,
   ): Promise<void> {
