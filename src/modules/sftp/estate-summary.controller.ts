@@ -1,5 +1,6 @@
 import { BadRequestException, Controller, Get, NotFoundException, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
+import { Permission } from '../../common/decorators/permission.decorator';
 import { EstateSummaryService } from './estate-summary.service';
 import {
   HealthResponseDto,
@@ -32,6 +33,7 @@ export class EstateSummaryController {
   constructor(private readonly estateSummary: EstateSummaryService) {}
 
   @Get('summary')
+  @Permission('SFTP_MONITOR_VIEW')
   @ApiOperation({ summary: 'Estate-wide ingestion summary for one calendar date (defaults to today)' })
   @ApiQuery({ name: 'date', required: false, type: String, example: '2026-07-20' })
   async getSummary(@Query('date') dateParam?: string): Promise<SummaryResponseDto> {
@@ -51,6 +53,7 @@ export class EstateSummaryController {
   }
 
   @Get('summary/trend')
+  @Permission('SFTP_MONITOR_VIEW')
   @ApiOperation({ summary: 'Daily estate summaries between from_date and to_date (max 90 days)' })
   @ApiQuery({ name: 'from_date', required: true, type: String, example: '2026-06-21' })
   @ApiQuery({ name: 'to_date', required: true, type: String, example: '2026-07-20' })
@@ -81,6 +84,7 @@ export class EstateSummaryController {
   }
 
   @Get('health')
+  @Permission('SFTP_MONITOR_VIEW')
   @ApiOperation({ summary: 'Most recent ingestion status and the next scheduled poll time' })
   async getHealth(): Promise<HealthResponseDto> {
     const latest = await this.estateSummary.getLatestSummary();
@@ -95,6 +99,7 @@ export class EstateSummaryController {
   }
 
   @Get('missing-files')
+  @Permission('SFTP_MONITOR_VIEW')
   @ApiOperation({ summary: 'Missing and failed DTU files for one calendar date (defaults to today)' })
   @ApiQuery({ name: 'date', required: false, type: String, example: '2026-07-20' })
   async getMissingFiles(@Query('date') dateParam?: string): Promise<MissingFilesResponseDto> {

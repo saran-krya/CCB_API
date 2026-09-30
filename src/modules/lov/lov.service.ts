@@ -133,6 +133,22 @@ const LOV_SEED: {
   { category: 'BILLING_TYPE', code: 'consolidated', label: 'Consolidated', displayOrder: 1 },
   { category: 'BILLING_TYPE', code: 'per-unit', label: 'Per Unit', displayOrder: 2 },
 
+  { category: 'FIELD_INSPECTION_TYPE', code: 'dtu-connectivity',      label: 'DTU Connectivity Issue',        displayOrder: 1 },
+  { category: 'FIELD_INSPECTION_TYPE', code: 'meter-hardware-fault',  label: 'Meter Hardware Fault',          displayOrder: 2 },
+  { category: 'FIELD_INSPECTION_TYPE', code: 'physical-damage',       label: 'Physical Damage Assessment',    displayOrder: 3 },
+  { category: 'FIELD_INSPECTION_TYPE', code: 'tamper-investigation',  label: 'Tamper Investigation',          displayOrder: 4 },
+  { category: 'FIELD_INSPECTION_TYPE', code: 'data-transmission',     label: 'Data Transmission Failure',     displayOrder: 5 },
+  { category: 'FIELD_INSPECTION_TYPE', code: 'routine-verification',  label: 'Routine Verification',          displayOrder: 6 },
+  { category: 'FIELD_INSPECTION_TYPE', code: 'other',                 label: 'Other',                         displayOrder: 7 },
+
+  { category: 'FIELD_INSPECTION_PRIORITY', code: 'urgent', label: 'Urgent', displayOrder: 1 },
+  { category: 'FIELD_INSPECTION_PRIORITY', code: 'high',   label: 'High',   displayOrder: 2 },
+  { category: 'FIELD_INSPECTION_PRIORITY', code: 'normal', label: 'Normal', displayOrder: 3 },
+
+  { category: 'FIELD_INSPECTION_NOTIFY_ROLE', code: 'operations-manager', label: 'Operations Manager', displayOrder: 1 },
+  { category: 'FIELD_INSPECTION_NOTIFY_ROLE', code: 'finance-team',       label: 'Finance Team',       displayOrder: 2 },
+  { category: 'FIELD_INSPECTION_NOTIFY_ROLE', code: 'property-manager',   label: 'Property Manager',   displayOrder: 3 },
+
   ...NATIONALITY_SEED,
 ];
 
@@ -153,6 +169,12 @@ const LOV_CATEGORY_MODULES: Record<string, string> = {
   GENDER: 'customer',
   NATIONALITY: 'customer',
   BILLING_TYPE: 'customer',
+  // 'meter' matches this admin UI's real module key (APP_MODULES, meter-management group) —
+  // Billing Readiness/Field Inspection lives under Meter Management, not a standalone module key,
+  // so admins can manage these values from the existing Meter Information LOV tab.
+  FIELD_INSPECTION_TYPE: 'meter',
+  FIELD_INSPECTION_PRIORITY: 'meter',
+  FIELD_INSPECTION_NOTIFY_ROLE: 'meter',
 };
 
 @Injectable()
@@ -278,6 +300,9 @@ export class LovService {
       'GENDER',
       'NATIONALITY',
       'BILLING_TYPE',
+      'FIELD_INSPECTION_TYPE',
+      'FIELD_INSPECTION_PRIORITY',
+      'FIELD_INSPECTION_NOTIFY_ROLE',
     ];
     for (const category of criticalCategories) {
       const existing = await this.lovValues.count({ where: { category } });

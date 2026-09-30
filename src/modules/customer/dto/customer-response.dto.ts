@@ -37,6 +37,30 @@ export class UnitCustomerSummaryDto {
   @ApiProperty({ enum: CustomerAccountStatus }) accountStatus!: CustomerAccountStatus;
 }
 
+/**
+ * The ONE shared "who is the current customer for this unit" resolution — see
+ * CustomerService.resolveCurrentCustomer's own doc comment for the business rule. Every screen
+ * that needs to show a unit's billing/reading/occupancy-relevant customer composes this, instead
+ * of re-deriving owner/tenant precedence locally (that was the actual bug this DTO fixes: before
+ * this existed, MeterService picked owner-over-tenant, backwards from the real business rule).
+ */
+export class CurrentCustomerResolutionDto {
+  @ApiPropertyOptional({ type: () => UnitCustomerSummaryDto, description: 'The customer relevant for billing/reading/occupancy purposes — the active Tenant if one exists, otherwise the active Owner. Null if the unit has neither.' })
+  currentCustomer!: UnitCustomerSummaryDto | null;
+
+  @ApiPropertyOptional({ enum: ResidentType, description: 'Which role currentCustomer is playing — OWNER or TENANT. Null if currentCustomer is null.' })
+  currentCustomerType!: ResidentType | null;
+
+  @ApiPropertyOptional({ type: () => UnitCustomerSummaryDto, description: 'The active Owner, regardless of whether a Tenant also exists — for screens that need ownership context specifically.' })
+  owner!: UnitCustomerSummaryDto | null;
+
+  @ApiPropertyOptional({ type: () => UnitCustomerSummaryDto, description: 'The active Tenant, if one exists.' })
+  tenant!: UnitCustomerSummaryDto | null;
+
+  @ApiProperty({ description: 'True when an active Tenant exists but no active Owner does — a data-quality condition per the business rule ("a Tenant cannot exist without an Owner"), surfaced rather than silently guessed at or hidden.' })
+  ownerMissing!: boolean;
+}
+
 export class CustomerDetailDto {
   @ApiProperty() id!: number;
   @ApiPropertyOptional() businessCode!: string | null;
@@ -67,8 +91,11 @@ export class CustomerDetailDto {
   @ApiPropertyOptional() gender!: string | null;
   @ApiPropertyOptional({ description: 'ISO-8601 date string' }) dateOfBirth!: string | null;
   @ApiPropertyOptional() nationality!: string | null;
+  @ApiPropertyOptional() maritalStatus!: string | null;
   @ApiProperty({ description: "The customer's own explicit preferred-language setting" }) preferredLanguage!: string;
   @ApiPropertyOptional({ type: [Number] }) additionalUnitIds!: number[];
   @ApiPropertyOptional({ type: [Object] }) paymentMethods!: CustomerPaymentMethod[];
   @ApiPropertyOptional({ description: "The customer's own explicit auto-pay preference" }) autoPayEnabled!: boolean;
+  @ApiProperty({ description: 'True when this customer is an active Tenant on their primary unit but that unit has no active Owner — a data-quality condition per the business rule ("a Tenant cannot exist without an Owner"), computed the same way as CurrentCustomerResolutionDto.ownerMissing. Always false for an Owner (an Owner being absent from their own unit is not this condition).' })
+  ownerMissing!: boolean;
 }

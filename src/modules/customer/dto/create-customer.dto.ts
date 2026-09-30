@@ -132,6 +132,7 @@ export class CreateCustomerDto {
 
   @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(160) emergencyContactName?: string;
   @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(30) emergencyContactPhone?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(40) emergencyContactRelationship?: string;
 
   @ApiPropertyOptional() @IsOptional() @Type(() => Number) @IsInt() registrationDemandId?: number;
 

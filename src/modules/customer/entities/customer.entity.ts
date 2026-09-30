@@ -196,6 +196,9 @@ export class Customer extends BaseEntity {
   @Column({ name: 'emergency_contact_phone', type: 'varchar', length: 30, nullable: true })
   emergencyContactPhone?: string | null;
 
+  @Column({ name: 'emergency_contact_relationship', type: 'varchar', length: 40, nullable: true })
+  emergencyContactRelationship?: string | null;
+
   /** FK to the RegistrationDemand this onboarding cleared, for a future move-out refund. Typed as
    *  a bare int (not a relation) to avoid a circular import between the customer and
    *  registration-request modules — see spec §4.1.1. */

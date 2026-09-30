@@ -101,7 +101,19 @@ export class CustomerPortalService {
    *  omitted, returns readings across ALL of the caller's own units (never every unit in the
    *  system), one query per owned unit — mirrors how a customer with multiple units expects to see
    *  all of them, per the feature's own "if the customer has access to multiple units, return all
-   *  resources that genuinely belong to them" requirement. */
+   *  resources that genuinely belong to them" requirement.
+   *
+   *  A unit's meter readings belong to the UNIT, not to either resident, so an active Owner and an
+   *  active Tenant on the same unit both reach the exact same underlying rows here — same query,
+   *  same MeterService, no forked/duplicated logic. What differs is exposure: MeterService's item
+   *  shape (built for staff) includes the current occupant's identity (customerId/
+   *  customerBusinessCode/customerName — the active Tenant if one exists, else the Owner, per
+   *  CustomerService.resolveCurrentCustomer) alongside ownerName/ownerBusinessCode. Ownership is
+   *  explicitly non-private per the business rule (an Owner's name is fine for a Tenant to see, and
+   *  vice versa), but the CURRENT OCCUPANT'S identity is only the caller's own business to see: if
+   *  an Owner is looking at a unit currently occupied by an active Tenant, the Tenant's name/
+   *  business code must not leak to the Owner merely because they own the unit — redactOccupantIdentity
+   *  strips those three fields whenever the reading's current-customer id isn't the caller's own. */
   async getMyMeterReadings(customerId: number, query: DailyMeterReadingQueryDto) {
     const unitIds = await this.customers.getOwnedUnitIds(customerId);
 
@@ -109,7 +121,8 @@ export class CustomerPortalService {
       if (!unitIds.includes(query.unitId)) {
         throw new ForbiddenException('This unit is not associated with your account');
       }
-      return this.meters.getDailyMeterReadings(query);
+      const result = await this.meters.getDailyMeterReadings(query);
+      return { ...result, items: result.items.map((item) => this.redactOccupantIdentity(item, customerId)) };
     }
 
     const perUnit = await Promise.all(
@@ -118,7 +131,7 @@ export class CustomerPortalService {
     const items: Array<(typeof perUnit)[number]['items'][number]> = [];
     for (const r of perUnit) items.push(...r.items);
     return {
-      items,
+      items: items.map((item) => this.redactOccupantIdentity(item, customerId)),
       pagination: perUnit[0]?.pagination ?? { page: 1, limit: 20, total: 0, totalPages: 1 },
     };
   }
@@ -344,5 +357,23 @@ export class CustomerPortalService {
   ): T {
     const ownedPropertyIds = new Set(ownedUnits.map((u) => u.propertyId));
     return { ...community, properties: community.properties.filter((p) => ownedPropertyIds.has(p.id)) };
+  }
+
+  /** MeterService's reading item shape (built for staff, who legitimately see every resident on a
+   *  unit) carries the CURRENT occupant's identity (customerId/customerBusinessCode/customerName —
+   *  the active Tenant if one exists, else the Owner) alongside ownerName/ownerBusinessCode. Owner
+   *  identity is explicitly allowed for both roles per the business rule ("ownership-related
+   *  information"), so ownerName/ownerBusinessCode pass through untouched. The current occupant's
+   *  identity is only the caller's own business: when the reading's customerId isn't this caller's
+   *  own id — i.e. an Owner viewing a unit an active Tenant currently occupies — those three fields
+   *  are redacted rather than silently handed to a customer session they don't belong to. A caller
+   *  viewing their own occupancy (customerId === their own id, or no current customer resolved at
+   *  all) is unaffected. */
+  private redactOccupantIdentity<T extends { customerId: number | null; customerBusinessCode: string | null; customerName: string | null }>(
+    item: T,
+    callerCustomerId: number,
+  ): T {
+    if (item.customerId === null || item.customerId === callerCustomerId) return item;
+    return { ...item, customerId: null, customerBusinessCode: null, customerName: null };
   }
 }

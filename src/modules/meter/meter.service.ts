@@ -3,6 +3,8 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, In, Repository } from 'typeorm';
 import * as ExcelJS from 'exceljs';
 import { AttributeService } from '../attribute/attribute.service';
+import { CustomerService } from '../customer/customer.service';
+import { UnitCustomerSummaryDto } from '../customer/dto/customer-response.dto';
 import { AuditService } from '../../audit/audit.service';
 import { paginate } from '../../common/utils/pagination.util';
 import { BUSINESS_CODE_PREFIXES, generateBusinessCode } from '../../common/utils/business-code.util';
@@ -10,7 +12,7 @@ import { Community } from '../community/entities/community.entity';
 import { Property } from '../property/entities/property.entity';
 import { Unit } from '../unit/entities/unit.entity';
 import { User } from '../user/entities/user.entity';
-import { MeterReading } from '../sftp/entities/meter-reading.entity';
+import { MeterReading, ReadingValidationStatus } from '../sftp/entities/meter-reading.entity';
 import {
   CreateMasterMeterDto,
   CreateSubMeterDto,
@@ -103,6 +105,7 @@ export class MeterService {
     @InjectRepository(MeterReading) private readonly meterReadings: Repository<MeterReading>,
     private readonly attributeService: AttributeService,
     private readonly auditService: AuditService,
+    private readonly customerService: CustomerService,
     private readonly dataSource: DataSource,
   ) {}
 
@@ -1401,46 +1404,152 @@ export class MeterService {
     readingDate: 'r.readingDate',
     meterId: 'r.meterId',
     readingValue: 'r.readingValue',
+    unit: 'propertyUnit.unitNumber',
   };
+  // Real unit numbers are zero-padded (AZC-T01-01 .. AZC-T01-25), so a plain lexicographic sort on
+  // unitNumber already yields correct ascending numeric order — no natural-sort logic needed.
+  private static readonly DAILY_READINGS_DEFAULT_SORT_BY = 'unit';
+  private static readonly DAILY_READINGS_DEFAULT_SORT_ORDER = 'ASC' as const;
 
   async getDailyMeterReadings(query: DailyMeterReadingQueryDto) {
+    // Range mode (e.g. a billing-cycle reading period) requires BOTH bounds — a lone startDate or
+    // endDate falls back to single-date mode below rather than silently querying an open-ended
+    // range. `asOfDate` is what the 30-day trailing history/comparison looks back FROM: the range's
+    // end when ranging, otherwise the single date — either way it's the same "as of" semantics
+    // getReadingHistoryByMeterId already had.
+    const hasRange = !!query.startDate && !!query.endDate;
     const date = query.date ?? new Date().toISOString().slice(0, 10);
+    const asOfDate = hasRange ? query.endDate! : date;
     const page = query.page && query.page > 0 ? query.page : 1;
     const limit = query.limit && query.limit > 0 ? Math.min(query.limit, 100) : 20;
 
-    if (query.validationStatus === 'anomaly') {
-      return { items: [], pagination: { page, limit, total: 0, totalPages: 1 } };
+    if (query.validationStatus === 'missing') {
+      return this.getMissingDailyReadings(query, hasRange ? null : date, page, limit);
     }
 
-    if (query.validationStatus === 'missing') {
-      return this.getMissingDailyReadings(query, date, page, limit);
-    }
+    // "All Validations" (validationStatus unset) is a genuine union of real submitted rows AND the
+    // units that never reported at all — the latter previously only ever appeared when Missing was
+    // explicitly selected, so the default/unfiltered view silently excluded every missing unit
+    // (e.g. Crest Tower A showed only its 1 real reading, never the other 24 missing ones). Clean/
+    // Anomaly stay scoped to real rows only — missing items have no meaningful clean/anomaly state.
+    const includeMissing = !query.validationStatus;
 
     const qb = this.meterReadings
       .createQueryBuilder('r')
       .leftJoinAndSelect('r.subMeter', 'subMeter')
+      .leftJoinAndSelect('subMeter.masterMeter', 'masterMeter')
       .leftJoinAndSelect('r.propertyUnit', 'propertyUnit')
       .leftJoinAndSelect('r.property', 'property')
-      .leftJoinAndSelect('r.community', 'community')
-      .where('r.readingDate = :date', { date });
+      .leftJoinAndSelect('r.community', 'community');
 
+    if (hasRange) {
+      qb.where('r.readingDate BETWEEN :startDate AND :endDate', { startDate: query.startDate, endDate: query.endDate });
+    } else {
+      qb.where('r.readingDate = :date', { date });
+    }
+
+    // 'clean'/'anomaly' both map straight onto the real validation_status column now — previously
+    // 'anomaly' was a hardcoded dead end (always returned empty) and 'clean' was never actually
+    // applied as a WHERE clause at all (the branch above it just avoided the dead end/missing
+    // branches, so a 'clean' request silently returned every row regardless of status).
+    if (query.validationStatus === 'clean' || query.validationStatus === 'anomaly') {
+      qb.andWhere('r.validationStatus = :validationStatus', {
+        validationStatus: query.validationStatus === 'clean' ? ReadingValidationStatus.CLEAN : ReadingValidationStatus.ANOMALY,
+      });
+    }
     if (query.communityId) qb.andWhere('community.id = :communityId', { communityId: query.communityId });
     if (query.propertyId) qb.andWhere('property.id = :propertyId', { propertyId: query.propertyId });
     if (query.unitId) qb.andWhere('propertyUnit.id = :unitId', { unitId: query.unitId });
+    if (query.approvalStatus) qb.andWhere('r.approvalStatus = :approvalStatus', { approvalStatus: query.approvalStatus });
     if (query.search) qb.andWhere('r.meter_id LIKE :s', { s: `%${query.search}%` });
 
-    const orderCol = MeterService.DAILY_READINGS_SORTABLE[query.sortBy ?? ''] ?? 'r.readingDate';
-    qb.orderBy(orderCol, query.sortOrder === 'ASC' ? 'ASC' : 'DESC');
+    // Default (no explicit sortBy at all) is Unit ascending — previously this fell straight through
+    // to readingDate DESC, which is why the table's row order never matched the Unit column even
+    // though clicking that header looked like it should sort by it (it silently did nothing, since
+    // 'unit' wasn't in the sortable whitelist below at all until this same fix added it).
+    const effectiveSortBy = query.sortBy ?? MeterService.DAILY_READINGS_DEFAULT_SORT_BY;
+    const effectiveSortOrder = query.sortBy
+      ? (query.sortOrder === 'ASC' ? 'ASC' : 'DESC')
+      : (query.sortOrder ?? MeterService.DAILY_READINGS_DEFAULT_SORT_ORDER);
+    const orderCol = MeterService.DAILY_READINGS_SORTABLE[effectiveSortBy] ?? 'propertyUnit.unitNumber';
+    qb.orderBy(orderCol, effectiveSortOrder);
 
-    const [readings, total] = await qb.skip((page - 1) * limit).take(limit).getManyAndCount();
-    const pagination = { page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)) };
-    if (readings.length === 0) return { items: [], pagination };
+    if (!includeMissing) {
+      const [readings, total] = await qb.skip((page - 1) * limit).take(limit).getManyAndCount();
+      const pagination = { page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)) };
+      if (readings.length === 0) return { items: [], pagination };
 
-    const history = await this.getReadingHistoryByMeterId(readings.map((r) => r.meterId), date);
+      const unitIds = readings.map((r) => r.propertyUnit?.id).filter((id): id is number => id != null);
+      const [history, customersByUnit] = await Promise.all([
+        this.getReadingHistoryByMeterId(readings.map((r) => r.meterId), asOfDate),
+        this.customerService.findByUnitIds(unitIds),
+      ]);
 
+      return {
+        items: readings.map((r) =>
+          this.mapDailyReadingToItem(
+            r,
+            history.get(r.meterId) ?? [],
+            r.propertyUnit?.id != null ? customersByUnit.get(r.propertyUnit.id) ?? [] : [],
+          ),
+        ),
+        pagination,
+      };
+    }
+
+    // Union path: both queries run unpaginated (missing items never number more than the property's
+    // real unit count, so this stays cheap), merged into one array, re-sorted, then paginated in
+    // memory over the combined total — the two source tables have no single SQL query that could
+    // page across both directly.
+    const [readings, missingItems] = await Promise.all([
+      qb.getMany(),
+      this.findMissingReadingItems(query, hasRange ? null : date),
+    ]);
+
+    // getReadingHistoryByMeterId builds a SQL `IN (...)` list from these meter IDs — an empty list
+    // there is invalid SQL (MySQL rejects `IN ()`), so it must never be called with zero ids. Unlike
+    // the non-union branch above, `readings` here can legitimately be empty on its own (e.g. an
+    // Approval Status filter that matches no real rows for this property) while `missingItems` still
+    // has content, so this needs its own guard rather than reusing that branch's early return.
+    const unitIds = readings.map((r) => r.propertyUnit?.id).filter((id): id is number => id != null);
+    const [history, customersByUnit] = await Promise.all([
+      readings.length > 0 ? this.getReadingHistoryByMeterId(readings.map((r) => r.meterId), asOfDate) : Promise.resolve(new Map()),
+      this.customerService.findByUnitIds(unitIds),
+    ]);
+    const readingItems = readings.map((r) =>
+      this.mapDailyReadingToItem(
+        r,
+        history.get(r.meterId) ?? [],
+        r.propertyUnit?.id != null ? customersByUnit.get(r.propertyUnit.id) ?? [] : [],
+      ),
+    );
+
+    const combined = [...readingItems, ...missingItems];
+    const sortDir = effectiveSortOrder === 'ASC' ? 1 : -1;
+    // Mirrors DAILY_READINGS_SORTABLE's column choices, but against the mapped item's own fields —
+    // the two source queries can't share one SQL ORDER BY, so this re-sort is what actually decides
+    // the union's final row order (readingDate is still the tiebreak for unit/meterId sorts, and
+    // meterId the tiebreak for readingDate, so ties never look arbitrarily shuffled).
+    combined.sort((a, b) => {
+      let primary = 0;
+      if (effectiveSortBy === 'unit') {
+        primary = (a.unitNumber ?? '').localeCompare(b.unitNumber ?? '');
+      } else if (effectiveSortBy === 'meterId') {
+        primary = (a.meterId ?? '').localeCompare(b.meterId ?? '');
+      } else if (effectiveSortBy === 'readingValue') {
+        primary = (a.closingReading ?? -Infinity) - (b.closingReading ?? -Infinity);
+      } else {
+        primary = (a.readingDate ?? '').localeCompare(b.readingDate ?? '');
+      }
+      if (primary !== 0) return primary * sortDir;
+      return (a.readingDate ?? '').localeCompare(b.readingDate ?? '') || (a.meterId ?? '').localeCompare(b.meterId ?? '');
+    });
+
+    const total = combined.length;
+    const pageItems = combined.slice((page - 1) * limit, (page - 1) * limit + limit);
     return {
-      items: readings.map((r) => this.mapDailyReadingToItem(r, history.get(r.meterId) ?? [])),
-      pagination,
+      items: pageItems,
+      pagination: { page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)) },
     };
   }
 
@@ -1650,6 +1759,7 @@ export class MeterService {
 
   private async getReadingHistoryByMeterId(meterIds: string[], upToDate: string): Promise<Map<string, MeterReading[]>> {
     const distinctIds = Array.from(new Set(meterIds));
+    if (distinctIds.length === 0) return new Map();
     const rows = await this.meterReadings
       .createQueryBuilder('r')
       .where('r.meter_id IN (:...distinctIds)', { distinctIds })
@@ -1667,7 +1777,7 @@ export class MeterService {
     return byMeter;
   }
 
-  private mapDailyReadingToItem(reading: MeterReading, history: MeterReading[]) {
+  private mapDailyReadingToItem(reading: MeterReading, history: MeterReading[], unitCustomers: UnitCustomerSummaryDto[]) {
     const closing = Number(reading.readingValue);
     const opening = history[1] ? Number(history[1].readingValue) : null;
     const consumption = opening !== null ? closing - opening : null;
@@ -1681,6 +1791,14 @@ export class MeterService {
       thirtyDayAvg !== null && thirtyDayAvg !== 0 && consumption !== null
         ? ((consumption - thirtyDayAvg) / thirtyDayAvg) * 100
         : null;
+
+    // The active Tenant is the current customer for reading/billing purposes when one exists —
+    // they're the one actually using the unit — falling back to the Owner only when there's no
+    // active Tenant. See CustomerService.resolveCurrentCustomer's own doc comment for the full
+    // rule (this was previously backwards: owner took precedence over tenant, the opposite of the
+    // confirmed business rule). Owner is still surfaced separately (ownerName/ownerBusinessCode)
+    // for screens that want ownership context alongside the current customer.
+    const { currentCustomer, currentCustomerType, owner } = this.customerService.resolveCurrentCustomer(unitCustomers);
 
     return {
       id: reading.id,
@@ -1696,6 +1814,8 @@ export class MeterService {
       approvalStatus: reading.approvalStatus,
       approvedAt: reading.approvedAt?.toISOString() ?? null,
       approvedBy: reading.approvedBy ?? null,
+      subMeterBusinessCode: reading.subMeter?.businessCode ?? null,
+      dtuId: reading.subMeter?.masterMeter?.dtuId ?? null,
       unitId: reading.propertyUnit?.id ?? null,
       unitNumber: reading.propertyUnit?.unitNumber ?? null,
       floorNumber: reading.propertyUnit?.floorNumber ?? null,
@@ -1703,49 +1823,73 @@ export class MeterService {
       propertyName: reading.property?.name ?? null,
       communityId: reading.community?.id ?? null,
       communityName: reading.community?.name ?? null,
+      customerId: currentCustomer?.id ?? null,
+      customerBusinessCode: currentCustomer?.businessCode ?? null,
+      customerName: currentCustomer?.fullName ?? null,
+      occupancyStatus: currentCustomerType,
+      ownerName: owner?.fullName ?? null,
+      ownerBusinessCode: owner?.businessCode ?? null,
     };
   }
 
-  private async getMissingDailyReadings(
-    query: DailyMeterReadingQueryDto,
-    date: string,
-    page: number,
-    limit: number,
-  ) {
+  /** Returns every missing-reading item (a mapped sub-meter with no reading in the requested
+   *  window), unpaginated — the raw building block both the standalone `validationStatus=missing`
+   *  filter AND the unfiltered "All Validations" view (which unions these into the real
+   *  meter_readings rows below) share, so the definition of "missing" never drifts between the two.
+   *  `date` is the single-day mode's date; pass null when `query.startDate`/`query.endDate` are both
+   *  set to instead check "did ANY reading arrive within that range" — e.g. Billing Readiness's
+   *  "View Missing Readings" action, which needs the full billing-cycle window, not one calendar day
+   *  (a mapped meter that reported on ANY day within the cycle isn't missing). */
+  private async findMissingReadingItems(query: DailyMeterReadingQueryDto, date: string | null) {
+    // A missing reading is never genuinely "Approved" (nothing was ever submitted to approve) — see
+    // getDailyMeterReadings' own doc comment on this same rule for the Missing+approvalStatus
+    // combination. So approvalStatus=approved correctly excludes every missing item outright.
+    if (query.approvalStatus === 'approved') return [];
+
     const qb = this.subMeters
       .createQueryBuilder('s')
       .innerJoinAndSelect('s.property', 'property')
       .innerJoinAndSelect('property.community', 'community')
+      .innerJoinAndSelect('s.masterMeter', 'masterMeter')
       .leftJoinAndSelect('s.unit', 'unit')
-      .where('s.business_code IS NOT NULL');
+      .where('s.business_code IS NOT NULL')
+      .orderBy('unit.unitNumber', 'ASC');
 
     if (query.communityId) qb.andWhere('community.id = :communityId', { communityId: query.communityId });
     if (query.propertyId) qb.andWhere('property.id = :propertyId', { propertyId: query.propertyId });
     if (query.unitId) qb.andWhere('unit.id = :unitId', { unitId: query.unitId });
+    if (query.search) qb.andWhere('s.business_code LIKE :s', { s: `%${query.search}%` });
 
     const allSubMeters = await qb.getMany();
-    if (allSubMeters.length === 0) {
-      return { items: [], pagination: { page, limit, total: 0, totalPages: 1 } };
-    }
+    if (allSubMeters.length === 0) return [];
 
     const businessCodes = allSubMeters.map((s) => s.businessCode!);
-    const reportedRows = await this.meterReadings
+    const reportedQb = this.meterReadings
       .createQueryBuilder('r')
       .select('r.meter_id', 'meterId')
-      .where('r.meter_id IN (:...businessCodes)', { businessCodes })
-      .andWhere('r.readingDate = :date', { date })
-      .getRawMany<{ meterId: string }>();
+      .where('r.meter_id IN (:...businessCodes)', { businessCodes });
+    if (date) {
+      reportedQb.andWhere('r.readingDate = :date', { date });
+    } else {
+      reportedQb.andWhere('r.readingDate BETWEEN :startDate AND :endDate', { startDate: query.startDate, endDate: query.endDate });
+    }
+    const reportedRows = await reportedQb.getRawMany<{ meterId: string }>();
     const reported = new Set(reportedRows.map((r) => r.meterId));
 
     const missing = allSubMeters.filter((s) => !reported.has(s.businessCode!));
-    const total = missing.length;
-    const pageItems = missing.slice((page - 1) * limit, (page - 1) * limit + limit);
+    if (missing.length === 0) return [];
 
-    return {
-      items: pageItems.map((s) => ({
+    const unitIds = missing.map((s) => s.unit?.id).filter((id): id is number => id != null);
+    const customersByUnit = await this.customerService.findByUnitIds(unitIds);
+
+    return missing.map((s) => {
+      const unitCustomers = s.unit?.id != null ? customersByUnit.get(s.unit.id) ?? [] : [];
+      const { currentCustomer, currentCustomerType, owner } = this.customerService.resolveCurrentCustomer(unitCustomers);
+
+      return {
         id: null,
         meterId: s.businessCode,
-        readingDate: date,
+        readingDate: date ?? query.endDate ?? '',
         unit: null,
         openingReading: null,
         closingReading: null,
@@ -1756,6 +1900,8 @@ export class MeterService {
         approvalStatus: null,
         approvedAt: null,
         approvedBy: null,
+        subMeterBusinessCode: s.businessCode ?? null,
+        dtuId: s.masterMeter?.dtuId ?? null,
         unitId: s.unit?.id ?? null,
         unitNumber: s.unit?.unitNumber ?? null,
         floorNumber: s.unit?.floorNumber ?? null,
@@ -1763,7 +1909,31 @@ export class MeterService {
         propertyName: s.property.name,
         communityId: s.property.community.id,
         communityName: s.property.community.name,
-      })),
+        customerId: currentCustomer?.id ?? null,
+        customerBusinessCode: currentCustomer?.businessCode ?? null,
+        customerName: currentCustomer?.fullName ?? null,
+        occupancyStatus: currentCustomerType,
+        ownerName: owner?.fullName ?? null,
+        ownerBusinessCode: owner?.businessCode ?? null,
+      };
+    });
+  }
+
+  /** `date` is the single-day mode's date; pass null when ranging — see findMissingReadingItems'
+   *  own doc comment. Thin pagination wrapper around findMissingReadingItems for the standalone
+   *  `validationStatus=missing` filter (the unfiltered "All Validations" view unions the same raw
+   *  items with real meter_readings rows instead — see getDailyMeterReadings). */
+  private async getMissingDailyReadings(
+    query: DailyMeterReadingQueryDto,
+    date: string | null,
+    page: number,
+    limit: number,
+  ) {
+    const missing = await this.findMissingReadingItems(query, date);
+    const total = missing.length;
+    const pageItems = missing.slice((page - 1) * limit, (page - 1) * limit + limit);
+    return {
+      items: pageItems,
       pagination: { page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)) },
     };
   }

@@ -5,7 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, EntityManager, Repository } from 'typeorm';
 import { AuditService } from '../../audit/audit.service';
 import { paginate } from '../../common/utils/pagination.util';
 import { BUSINESS_CODE_PREFIXES, generateBusinessCode } from '../../common/utils/business-code.util';
@@ -13,14 +13,12 @@ import { assertNotSelfReview, nextMajorVersion } from '../../common/utils/versio
 import { Community } from '../community/entities/community.entity';
 import { Property } from '../property/entities/property.entity';
 import { LovService } from '../lov/lov.service';
-import { AttributeService } from '../attribute/attribute.service';
 import {
   BillingCycleQueryDto,
   CreateBillingCycleDto,
   DeprecateBillingCycleDto,
   NewVersionBillingCycleDto,
   RejectBillingCycleDto,
-  UpdateBillingCycleDto,
 } from './dto/billing-cycle.dto';
 import { BillingCycleMaster } from './entities/billing-cycle-master.entity';
 import { BillingCycleVersion, BillingCycleStatus } from './entities/billing-cycle-version.entity';
@@ -29,10 +27,7 @@ import {
   BILLING_CYCLE_CHANGE_REASON_LOV_CATEGORY,
   BILLING_CYCLE_DEPRECATION_REASON_LOV_CATEGORY,
   BillingCycleAuditAction,
-  EDITABLE_BILLING_CYCLE_STATUSES,
-  LOCKED_BILLING_CYCLE_FIELDS,
   NEW_VERSION_SOURCE_STATUSES,
-  REQUIRE_CHANGE_REASON_ON_EDIT_ATTRIBUTE_KEY,
 } from './billing-cycle.constants';
 
 const VERSION_RESPONSE_RELATIONS = ['master', 'master.community', 'master.property', 'submittedBy', 'approvedBy', 'parentVersion'];
@@ -51,7 +46,6 @@ export class BillingCycleService {
     private readonly auditService: AuditService,
     private readonly dataSource: DataSource,
     private readonly lovService: LovService,
-    private readonly attributeService: AttributeService,
   ) {}
 
   async getFilterMetadata() {
@@ -211,6 +205,26 @@ export class BillingCycleService {
       status: v.status,
       version: v.version,
       parentBillingCycleId: v.parentVersion?.id ?? null,
+      // Populated only when a parent exists AND is genuinely deprecated — a version whose parent is
+      // still active/inactive (e.g. this version itself was rejected before ever displacing it) has
+      // nothing to show here, per the "don't show an empty/not-yet-true section" rule. Uses the
+      // SAME master as the current version (one master per property — every version, parent or
+      // child, shares it) rather than re-loading parentVersion.master, which findOne()'s own
+      // relations array doesn't fetch. businessCode is therefore identical to the current version's
+      // own businessCode below, by construction, not coincidence.
+      previousVersion: v.parentVersion && v.parentVersion.status === BillingCycleStatus.DEPRECATED
+        ? {
+            id: v.parentVersion.id,
+            billCycleId: this.formatBillCycleId(v.parentVersion.id),
+            version: v.parentVersion.version,
+            businessCode: master?.businessCode ?? null,
+            readingStartDay: v.parentVersion.readingStartDay,
+            readingEndDay: v.parentVersion.readingEndDay,
+            status: v.parentVersion.status,
+            deprecatedOn: v.parentVersion.deprecatedOn ?? null,
+            deprecationReasonCode: v.parentVersion.deprecationReasonCode ?? null,
+          }
+        : null,
       effectiveFrom: v.effectiveFrom ?? null,
       lastChangeReason: v.lastChangeReason ?? null,
       changeReasonCode: v.changeReasonCode ?? null,
@@ -326,8 +340,14 @@ export class BillingCycleService {
     };
   }
 
-  async findOne(id: number) {
-    const bc = await this.versions.findOne({
+  // manager, when passed, reads through that SAME connection/transaction — needed when called from
+  // inside approve()/reject()'s own transaction, since a read via the injected repository (a
+  // separate connection) would see the pre-commit snapshot under REPEATABLE READ and could return
+  // stale status (confirmed: return value showed "pending" immediately after a successful approve
+  // that the DB and audit trail both already correctly recorded as "active").
+  async findOne(id: number, manager?: EntityManager) {
+    const versions = manager ? manager.getRepository(BillingCycleVersion) : this.versions;
+    const bc = await versions.findOne({
       where: { id },
       relations: VERSION_RESPONSE_RELATIONS,
     });
@@ -352,51 +372,47 @@ export class BillingCycleService {
     return !!master?.currentVersionId;
   }
 
-  async update(id: number, dto: UpdateBillingCycleDto, actorId?: number) {
-    const bc = await this.versions.findOne({
-      where: { id },
-      relations: VERSION_RESPONSE_RELATIONS,
+  /** For Billing Readiness: is this property's current reading window closed right now (i.e. has
+   *  today passed the resolved period end)? Deliberately independent of the cycle version's own
+   *  approval `status` (ACTIVE/PENDING/etc.) — that's a lifecycle/approval concept, this is a
+   *  calendar concept; whichever version `currentVersionId` points to is "the" cycle regardless of
+   *  its status, same as `findByProperty`/`resolveForProperty` already treat it. Returns `null`
+   *  when no cycle is configured at all — the caller (Billing Readiness) treats that as its own
+   *  distinct "no cycle" condition, never conflated with "configured but not yet closed". */
+  async getReadingPeriodForProperty(propertyId: number): Promise<{
+    closed: boolean;
+    periodStart: string;
+    periodEnd: string;
+    masterId: number;
+    versionId: number;
+    billGenerationDays: number;
+    billIssueDays: number;
+    billDueDays: number;
+  } | null> {
+    const master = await this.masters.findOne({ where: { propertyId } });
+    if (!master?.currentVersionId) return null;
+
+    const version = await this.versions.findOne({
+      where: { id: master.currentVersionId },
+      select: ['id', 'readingStartDay', 'readingEndDay', 'billGenerationDays', 'billIssueDays', 'billDueDays'],
     });
-    if (!bc) throw new NotFoundException('Billing cycle not found');
+    if (!version) return null;
 
-    if (!EDITABLE_BILLING_CYCLE_STATUSES.has(bc.status)) {
-      throw new BadRequestException(
-        bc.status === BillingCycleStatus.PENDING
-          ? 'A version awaiting Finance approval is read-only — approve, reject, or wait for a decision'
-          : 'A deprecated billing cycle is read-only',
-      );
-    }
+    const { start, end } = this.currentReadingPeriod(version.readingStartDay, version.readingEndDay);
+    const periodStart = this.formatDate(start);
+    const periodEnd = this.formatDate(end);
+    if (!periodStart || !periodEnd) return null;
 
-    this.assertNoLockedFields(dto);
-    this.assertToggleOnlyStatusChange(bc, dto);
-
-    const requireReason = await this.attributeService.isMandatory(REQUIRE_CHANGE_REASON_ON_EDIT_ATTRIBUTE_KEY);
-    if (requireReason && !dto.reasonForChange?.trim() && !dto.reasonCode) {
-      throw new BadRequestException('A change reason is required when editing an existing billing cycle');
-    }
-    if (dto.reasonCode) {
-      await this.assertValidLovCode(BILLING_CYCLE_CHANGE_REASON_LOV_CATEGORY, dto.reasonCode);
-      this.assertNotesRequiredForOtherReason(dto.reasonCode, dto.reasonForChange);
-    }
-
-    const oldValue = {
-      frequency: bc.frequency,
-      billGenerationDays: bc.billGenerationDays,
-      billIssueDays: bc.billIssueDays,
-      billDueDays: bc.billDueDays,
-      status: bc.status,
+    return {
+      closed: new Date() > end,
+      periodStart,
+      periodEnd,
+      masterId: master.id,
+      versionId: version.id,
+      billGenerationDays: version.billGenerationDays,
+      billIssueDays: version.billIssueDays,
+      billDueDays: version.billDueDays,
     };
-
-    const { reasonForChange, reasonCode, ...fields } = dto;
-    Object.assign(bc, fields);
-    if (reasonForChange) bc.lastChangeReason = reasonForChange;
-    if (reasonCode) bc.changeReasonCode = reasonCode;
-
-    const saved = await this.versions.save(bc);
-
-    await this.recordAudit(BillingCycleAuditAction.UPDATE, id, oldValue, { ...fields, reasonForChange, reasonCode }, actorId);
-
-    return this.mapToResponse(saved);
   }
 
   async newVersion(id: number, dto: NewVersionBillingCycleDto, actorId?: number) {
@@ -453,48 +469,69 @@ export class BillingCycleService {
     return this.findOne(saved.id);
   }
 
+  // Wrapped in a transaction with a pessimistic lock on the initial read — without it, two
+  // concurrent reviewers (e.g. one approving, one rejecting) can both read status === PENDING
+  // before either writes, both pass this check, and both save — a confirmed real race (found via
+  // Promise.allSettled testing both calls simultaneously): the DB ends up with whichever write
+  // landed last, but BOTH calls report success, and if the version's effectiveFrom had already
+  // arrived, approve()'s activateVersion() (which deprecates the parent + moves the master's
+  // currentVersionId pointer) could race a concurrent reject() write. The lock forces the second
+  // transaction to wait for the first to commit, then re-read and correctly see status !== PENDING.
   async approve(id: number, actorId?: number) {
-    const cycle = await this.versions.findOne({
-      where: { id },
-      relations: ['submittedBy', 'parentVersion'],
+    return this.dataSource.transaction(async (manager) => {
+      const cycle = await manager
+        .createQueryBuilder(BillingCycleVersion, 'bcv')
+        .setLock('pessimistic_write')
+        .leftJoinAndSelect('bcv.submittedBy', 'submittedBy')
+        .leftJoinAndSelect('bcv.parentVersion', 'parentVersion')
+        .where('bcv.id = :id', { id })
+        .getOne();
+      if (!cycle) throw new NotFoundException('Billing cycle not found');
+      if (cycle.status !== BillingCycleStatus.PENDING) {
+        throw new BadRequestException('Only a pending billing cycle version can be approved');
+      }
+      assertNotSelfReview(cycle.submittedBy?.id, actorId, 'approved');
+
+      const oldValue = { ...cycle };
+      if (actorId) cycle.approvedBy = { id: actorId } as any;
+      cycle.approvalDate = new Date().toISOString().slice(0, 10);
+
+      const today = new Date().toISOString().slice(0, 10);
+      if (cycle.effectiveFrom && cycle.effectiveFrom <= today) {
+        await this.activateVersion(cycle, actorId, manager);
+      } else {
+        await manager.save(BillingCycleVersion, cycle);
+      }
+
+      await this.recordAudit(BillingCycleAuditAction.APPROVE, id, oldValue, cycle, actorId, manager);
+      return this.findOne(id, manager);
     });
-    if (!cycle) throw new NotFoundException('Billing cycle not found');
-    if (cycle.status !== BillingCycleStatus.PENDING) {
-      throw new BadRequestException('Only a pending billing cycle version can be approved');
-    }
-    assertNotSelfReview(cycle.submittedBy?.id, actorId, 'approved');
-
-    const oldValue = { ...cycle };
-    if (actorId) cycle.approvedBy = { id: actorId } as any;
-    cycle.approvalDate = new Date().toISOString().slice(0, 10);
-
-    const today = new Date().toISOString().slice(0, 10);
-    if (cycle.effectiveFrom && cycle.effectiveFrom <= today) {
-      await this.activateVersion(cycle, actorId);
-    } else {
-      await this.versions.save(cycle);
-    }
-
-    await this.recordAudit(BillingCycleAuditAction.APPROVE, id, oldValue, cycle, actorId);
-    return this.findOne(id);
   }
 
+  // See approve()'s own comment on why this needs a transaction + pessimistic lock.
   async reject(id: number, dto: RejectBillingCycleDto, actorId?: number) {
-    const cycle = await this.versions.findOne({ where: { id }, relations: ['submittedBy'] });
-    if (!cycle) throw new NotFoundException('Billing cycle not found');
-    if (cycle.status !== BillingCycleStatus.PENDING) {
-      throw new BadRequestException('Only a pending billing cycle version can be rejected');
-    }
-    assertNotSelfReview(cycle.submittedBy?.id, actorId, 'rejected');
+    return this.dataSource.transaction(async (manager) => {
+      const cycle = await manager
+        .createQueryBuilder(BillingCycleVersion, 'bcv')
+        .setLock('pessimistic_write')
+        .leftJoinAndSelect('bcv.submittedBy', 'submittedBy')
+        .where('bcv.id = :id', { id })
+        .getOne();
+      if (!cycle) throw new NotFoundException('Billing cycle not found');
+      if (cycle.status !== BillingCycleStatus.PENDING) {
+        throw new BadRequestException('Only a pending billing cycle version can be rejected');
+      }
+      assertNotSelfReview(cycle.submittedBy?.id, actorId, 'rejected');
 
-    const oldValue = { ...cycle };
-    cycle.status = BillingCycleStatus.REJECTED;
-    cycle.rejectionNotes = dto.notes;
-    if (actorId) cycle.approvedBy = { id: actorId } as any;
-    cycle.approvalDate = new Date().toISOString().slice(0, 10);
-    const saved = await this.versions.save(cycle);
-    await this.recordAudit(BillingCycleAuditAction.REJECT, id, oldValue, saved, actorId);
-    return this.findOne(id);
+      const oldValue = { ...cycle };
+      cycle.status = BillingCycleStatus.REJECTED;
+      cycle.rejectionNotes = dto.notes;
+      if (actorId) cycle.approvedBy = { id: actorId } as any;
+      cycle.approvalDate = new Date().toISOString().slice(0, 10);
+      const saved = await manager.save(BillingCycleVersion, cycle);
+      await this.recordAudit(BillingCycleAuditAction.REJECT, id, oldValue, saved, actorId, manager);
+      return this.findOne(id, manager);
+    });
   }
 
   async resubmit(id: number, actorId?: number) {
@@ -574,17 +611,21 @@ export class BillingCycleService {
     reasonCode: string,
     notes: string | null,
     effectiveDate: string,
+    manager?: EntityManager,
   ): Promise<BillingCycleVersion> {
+    const versions = manager ? manager.getRepository(BillingCycleVersion) : this.versions;
+    const masters = manager ? manager.getRepository(BillingCycleMaster) : this.masters;
+
     cycle.status = BillingCycleStatus.DEPRECATED;
     cycle.deprecationReasonCode = reasonCode;
     cycle.deprecationNotes = notes;
     cycle.deprecatedOn = effectiveDate;
-    const saved = await this.versions.save(cycle);
+    const saved = await versions.save(cycle);
 
-    const master = await this.masters.findOne({ where: { id: cycle.masterId } });
+    const master = await masters.findOne({ where: { id: cycle.masterId } });
     if (master && master.currentVersionId === cycle.id) {
       master.currentVersionId = null;
-      await this.masters.save(master);
+      await masters.save(master);
     }
 
     return saved;
@@ -618,19 +659,29 @@ export class BillingCycleService {
     return due.length;
   }
 
-  private async activateVersion(cycle: BillingCycleVersion, actorId?: number): Promise<BillingCycleVersion> {
-    cycle.status = BillingCycleStatus.ACTIVE;
-    const saved = await this.versions.save(cycle);
+  // manager, when passed (from approve()'s own transaction+lock), keeps these writes inside that
+  // SAME transaction/connection — using the injected repositories here instead would run them on a
+  // separate connection, outside the lock's protection, defeating the point of taking it.
+  private async activateVersion(
+    cycle: BillingCycleVersion,
+    actorId?: number,
+    manager?: EntityManager,
+  ): Promise<BillingCycleVersion> {
+    const versions = manager ? manager.getRepository(BillingCycleVersion) : this.versions;
+    const masters = manager ? manager.getRepository(BillingCycleMaster) : this.masters;
 
-    const master = await this.masters.findOne({ where: { id: cycle.masterId } });
+    cycle.status = BillingCycleStatus.ACTIVE;
+    const saved = await versions.save(cycle);
+
+    const master = await masters.findOne({ where: { id: cycle.masterId } });
     if (master) {
       master.currentVersionId = cycle.id;
-      await this.masters.save(master);
+      await masters.save(master);
     }
 
     const parentId = cycle.parentVersion?.id;
     if (parentId) {
-      const parent = await this.versions.findOne({ where: { id: parentId } });
+      const parent = await versions.findOne({ where: { id: parentId } });
       if (parent && parent.status !== BillingCycleStatus.DEPRECATED) {
         const parentOldValue = { ...parent };
         const savedParent = await this.applyDeprecation(
@@ -638,6 +689,7 @@ export class BillingCycleService {
           'replaced-by-new-version',
           null,
           new Date().toISOString().slice(0, 10),
+          manager,
         );
         await this.recordAudit(
           actorId ? BillingCycleAuditAction.DEPRECATE : BillingCycleAuditAction.AUTO_DEPRECATE,
@@ -645,6 +697,7 @@ export class BillingCycleService {
           parentOldValue,
           savedParent,
           actorId,
+          manager,
         );
       }
     }
@@ -685,40 +738,24 @@ export class BillingCycleService {
     }
   }
 
-  private assertNoLockedFields(dto: UpdateBillingCycleDto): void {
-    const locked = LOCKED_BILLING_CYCLE_FIELDS.filter((field) => (dto as Record<string, unknown>)[field] !== undefined);
-    if (locked.length) {
-      throw new BadRequestException(
-        `Cannot change ${locked.join(', ')} on an existing billing cycle — create a new version instead.`,
-      );
-    }
-  }
-
-  private assertToggleOnlyStatusChange(bc: BillingCycleVersion, dto: UpdateBillingCycleDto): void {
-    if (dto.status === undefined) return;
-    const isToggle = dto.status === BillingCycleStatus.ACTIVE || dto.status === BillingCycleStatus.INACTIVE;
-    const currentIsToggleable = bc.status === BillingCycleStatus.ACTIVE || bc.status === BillingCycleStatus.INACTIVE;
-    if (!isToggle || !currentIsToggleable) {
-      throw new BadRequestException(
-        'Status can only be toggled between active and inactive on an already active or inactive billing cycle — use approve, reject, or deprecate for other transitions.',
-      );
-    }
-  }
-
   private async recordAudit(
     action: BillingCycleAuditAction,
     entityId: number,
     oldValue: unknown,
     newValue: unknown,
     actorId?: number,
+    manager?: EntityManager,
   ): Promise<void> {
-    await this.auditService.record({
-      moduleName: BILLING_CYCLE_AUDIT_MODULE_NAME,
-      entityId,
-      action,
-      oldValue,
-      newValue,
-      performedBy: actorId,
-    });
+    await this.auditService.record(
+      {
+        moduleName: BILLING_CYCLE_AUDIT_MODULE_NAME,
+        entityId,
+        action,
+        oldValue,
+        newValue,
+        performedBy: actorId,
+      },
+      manager,
+    );
   }
 }

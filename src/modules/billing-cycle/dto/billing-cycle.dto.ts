@@ -1,4 +1,4 @@
-import { ApiProperty, ApiPropertyOptional, PartialType, OmitType } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
   IsBoolean,
@@ -70,22 +70,6 @@ export class CreateBillingCycleDto {
   @IsOptional()
   @IsEnum(BillingCycleStatus)
   status?: BillingCycleStatus;
-}
-
-export class UpdateBillingCycleDto extends PartialType(
-  OmitType(CreateBillingCycleDto, ['propertyId', 'communityId'] as const),
-) {
-  @ApiPropertyOptional({ description: 'Free-text notes explaining the change' })
-  @IsOptional()
-  @IsString()
-  @IsNotEmpty()
-  reasonForChange?: string;
-
-  @ApiPropertyOptional({ description: 'Change reason code from LOV category BILLING_CYCLE_CHANGE_REASON' })
-  @IsOptional()
-  @IsString()
-  @IsNotEmpty()
-  reasonCode?: string;
 }
 
 export class NewVersionBillingCycleDto {

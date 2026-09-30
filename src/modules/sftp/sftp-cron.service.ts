@@ -46,7 +46,7 @@ export class SftpCronService {
 
     if (triggerSource === TriggerSource.CRON && !cronEnabled) {
       this.logger.log('Skipping SFTP cron run — SFTP_CRON_ENABLED=false');
-      return {
+    return {
         jobId: '',
         processed: 0,
         failed: 0,

@@ -32,6 +32,10 @@ import { RegistrationDocumentRuleModule } from './modules/registration-document-
 import { RegistrationRequestModule } from './modules/registration-request/registration-request.module';
 import { OcrModule } from './modules/ocr/ocr.module';
 import { CustomerPortalModule } from './modules/customer-portal/customer-portal.module';
+import { BillingReadinessModule } from './modules/billing-readiness/billing-readiness.module';
+import { BillingManagementModule } from './modules/billing-management/billing-management.module';
+import { BillRunModule } from './modules/bill-run/bill-run.module';
+import { FieldInspectionModule } from './modules/field-inspection/field-inspection.module';
 
 @Module({
   imports: [
@@ -67,6 +71,10 @@ import { CustomerPortalModule } from './modules/customer-portal/customer-portal.
     OcrModule,
     BootstrapModule,
     CustomerPortalModule,
+    BillingReadinessModule,
+    BillingManagementModule,
+    BillRunModule,
+    FieldInspectionModule,
   ],
 })
 export class AppModule {}

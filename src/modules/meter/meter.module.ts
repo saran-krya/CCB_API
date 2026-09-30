@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AttributeModule } from '../attribute/attribute.module';
+import { CustomerModule } from '../customer/customer.module';
 import { Community } from '../community/entities/community.entity';
 import { Property } from '../property/entities/property.entity';
 import { Unit } from '../unit/entities/unit.entity';
@@ -15,6 +16,7 @@ import { MeterService } from './meter.service';
   imports: [
     TypeOrmModule.forFeature([MasterMeter, SubMeter, Community, Property, Unit, User, MeterReading]),
     AttributeModule,
+    CustomerModule,
   ],
   controllers: [MeterController],
   providers: [MeterService],

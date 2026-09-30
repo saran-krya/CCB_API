@@ -238,6 +238,20 @@ export const SUB_MODULES: SeedSubModule[] = [
     url: '/billing/payments',
     displayOrder: 5,
   },
+  // Added when Finance review of Bill Run Requests was relocated here from Meter Management →
+  // Billing Readiness (which stays view-only — see BILLING_READINESS_BILL_RUN's own comment).
+  // Reuses the SAME screen/actions (BILLING_READINESS_BILL_RUN / BILL_RUN_VIEW/SUBMIT/APPROVE) —
+  // an Action belongs to exactly one Screen (see action.entity.ts's single screenId FK), so this is
+  // a genuine re-home of the existing screen's subModuleCode, not a duplicate RBAC tree. No new
+  // action/permission codes were introduced for this move.
+  {
+    pModuleCode: 'BILLING_MANAGEMENT',
+    name: 'Bill Run Register',
+    code: 'BILL_RUN_REGISTER',
+    icon: 'ClipboardCheck',
+    url: '/billing/bill-run-register',
+    displayOrder: 6,
+  },
 
   {
     pModuleCode: 'SYSTEM_ADMIN',
@@ -297,6 +311,13 @@ export const SUB_MODULES: SeedSubModule[] = [
     icon: 'BadgeCheck',
     displayOrder: 1,
   },
+  {
+    pModuleCode: 'FINANCE',
+    name: 'Billing Cycle Approval',
+    code: 'BILLING_CYCLE_APPROVAL',
+    icon: 'CalendarCheck',
+    displayOrder: 2,
+  },
 ]
 
 
@@ -349,6 +370,13 @@ export const SCREENS: SeedScreen[] = [
     name: 'Tariff Approval',
     code: 'TARIFF_APPROVAL',
     url: '/finance/tariff-approval',
+    displayOrder: 1,
+  },
+  {
+    subModuleCode: 'BILLING_CYCLE_APPROVAL',
+    name: 'Billing Cycle Approval',
+    code: 'BILLING_CYCLE_APPROVAL',
+    url: '/finance/billing-cycle-approval',
     displayOrder: 1,
   },
   {
@@ -423,10 +451,66 @@ export const SCREENS: SeedScreen[] = [
     displayOrder: 1,
   },
   {
+    subModuleCode: 'SFTP_MONITOR',
+    name: 'SFTP File Monitor',
+    code: 'SFTP_MONITOR',
+    url: '/meters/sftp-monitor',
+    displayOrder: 1,
+  },
+  // Billing Readiness's 4 product TABS (Dashboard, Property Billing Readiness, Anomaly Review,
+  // Readings List) are UI navigation only — the RBAC boundary is this ONE screen, matching the
+  // sub-module 1:1 exactly like Meter Information (METER_LIST screen == METER_LIST sub-module).
+  // The screen holds exactly ONE action, BILLING_READINESS_VIEW (see that action's own comment) —
+  // holding it grants every tab; none of the 4 tabs has, or should have, its own permission. A prior
+  // version of this file gave each tab its own bare Screen row "for visibility" (including two with
+  // zero actions — a real structural landmine, see git history), then a later version split viewing
+  // into two separate actions (Dashboard vs. Property) before merging back to one on explicit
+  // request. Tab visibility is derived from this single action grant in
+  // useBillingReadinessTabAccess.ts, never from a per-tab screen or a per-tab permission.
+  {
+    subModuleCode: 'BILLING_READINESS',
+    name: 'Billing Readiness',
+    code: 'BILLING_READINESS',
+    url: '/meters/billing-readiness',
+    displayOrder: 1,
+  },
+  // Finance's actual review/approve/reject/return workflow for this screen now lives at
+  // /billing/bill-run-register (Billing Management → Bill Run Register — see the BILL_RUN_REGISTER
+  // sub-module above). This screen row is re-homed there (real move — see the migration that
+  // updates the already-live screen's sub_module_id, since ensureCriticalDefaults() only backfills
+  // screens that don't exist yet and never retroactively moves an existing one).
+  // /meters/billing-readiness/bill-run stays a real, visible tab (gated on the same BILL_RUN_VIEW
+  // action), but is intentionally VIEW ONLY there — no Approve/Reject/Return/Resubmit UI renders on
+  // that tab regardless of the viewer's BILL_RUN_APPROVE grant. This is a UI-only simplification,
+  // not a security boundary: the backend enforces via the same @Permission('BILL_RUN_APPROVE')
+  // guard wherever it's called from, so nothing here weakens backend authorization.
+  {
+    subModuleCode: 'BILL_RUN_REGISTER',
+    name: 'Bill Run Register',
+    code: 'BILLING_READINESS_BILL_RUN',
+    url: '/billing/bill-run-register',
+    displayOrder: 1,
+  },
+  {
     subModuleCode: 'METER_INVENTORY',
     name: 'Meter Inventory',
     code: 'METER_INVENTORY',
     url: '/meters/inventory',
+    displayOrder: 1,
+  },
+  // BILL_REGISTER is one of 5 sub-modules already reserved under the BILLING_MANAGEMENT module
+  // (pmodule + these 5 sub-modules existed in this seed data before any Billing Management
+  // implementation — real, pre-planned RBAC scaffolding, not newly invented here). Only this one
+  // screen is populated for Phase 1-2 (the real Bills list) — GENERATE_BILLS/BILLING_DASHBOARD/
+  // MANAGE_INVOICES/PAYMENTS stay bare (zero screens) until a later phase actually needs them; see
+  // this feature's own design doc for why "Generate Bills" as a manual-trigger screen was
+  // deliberately NOT built (generation is a consequence of Bill Run approval, never a standalone
+  // user action).
+  {
+    subModuleCode: 'BILL_REGISTER',
+    name: 'Bill Register',
+    code: 'BILL_REGISTER_SCREEN',
+    url: '/billing/register',
     displayOrder: 1,
   },
 ]
@@ -640,33 +724,24 @@ export const ACTIONS: SeedAction[] = [
   },
   {
     screenCode: 'BILLING_CYCLE',
-    name: 'Edit Billing Cycle',
-    code: 'EDIT_BILLING_CYCLE',
-    description: 'Edit an editable billing cycle version, including the active/inactive toggle',
-    displayOrder: 2,
-  },
-  {
-    screenCode: 'BILLING_CYCLE',
     name: 'Create New Billing Cycle Version',
     code: 'BILLING_CYCLE_NEW_VERSION',
     description: 'Clone the current governing billing cycle into a new pending version',
-    parentActionCode: 'EDIT_BILLING_CYCLE',
-    displayOrder: 1,
+    displayOrder: 2,
   },
   {
     screenCode: 'BILLING_CYCLE',
     name: 'Deprecate Billing Cycle',
     code: 'BILLING_CYCLE_DEPRECATE',
     description: 'Permanently deprecate a billing cycle version, immediately or on a future date',
-    parentActionCode: 'EDIT_BILLING_CYCLE',
-    displayOrder: 2,
+    displayOrder: 3,
   },
   {
     screenCode: 'BILLING_CYCLE',
     name: 'View Billing Cycle',
     code: 'VIEW_BILLING_CYCLE',
     description: 'View billing cycle list and detail pages',
-    displayOrder: 3,
+    displayOrder: 4,
   },
   {
     screenCode: 'BILLING_CYCLE',
@@ -689,7 +764,62 @@ export const ACTIONS: SeedAction[] = [
     name: 'Export Billing Cycles',
     code: 'EXPORT_BILLING_CYCLE',
     description: 'Export the billing cycle list',
-    displayOrder: 4,
+    displayOrder: 5,
+  },
+  {
+    screenCode: 'BILLING_CYCLE_APPROVAL',
+    name: 'View Billing Cycle Approval Queue',
+    code: 'BILLING_CYCLE_APPROVAL_VIEW',
+    description: 'Access the Finance Billing Cycle Approval screen',
+    displayOrder: 1,
+  },
+  {
+    screenCode: 'BILLING_CYCLE_APPROVAL',
+    name: 'Approve Billing Cycle (Finance)',
+    code: 'BILLING_CYCLE_APPROVAL_APPROVE',
+    description: 'Approve a pending billing cycle version from the Finance Billing Cycle Approval screen — accepted as an alternate to BILLING_CYCLE_APPROVE so Finance never depends on Business Admin access',
+    parentActionCode: 'BILLING_CYCLE_APPROVAL_VIEW',
+    displayOrder: 2,
+  },
+  {
+    screenCode: 'BILLING_CYCLE_APPROVAL',
+    name: 'Reject Billing Cycle (Finance)',
+    code: 'BILLING_CYCLE_APPROVAL_REJECT',
+    description: 'Reject a pending billing cycle version from the Finance Billing Cycle Approval screen — accepted as an alternate to BILLING_CYCLE_REJECT so Finance never depends on Business Admin access',
+    parentActionCode: 'BILLING_CYCLE_APPROVAL_VIEW',
+    displayOrder: 3,
+  },
+
+  // BILL_RUN_VIEW/APPROVE live on BILLING_READINESS_BILL_RUN (nested under Billing Management's
+  // BILL_RUN_REGISTER sub-module) — Finance's review/approve UI. BILL_RUN_SUBMIT ("Run Billing")
+  // is deliberately attached to the BILLING_READINESS screen instead, as a sibling of
+  // BILLING_READINESS_VIEW (see that action's own comment) — explicit request that "Run Billing"
+  // appear under Meter Management → Billing Readiness in the Roles UI, not under Billing
+  // Management. No parentActionCode: it's a sibling of View, not nested under it (matching the
+  // target Billing Readiness -> {View, Run Billing} sibling structure, not a parent/child pair —
+  // ActionsService.assertValidParent requires a parent/child pair share one screen, and View/Run
+  // Billing intentionally do NOT share a screen with BILL_RUN_VIEW/APPROVE).
+  {
+    screenCode: 'BILLING_READINESS_BILL_RUN',
+    name: 'View Bill Run',
+    code: 'BILL_RUN_VIEW',
+    description: 'View bill run requests, their pre-bill validation, and status history',
+    displayOrder: 10,
+  },
+  {
+    screenCode: 'BILLING_READINESS',
+    name: 'Run Billing',
+    code: 'BILL_RUN_SUBMIT',
+    description: 'Submit an individual or batch bill run request, and correct/resubmit a returned one',
+    displayOrder: 2,
+  },
+  {
+    screenCode: 'BILLING_READINESS_BILL_RUN',
+    name: 'Approve Bill Run',
+    code: 'BILL_RUN_APPROVE',
+    description: 'Approve, reject, or return a pending bill run request — intended for Finance roles; grant only to roles that should review bill runs',
+    parentActionCode: 'BILL_RUN_VIEW',
+    displayOrder: 2,
   },
 
   {
@@ -999,6 +1129,59 @@ export const ACTIONS: SeedAction[] = [
     description: 'View the Import Center dashboard, template downloads, and bulk import history',
     displayOrder: 1,
   },
+
+  {
+    screenCode: 'SFTP_MONITOR',
+    name: 'View SFTP File Monitor',
+    code: 'SFTP_MONITOR_VIEW',
+    description: 'View SFTP ingestion status, estate summary, file lists, and trigger/download/parse SFTP files',
+    displayOrder: 1,
+  },
+
+  // BILLING_READINESS_VIEW is the SINGLE permission for the entire Billing Readiness sub-module —
+  // explicit design decision: holding it grants every tab (Dashboard, Property Billing Readiness,
+  // Anomaly Review, Readings List) as pure UI navigation, none of which has (or should have) its own
+  // separate permission. This is the sole action attached to the one Billing Readiness screen (see
+  // that screen's own seed comment on why tabs aren't modeled as separate screens either).
+  // "Run Billing" is intentionally a SEPARATE action (BILL_RUN_SUBMIT, seeded on its own
+  // screen/sub-module below) — it gates the actual Run Billing button/API distinctly from viewing.
+  //
+  // BILLING_READINESS_PROPERTY_VIEW previously existed as a second, independently-assignable
+  // view-only action (one real endpoint accepted either code as an OR). Merged into
+  // BILLING_READINESS_VIEW on explicit request — every role that held the property code also
+  // already held this one (confirmed via a live grants audit before merging, so no role lost
+  // access) — see the RemoveBillingReadinessPropertyView migration for the actual removal.
+  {
+    screenCode: 'BILLING_READINESS',
+    name: 'View',
+    code: 'BILLING_READINESS_VIEW',
+    description: 'View the Billing Readiness sub-module — Dashboard, Property Billing Readiness, Anomaly Review, and Readings List all derive their visibility from this one permission',
+    displayOrder: 1,
+  },
+  // Billing Management — Bill Register. The BILL_REGISTER_SCREEN frontend page has been
+  // decommissioned (its Bill Run approval role was superseded by Bill Run Register — see
+  // BILLING_READINESS_BILL_RUN's own comment — and its manual Issue step no longer exists: a Bill
+  // is issued at generation time now, see BillingManagementService.generateOneBill). BILLING_VIEW/
+  // BILLING_CANCEL are kept as real, dormant backend capabilities (no UI references them today) for
+  // a future customer/invoice-facing screen to reuse without re-inventing this RBAC — per explicit
+  // instruction not to delete a capability just because its current UI was removed. BILLING_ISSUE
+  // was removed entirely (not kept dormant) since issuance is no longer a distinct action anywhere
+  // in this architecture; its role_permissions grants were removed in the same change.
+  {
+    screenCode: 'BILL_REGISTER_SCREEN',
+    name: 'View Bills',
+    code: 'BILLING_VIEW',
+    description: 'View generated Bills, their line items, and status',
+    displayOrder: 1,
+  },
+  {
+    screenCode: 'BILL_REGISTER_SCREEN',
+    name: 'Cancel Bill',
+    code: 'BILLING_CANCEL',
+    description: 'Cancel a generated Bill',
+    parentActionCode: 'BILLING_VIEW',
+    displayOrder: 2,
+  },
 ]
 
 
@@ -1007,6 +1190,12 @@ export const ADMIN_GRANT_EXCLUDED_ACTION_CODES = [
   'TARIFF_REJECT',
   'BILLING_CYCLE_APPROVE',
   'BILLING_CYCLE_REJECT',
+  'BILLING_CYCLE_APPROVAL_APPROVE',
+  'BILLING_CYCLE_APPROVAL_REJECT',
+  // Gates Approve/Reject/Return together (unlike Tariff/Billing Cycle's separate _APPROVE/_REJECT
+  // codes) — excluded from the SUPER_ADMIN auto-grant for the same segregation-of-duties reason:
+  // Finance review should require an explicit grant, not come bundled with full system access.
+  'BILL_RUN_APPROVE',
 ]
 
 export const ROLES: SeedRole[] = [

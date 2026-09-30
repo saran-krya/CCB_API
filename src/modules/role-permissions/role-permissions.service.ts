@@ -440,12 +440,18 @@ export class RolePermissionsService {
       ? await this.roleRepository.findOne({ where: { id: roleId } })
       : null;
 
+    // isActive: false is how a module/sub-module/screen/action is retired from the Roles &
+    // Permissions UI without breaking any already-granted role or any backend @Permission(...)
+    // check still referencing it by code — roleHasAction() and the guard both key off actionId/
+    // code alone, never isActive, so an existing grant keeps working exactly as before; it simply
+    // stops being independently manageable/visible in this tree going forward.
     const modules = await this.pModuleRepository.find({
+      where: { isActive: true },
       order: { displayOrder: 'ASC' },
     });
-    const subModules = await this.subModuleRepository.find();
-    const screens = await this.screenRepository.find();
-    const actions = await this.actionRepository.find();
+    const subModules = await this.subModuleRepository.find({ where: { isActive: true } });
+    const screens = await this.screenRepository.find({ where: { isActive: true } });
+    const actions = await this.actionRepository.find({ where: { isActive: true } });
 
     const permissions = roleId
       ? await this.rolePermissionRepository.find({ where: { roleId } })

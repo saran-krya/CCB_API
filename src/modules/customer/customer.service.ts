@@ -28,7 +28,7 @@ import {
   CustomerQueryDto,
   UpdateCustomerDto,
 } from './dto/create-customer.dto';
-import { CustomerDetailDto, CustomerListDto, UnitCustomerSummaryDto } from './dto/customer-response.dto';
+import { CurrentCustomerResolutionDto, CustomerDetailDto, CustomerListDto, UnitCustomerSummaryDto } from './dto/customer-response.dto';
 import { CustomerActivationToken } from './entities/customer-activation-token.entity';
 import { Customer, CustomerAccountStatus, CustomerAccountType, ResidentType } from './entities/customer.entity';
 import { Company } from './entities/company.entity';
@@ -222,6 +222,76 @@ export class CustomerService {
     }));
   }
 
+  /** Batched sibling of findByUnitId, for callers resolving Owner/Tenant for many units at once
+   *  (e.g. a Daily Meter Readings page of rows) — same filter/shape as findByUnitId, just IN(...)
+   *  instead of one unit at a time, to avoid N+1 (mirrors MeterService.getReadingHistoryByMeterId's
+   *  own batch-by-id-then-Map pattern). */
+  async findByUnitIds(unitIds: number[]): Promise<Map<number, UnitCustomerSummaryDto[]>> {
+    const distinctIds = Array.from(new Set(unitIds));
+    const byUnit = new Map<number, UnitCustomerSummaryDto[]>();
+    if (distinctIds.length === 0) return byUnit;
+
+    const rows = await this.customers
+      .createQueryBuilder('c')
+      .innerJoin('c.unit', 'unit')
+      .select(['c.id', 'c.businessCode', 'c.fullName', 'c.residentType', 'c.email', 'c.mobile', 'c.accountStatus', 'unit.id'])
+      .where('c.unit IN (:...distinctIds)', { distinctIds })
+      .andWhere('c.accountStatus = :accountStatus', { accountStatus: CustomerAccountStatus.ACTIVE })
+      .getMany();
+
+    for (const c of rows) {
+      const unitId = c.unit.id;
+      const list = byUnit.get(unitId) ?? [];
+      list.push({
+        id: c.id,
+        businessCode: c.businessCode ?? null,
+        fullName: c.fullName,
+        residentType: c.residentType,
+        email: c.email ?? null,
+        mobile: c.mobile ?? null,
+        accountStatus: c.accountStatus,
+      });
+      byUnit.set(unitId, list);
+    }
+    return byUnit;
+  }
+
+  /**
+   * THE single "who is the current customer for this unit" rule, reused by every screen that
+   * needs a billing/reading/occupancy-relevant customer (Meter Reading, Billing Readiness, Unit
+   * Detail, etc.) — never re-derive owner/tenant precedence locally at a call site.
+   *
+   * Business rule (confirmed): if an active Tenant exists, THAT tenant is the current
+   * customer — they are the one actually occupying/using the unit and responsible for
+   * billing/payments. The active Owner is returned alongside regardless, for screens that need
+   * ownership context specifically; it is never itself the "current" customer when an active
+   * Tenant is present. "Active" here means Customer.accountStatus === ACTIVE, the same filter
+   * findByUnitId/findByUnitIds already apply — there is no separate lease/tenancy-end concept in
+   * this schema (an inactive/overdue Tenant row is not "current", and correctly falls through to
+   * the Owner, or to null if there is no Owner either).
+   *
+   * `unitCustomers` must already be ACTIVE-filtered (i.e. come from findByUnitId/findByUnitIds) —
+   * this method performs no DB access itself, so it composes for free wherever those are already
+   * called, with zero additional queries.
+   */
+  resolveCurrentCustomer(unitCustomers: UnitCustomerSummaryDto[]): CurrentCustomerResolutionDto {
+    const owner = unitCustomers.find((c) => c.residentType === ResidentType.OWNER) ?? null;
+    const tenant = unitCustomers.find((c) => c.residentType === ResidentType.TENANT) ?? null;
+
+    const currentCustomer = tenant ?? owner;
+    const currentCustomerType = currentCustomer
+      ? (currentCustomer === tenant ? ResidentType.TENANT : ResidentType.OWNER)
+      : null;
+
+    // Per the confirmed business rule, a Tenant should never exist without an Owner — when the
+    // data disagrees (nothing in the schema enforces this at the DB level, see the investigation
+    // that preceded this change), surface it as a flag rather than silently hiding the Tenant or
+    // inventing an Owner.
+    const ownerMissing = tenant !== null && owner === null;
+
+    return { currentCustomer, currentCustomerType, owner, tenant, ownerMissing };
+  }
+
   async findOne(id: number): Promise<CustomerDetailDto> {
     const customer = await this.customers.findOne({
       where: { id },
@@ -231,6 +301,13 @@ export class CustomerService {
       },
     });
     if (!customer) throw new NotFoundException('Customer not found');
+
+    // See CurrentCustomerResolutionDto.ownerMissing's own doc comment for the business rule this
+    // reuses as-is (same resolveCurrentCustomer this DTO's dormant field was already computed by
+    // elsewhere) — only meaningful for a Tenant (an Owner is never "missing" from their own unit).
+    const unitCustomers = await this.findByUnitId(customer.unit.id);
+    const { ownerMissing } = this.resolveCurrentCustomer(unitCustomers);
+
     return {
       id: customer.id,
       businessCode: customer.businessCode ?? null,
@@ -261,10 +338,12 @@ export class CustomerService {
       gender: customer.gender ?? null,
       dateOfBirth: customer.dateOfBirth ?? null,
       nationality: customer.nationality ?? null,
+      maritalStatus: customer.maritalStatus ?? null,
       preferredLanguage: customer.preferredLanguage,
       additionalUnitIds: (customer.additionalUnits ?? []).map((u) => u.id),
       paymentMethods: customer.paymentMethods ?? [],
       autoPayEnabled: customer.autoPayEnabled,
+      ownerMissing: customer.residentType === ResidentType.TENANT ? ownerMissing : false,
     };
   }
 

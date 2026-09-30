@@ -39,6 +39,15 @@ export class UserController {
     return this.users.getReportingManagers();
   }
 
+  // Populates Request Field Inspection's "Assign To" picker — gated on the same single permission
+  // that grants access to all of Billing Readiness (the dialog this lives inside is reachable from
+  // any of its tabs), since this is real staff data (names), not generic config like an LOV list.
+  @Get("field-inspectors")
+  @Permission('BILLING_READINESS_VIEW')
+  getFieldInspectors() {
+    return this.users.getFieldInspectors();
+  }
+
   @Patch("me/preferences")
   updateOwnPreferences(
     @Body() dto: UpdatePreferencesDto,

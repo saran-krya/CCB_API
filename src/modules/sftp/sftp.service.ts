@@ -8,6 +8,16 @@ import csvParser = require('csv-parser');
 
 const LOCAL_DOWNLOAD_DIR = join(process.cwd(), 'storage', 'sftp', 'temp');
 
+// csv-parser (v3.2.1) does not strip a UTF-8 BOM, so a BOM-prefixed source file (e.g. Excel's
+// "CSV UTF-8" export) yields a first header key like "﻿meter_id" instead of "meter_id",
+// silently failing REQUIRED_HEADERS checks downstream even though the file looks correct.
+function stripBomFromKeys(row: Record<string, string>): Record<string, string> {
+  const firstKey = Object.keys(row)[0];
+  if (firstKey === undefined || !firstKey.startsWith('﻿')) return row;
+  const { [firstKey]: value, ...rest } = row;
+  return { [firstKey.slice(1)]: value, ...rest };
+}
+
 @Injectable()
 export class SftpService {
   private readonly logger = new Logger(SftpService.name);
@@ -110,7 +120,7 @@ export class SftpService {
         createReadStream(localFilePath)
           .on('error', (err) => reject(err))
           .pipe(csvParser())
-          .on('data', (row: Record<string, string>) => collected.push(row))
+          .on('data', (row: Record<string, string>) => collected.push(stripBomFromKeys(row)))
           .on('end', () => resolve(collected))
           .on('error', (err: Error) => reject(err));
       });

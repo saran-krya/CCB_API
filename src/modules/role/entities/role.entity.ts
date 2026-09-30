@@ -48,6 +48,15 @@ export class Role extends BaseEntity {
   })
   canBeReportingManager!: boolean;
 
+  // Same pattern as canBeReportingManager above — a per-role flag marking users of this role as
+  // eligible field-inspection assignees (Request Field Inspection's "Assign To" picker), rather than
+  // a separate Team/Department entity this codebase has no other use for.
+  @Column({
+    name: 'can_be_field_inspector',
+    default: false,
+  })
+  canBeFieldInspector!: boolean;
+
   @OneToMany(
     () => User,
     (user) => user.role,

@@ -27,6 +27,7 @@ import {
 import {
   RegistrationDocumentAccountType,
   RegistrationDocumentContactType,
+  RegistrationDocumentRequirement,
   RegistrationDocumentResident,
 } from '../registration-document-rule/entities/registration-document-rule.entity';
 import { RegistrationDocumentRuleService } from '../registration-document-rule/registration-document-rule.service';
@@ -438,9 +439,11 @@ export class RegistrationRequestService {
       await manager.delete(RegistrationPaymentMethod, { request: { id: request.id } });
       if (dto.paymentMethods.length) {
         const hasDefault = dto.paymentMethods.some((m) => m.isDefault);
-        // dto.id is the client-generated timestamp-string id the old JSON-blob shape used
-        // (see PaymentMethodDto/RegistrationPaymentMethod docs) — the new row gets its own
-        // real auto-increment id, so the incoming one is intentionally dropped, never persisted.
+        // dto.id, when present, is the frontend's own transient local-list key (e.g.
+        // `pm-<timestamp>` for a not-yet-saved row, or the real id echoed back after a prior
+        // save) — see PaymentMethodDto's own doc comment. The new row always gets its own real
+        // auto-increment id regardless, so any incoming id is intentionally dropped, never
+        // persisted — this collection is always fully replaced, never matched/updated by id.
         const methods = dto.paymentMethods.map(({ id: _clientId, ...m }, i) => ({
           ...m,
           // If the caller sent no default at all, the first method wins — same fallback the
@@ -759,6 +762,71 @@ export class RegistrationRequestService {
       await this.appendVersionSnapshot(manager, saved, 'Returned to Resident for Correction', actorId);
       return saved;
     });
+  }
+
+  /** Maps each company-level KYC flag to the RegistrationDocument.type string it is derived from —
+   *  matched by exact string equality against the same 'Trade License'/'TRN Certificate' values
+   *  seeded on RegistrationDocumentRule.documentType (see seed-data.ts), the same convention every
+   *  other document lookup in this file already uses (uploadDocument, setExtractedFields, etc). */
+  private static readonly COMPANY_KYC_FLAG_DOCUMENT_TYPE: Record<'tradeLicenseVerified' | 'trnVerified', string> = {
+    tradeLicenseVerified: 'Trade License',
+    trnVerified: 'TRN Certificate',
+  };
+
+  /** True only when `documentType`'s document exists on this request and every one of its extracted
+   *  fields is verified — the same evidence CCB_Web's canProceedFromIdentityDocs already gates
+   *  wizard progression on client-side (useRegistrationCreation.ts). A document with zero extracted
+   *  fields (nothing extracted yet) does NOT count as verified — there is no evidence yet. */
+  private hasVerifiedDocumentEvidence(request: RegistrationRequest, documentType: string): boolean {
+    const doc = (request.documents ?? []).find((d) => d.type === documentType && !d.unitId);
+    if (!doc) return false;
+    const fields = doc.extractedFields ?? [];
+    if (!fields.length) return false;
+    return fields.every((f) => f.verified);
+  }
+
+  /** The company-level KYC gate for approve() — for a Corporate request, tradeLicenseVerified/
+   *  trnVerified are NOT an independent staff decision or a separate action: they are DERIVED here,
+   *  at approval time, directly from RegistrationDocument.extractedFields[].verified evidence (the
+   *  same, single Required Document Verification workflow already used everywhere else in this
+   *  module — see hasVerifiedDocumentEvidence above). The derived values are written onto
+   *  request.companyDetail (both here, in memory, before toCreateCompanyDto reads it below in
+   *  approve() itself, and persisted to the DB inside approve()'s own transaction), so a Corporate
+   *  request cannot be approved while a MANDATORY-for-Corporate document type (Trade License, TRN
+   *  Certificate — resolved dynamically via RegistrationDocumentRule, never hardcoded) hasn't had
+   *  every one of its extracted fields verified through the existing document-verification actions
+   *  (toggleExtractedFieldVerified / setAllExtractedFieldsVerified). A document type that isn't
+   *  mandatory today (admin-reconfigured) is skipped entirely — this mirrors
+   *  getApplicableDocumentRules' own resolution exactly, so a future change to document-set
+   *  configuration is picked up here with no code change. */
+  private async deriveAndAssertCompanyKyc(request: RegistrationRequest): Promise<void> {
+    const company = request.companyDetail;
+    if (!company) return;
+
+    company.tradeLicenseVerified = this.hasVerifiedDocumentEvidence(request, RegistrationRequestService.COMPANY_KYC_FLAG_DOCUMENT_TYPE.tradeLicenseVerified);
+    company.trnVerified = this.hasVerifiedDocumentEvidence(request, RegistrationRequestService.COMPANY_KYC_FLAG_DOCUMENT_TYPE.trnVerified);
+
+    const query: ApplicableDocumentRuleQueryDto = {
+      residentType: this.mapResident(request.residentType) as
+        | RegistrationDocumentResident.OWNER
+        | RegistrationDocumentResident.TENANT,
+      accountType: this.mapAccount(request.accountType) as
+        | RegistrationDocumentAccountType.INDIVIDUAL
+        | RegistrationDocumentAccountType.CORPORATE,
+      contactType: request.customerDetails?.contactType
+        ? (request.customerDetails.contactType as unknown as RegistrationDocumentContactType)
+        : undefined,
+    };
+    const rules = await this.documentRules.getApplicableRules(query);
+    const isMandatory = (documentType: string) =>
+      rules.some((r) => r.documentType === documentType && r.requirement === RegistrationDocumentRequirement.MANDATORY);
+
+    if (isMandatory('Trade License') && company.tradeLicenseVerified !== true) {
+      throw new BadRequestException('Cannot approve — the Trade License document must be uploaded with all its extracted fields verified first');
+    }
+    if (isMandatory('TRN Certificate') && company.trnVerified !== true) {
+      throw new BadRequestException('Cannot approve — the TRN Certificate document must be uploaded with all its extracted fields verified first');
+    }
   }
 
   private async assertDynamicRequiredFields(request: RegistrationRequest): Promise<void> {
@@ -1333,11 +1401,24 @@ export class RegistrationRequestService {
       // Already approved once — idempotency guard (spec §12).
       return request;
     }
+    if (request.accountType === RegistrationAccountType.CORPORATE) {
+      // Derives + asserts tradeLicenseVerified/trnVerified onto request.companyDetail IN MEMORY,
+      // before toCreateCompanyDto (right below) reads them — see that method's own doc comment.
+      await this.deriveAndAssertCompanyKyc(request);
+    }
 
     const createDto = this.toCreateCustomerDto(request);
     const createCompanyDto = this.toCreateCompanyDto(request);
 
     return this.dataSource.transaction(async (manager) => {
+      // Persist the derived tradeLicenseVerified/trnVerified values computed just above — the
+      // in-memory mutation on request.companyDetail must be written back to the DB too, or the next
+      // read of this request would see stale (likely still-null) values despite approval having just
+      // gone through with the freshly-derived ones.
+      if (request.companyDetail) {
+        await manager.save(RegistrationCompanyDetail, request.companyDetail);
+      }
+
       // Pass THIS transaction's manager through — customerService.create() no longer opens its own
       // independent transaction when one is supplied, so the Customer insert (and, for a Corporate
       // request, the linked Company insert — see CustomerService.createWithManager) is now part of
@@ -1529,6 +1610,7 @@ export class RegistrationRequestService {
         : undefined,
       emergencyContactName: details.emergencyContactName ?? undefined,
       emergencyContactPhone: details.emergencyContactPhone ?? undefined,
+      emergencyContactRelationship: details.emergencyContactRelationship ?? undefined,
       securityDeposit: request.depositEntry ? Number(request.depositEntry.amount) || undefined : undefined,
     };
   }

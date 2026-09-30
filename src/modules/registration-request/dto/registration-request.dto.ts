@@ -61,9 +61,15 @@ export class PropertyBillingDto {
 }
 
 export class PaymentMethodDto {
-  @ApiProperty()
+  // Optional, and unread by the persistence layer even when sent — syncChildCollections()
+  // always fully deletes and recreates this request's whole payment-methods collection on every
+  // save (never matches an incoming row to an existing one by id), so a client-supplied id has no
+  // effect on persistence. Kept optional rather than removed outright so an older client that
+  // still sends its local id (e.g. `pm-<timestamp>`) doesn't fail validation on this field alone.
+  @ApiPropertyOptional()
+  @IsOptional()
   @IsString()
-  id!: string;
+  id?: string;
 
   @ApiProperty()
   @IsString()

@@ -1,5 +1,4 @@
 import { BillingCycleStatus } from './entities/billing-cycle-version.entity';
-import { UpdateBillingCycleDto } from './dto/billing-cycle.dto';
 
 export const BILLING_CYCLE_AUDIT_MODULE_NAME = 'billing_cycles';
 
@@ -23,13 +22,5 @@ export const DEFAULT_BILL_GENERATION_DAYS_ATTRIBUTE_KEY = 'BILLING_CYCLE_DEFAULT
 export const DEFAULT_BILL_ISSUE_DAYS_ATTRIBUTE_KEY = 'BILLING_CYCLE_DEFAULT_BILL_ISSUE_DAYS';
 export const DEFAULT_BILL_DUE_DAYS_ATTRIBUTE_KEY = 'BILLING_CYCLE_DEFAULT_BILL_DUE_DAYS';
 export const REQUIRE_CHANGE_REASON_ON_EDIT_ATTRIBUTE_KEY = 'REQUIRE_CHANGE_REASON_ON_EDIT';
-
-export const EDITABLE_BILLING_CYCLE_STATUSES = new Set([
-  BillingCycleStatus.INACTIVE,
-  BillingCycleStatus.ACTIVE,
-  BillingCycleStatus.REJECTED,
-]);
-
-export const LOCKED_BILLING_CYCLE_FIELDS: (keyof UpdateBillingCycleDto)[] = ['readingStartDay', 'readingEndDay'];
 
 export const NEW_VERSION_SOURCE_STATUSES = new Set([BillingCycleStatus.ACTIVE, BillingCycleStatus.INACTIVE]);

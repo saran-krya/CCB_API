@@ -1,6 +1,5 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { AttributeModule } from '../attribute/attribute.module';
 import { Community } from '../community/entities/community.entity';
 import { Property } from '../property/entities/property.entity';
 import { LovModule } from '../lov/lov.module';
@@ -14,7 +13,6 @@ import { BillingCycleVersion } from './entities/billing-cycle-version.entity';
   imports: [
     TypeOrmModule.forFeature([BillingCycleMaster, BillingCycleVersion, Community, Property]),
     LovModule,
-    AttributeModule,
   ],
   controllers: [BillingCycleController],
   providers: [BillingCycleService, BillingCycleSchedulerService],

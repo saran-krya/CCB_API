@@ -27,7 +27,6 @@ import {
   DeprecateBillingCycleDto,
   NewVersionBillingCycleDto,
   RejectBillingCycleDto,
-  UpdateBillingCycleDto,
 } from './dto/billing-cycle.dto';
 
 @ApiBearerAuth()
@@ -47,14 +46,14 @@ export class BillingCycleController {
   }
 
   @Get('metaFilters')
-  @Permission('VIEW_BILLING_CYCLE')
+  @Permission('VIEW_BILLING_CYCLE', 'BILLING_CYCLE_APPROVAL_VIEW')
   @ApiOperation({ summary: 'Get filter metadata for the billing cycle list UI' })
   getFilterMetadata() {
     return this.billingCycles.getFilterMetadata();
   }
 
   @Get()
-  @Permission('VIEW_BILLING_CYCLE')
+  @Permission('VIEW_BILLING_CYCLE', 'BILLING_CYCLE_APPROVAL_VIEW')
   @ApiOperation({ summary: 'List billing cycles with pagination and filters' })
   findAll(@Query() query: BillingCycleQueryDto) {
     return this.billingCycles.findAll(query);
@@ -72,7 +71,7 @@ export class BillingCycleController {
   }
 
   @Get(':id')
-  @Permission('VIEW_BILLING_CYCLE')
+  @Permission('VIEW_BILLING_CYCLE', 'BILLING_CYCLE_APPROVAL_VIEW')
   @ApiOperation({ summary: 'Get billing cycle by ID' })
   @ApiParam({ name: 'id', type: Number })
   findOne(@Param('id', ParseIntPipe) id: number) {
@@ -89,17 +88,12 @@ export class BillingCycleController {
     return this.billingCycles.create(dto, user?.sub);
   }
 
-  @Patch(':id')
-  @Permission('EDIT_BILLING_CYCLE')
-  @ApiOperation({ summary: 'Update a billing cycle (reading-window fields are locked — use new-version instead)' })
-  @ApiParam({ name: 'id', type: Number })
-  update(
-    @Param('id', ParseIntPipe) id: number,
-    @Body() dto: UpdateBillingCycleDto,
-    @CurrentUser() user?: AuthenticatedUser,
-  ) {
-    return this.billingCycles.update(id, dto, user?.sub);
-  }
+  // Direct Edit (PATCH :id) was intentionally removed — decided NOT to support editing an existing
+  // billing cycle version directly. Configuration changes now only happen through the New Version /
+  // Clone workflow (create -> modify -> submit -> Finance approval -> effective-date activation),
+  // matching the same maker-checker discipline every other approval flow in this app already uses.
+  // See billing-cycle.service.ts's own removal note for where update()/UpdateBillingCycleDto used
+  // to live.
 
   @Post(':id/new-version')
   @Permission('BILLING_CYCLE_NEW_VERSION')
@@ -114,16 +108,16 @@ export class BillingCycleController {
   }
 
   @Patch(':id/approve')
-  @Permission('BILLING_CYCLE_APPROVE')
-  @ApiOperation({ summary: 'Approve a pending billing cycle version (requires the BILLING_CYCLE_APPROVE grant)' })
+  @Permission('BILLING_CYCLE_APPROVE', 'BILLING_CYCLE_APPROVAL_APPROVE')
+  @ApiOperation({ summary: 'Approve a pending billing cycle version (Business Admin or Finance grant)' })
   @ApiParam({ name: 'id', type: Number })
   approve(@Param('id', ParseIntPipe) id: number, @CurrentUser() user?: AuthenticatedUser) {
     return this.billingCycles.approve(id, user?.sub);
   }
 
   @Patch(':id/reject')
-  @Permission('BILLING_CYCLE_REJECT')
-  @ApiOperation({ summary: 'Reject a pending billing cycle version (requires the BILLING_CYCLE_REJECT grant)' })
+  @Permission('BILLING_CYCLE_REJECT', 'BILLING_CYCLE_APPROVAL_REJECT')
+  @ApiOperation({ summary: 'Reject a pending billing cycle version (Business Admin or Finance grant)' })
   @ApiParam({ name: 'id', type: Number })
   reject(
     @Param('id', ParseIntPipe) id: number,

@@ -308,10 +308,20 @@ export class DailyMeterReadingSummaryQueryDto {
 export type DailyReadingValidationStatus = 'clean' | 'anomaly' | 'missing';
 
 export class DailyMeterReadingQueryDto extends BasePaginationDto {
-  @ApiPropertyOptional({ description: 'Reading date (YYYY-MM-DD) — defaults to today' })
+  @ApiPropertyOptional({ description: 'Reading date (YYYY-MM-DD) — defaults to today. Ignored when startDate/endDate are both provided.' })
   @IsOptional()
   @IsDateString()
   date?: string;
+
+  @ApiPropertyOptional({ description: 'Range start (YYYY-MM-DD), inclusive — used together with endDate instead of a single date (e.g. a billing-cycle reading period).' })
+  @IsOptional()
+  @IsDateString()
+  startDate?: string;
+
+  @ApiPropertyOptional({ description: 'Range end (YYYY-MM-DD), inclusive — used together with startDate instead of a single date.' })
+  @IsOptional()
+  @IsDateString()
+  endDate?: string;
 
   @ApiPropertyOptional()
   @IsOptional()
@@ -335,6 +345,11 @@ export class DailyMeterReadingQueryDto extends BasePaginationDto {
   @IsOptional()
   @IsIn(['clean', 'anomaly', 'missing'])
   validationStatus?: DailyReadingValidationStatus;
+
+  @ApiPropertyOptional({ enum: ['pending', 'approved'] })
+  @IsOptional()
+  @IsIn(['pending', 'approved'])
+  approvalStatus?: 'pending' | 'approved';
 
   @ApiPropertyOptional()
   @IsOptional()

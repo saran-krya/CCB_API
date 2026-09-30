@@ -8,6 +8,7 @@ export const BUSINESS_CODE_PREFIXES = {
   TARIFF: 'TAR',
   MASTER_METER: 'MMT',
   SUB_METER: 'SMT',
+  FIELD_INSPECTION: 'FIR',
 } as const;
 
 export function generateBusinessCode(prefix: string, id: number): string {

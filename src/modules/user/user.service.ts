@@ -286,6 +286,28 @@ export class UserService {
       roleName: user.role?.roleName ?? null,
     }));
   }
+
+  // Same pattern as getReportingManagers above, filtered on the sibling canBeFieldInspector flag —
+  // the real "who can this field-inspection request be assigned to" picker for Request Field
+  // Inspection's Assign To field (CCB_Web/components/billing-readiness/FieldInspectionModal.tsx).
+  async getFieldInspectors() {
+    const users = await this.users
+      .createQueryBuilder('user')
+      .leftJoinAndSelect('user.role', 'role')
+      .where('user.active = :active', { active: true })
+      .andWhere('role.canBeFieldInspector = :can', { can: true })
+      .orderBy('user.firstName', 'ASC')
+      .getMany();
+
+    return users.map((user) => ({
+      id: user.id,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      employeeCode: user.employeeCode,
+      roleName: user.role?.roleName ?? null,
+    }));
+  }
+
   async getProfile(id: number) {
     const user = await this.findOne(id);
 

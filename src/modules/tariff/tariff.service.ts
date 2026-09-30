@@ -998,4 +998,85 @@ export class TariffService {
     });
     return globalScoped ?? null;
   }
+
+  /**
+   * Batched sibling of resolveForUnit, for callers resolving tariff coverage for MANY units at
+   * once (e.g. BillingReadinessService evaluating every billable unit in a property/estate) —
+   * SAME precedence and SAME matching rule as resolveForUnit (unit-scoped > property-scoped >
+   * global, each filtered by ACTIVE status and the unit's own propertyType), just computed via a
+   * fixed, small number of bulk queries instead of resolveForUnit's up-to-4-queries-per-unit. This
+   * does not replace resolveForUnit (still used as-is by the Registration deposit-gate calc, which
+   * only ever resolves one unit at a time) — it exists so a multi-unit caller doesn't pay N times
+   * the cost for the same result resolveForUnit(unitId) would give for each unit individually.
+   */
+  async resolveForUnits(unitIds: number[]): Promise<Map<number, TariffVersion | null>> {
+    const result = new Map<number, TariffVersion | null>();
+    const distinctIds = Array.from(new Set(unitIds));
+    if (distinctIds.length === 0) return result;
+
+    const units = await this.unitRepo.find({
+      where: { id: In(distinctIds) },
+      relations: { property: true },
+    });
+    for (const id of distinctIds) result.set(id, null);
+    if (units.length === 0) return result;
+
+    const propertyTypes = Array.from(new Set(units.map((u) => u.property.propertyType)));
+    const propertyIds = Array.from(new Set(units.map((u) => u.property.id)));
+
+    // One bulk fetch per scope tier (not per unit), each pre-loading exactly the join relation
+    // that tier's matching depends on, so precedence can be resolved in-memory afterward — same
+    // ACTIVE + propertyType filter resolveForUnit applies, just across every relevant propertyType
+    // and property in a single round trip apiece instead of one round trip per unit.
+    const [unitScopedVersions, propertyScopedVersions, globalScopedVersions] = await Promise.all([
+      this.versions.find({
+        where: { status: TariffStatus.ACTIVE, applicability: TariffApplicability.UNIT, propertyType: In(propertyTypes) },
+        relations: { units: true },
+      }),
+      this.versions.find({
+        where: { status: TariffStatus.ACTIVE, applicability: TariffApplicability.PROPERTY, propertyType: In(propertyTypes) },
+        relations: { properties: true },
+      }),
+      this.versions.find({
+        where: { status: TariffStatus.ACTIVE, applicability: TariffApplicability.GLOBAL, propertyType: In(propertyTypes) },
+      }),
+    ]);
+
+    const unitScopedByUnitId = new Map<number, TariffVersion>();
+    for (const version of unitScopedVersions) {
+      for (const u of version.units ?? []) {
+        if (!unitScopedByUnitId.has(u.id)) unitScopedByUnitId.set(u.id, version);
+      }
+    }
+
+    const propertyScopedByPropertyIdAndType = new Map<string, TariffVersion>();
+    for (const version of propertyScopedVersions) {
+      for (const p of version.properties ?? []) {
+        const key = `${p.id}::${version.propertyType}`;
+        if (!propertyScopedByPropertyIdAndType.has(key)) propertyScopedByPropertyIdAndType.set(key, version);
+      }
+    }
+
+    const globalScopedByType = new Map<string, TariffVersion>();
+    for (const version of globalScopedVersions) {
+      if (!globalScopedByType.has(version.propertyType)) globalScopedByType.set(version.propertyType, version);
+    }
+
+    for (const unit of units) {
+      if (!propertyIds.includes(unit.property.id)) continue;
+      const unitScoped = unitScopedByUnitId.get(unit.id);
+      if (unitScoped) {
+        result.set(unit.id, unitScoped);
+        continue;
+      }
+      const propertyScoped = propertyScopedByPropertyIdAndType.get(`${unit.property.id}::${unit.property.propertyType}`);
+      if (propertyScoped) {
+        result.set(unit.id, propertyScoped);
+        continue;
+      }
+      result.set(unit.id, globalScopedByType.get(unit.property.propertyType) ?? null);
+    }
+
+    return result;
+  }
 }
