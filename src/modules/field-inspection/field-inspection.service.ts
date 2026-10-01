@@ -8,6 +8,7 @@ import { User } from '../user/entities/user.entity';
 import { LovService } from '../lov/lov.service';
 import { CreateFieldInspectionRequestDto } from './dto/field-inspection.dto';
 import { BUSINESS_CODE_PREFIXES, generateBusinessCode } from '../../common/utils/business-code.util';
+import { UserRoleService } from '../user-role/user-role.service';
 
 const LOV_TYPE_CATEGORY = 'FIELD_INSPECTION_TYPE';
 const LOV_PRIORITY_CATEGORY = 'FIELD_INSPECTION_PRIORITY';
@@ -21,6 +22,7 @@ export class FieldInspectionService {
     @InjectRepository(Property) private readonly properties: Repository<Property>,
     @InjectRepository(User) private readonly users: Repository<User>,
     private readonly lov: LovService,
+    private readonly userRoles: UserRoleService,
   ) {}
 
   // Every currently-anomalous, not-yet-approved reading for this property that isn't ALREADY
@@ -99,9 +101,9 @@ export class FieldInspectionService {
       throw new BadRequestException(`Invalid notify option(s): ${invalidNotify.join(', ')}`);
     }
 
-    const assignee = await this.users.findOne({ where: { id: dto.assignedToUserId }, relations: { role: true } });
+    const assignee = await this.users.findOne({ where: { id: dto.assignedToUserId } });
     if (!assignee) throw new NotFoundException('Assigned user not found');
-    if (!assignee.role?.canBeFieldInspector) {
+    if (!(await this.userRoles.hasRoleCapability(assignee.id, 'canBeFieldInspector'))) {
       throw new BadRequestException('The selected user cannot be assigned field inspections');
     }
 

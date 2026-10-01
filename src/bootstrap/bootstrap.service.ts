@@ -18,6 +18,7 @@ import { SubModule } from '../modules/sub-modules/entities/sub-module.entity'
 import { SubModulesService } from '../modules/sub-modules/sub-modules.service'
 import { RegistrationDocumentRuleService } from '../modules/registration-document-rule/registration-document-rule.service'
 import { User } from '../modules/user/entities/user.entity'
+import { UserRoleService } from '../modules/user-role/user-role.service'
 import {
   ACTIONS,
   ADMIN_GRANT_EXCLUDED_ACTION_CODES,
@@ -42,6 +43,7 @@ export class BootstrapService implements OnApplicationBootstrap {
     private readonly actionsService: ActionsService,
     private readonly rolePermissionsService: RolePermissionsService,
     private readonly registrationDocumentRuleService: RegistrationDocumentRuleService,
+    private readonly userRoleService: UserRoleService,
   ) {}
 
   async onApplicationBootstrap(): Promise<void> {
@@ -57,6 +59,7 @@ export class BootstrapService implements OnApplicationBootstrap {
         await this.screensService.ensureCriticalDefaults()
         await this.actionsService.ensureCriticalDefaults()
         await this.rolePermissionsService.ensureAdminGrants(ADMIN_GRANT_EXCLUDED_ACTION_CODES)
+        await this.rolePermissionsService.ensureSuperAdminGrant('WORKFLOW_MANAGE_APPROVERS')
         await this.registrationDocumentRuleService.ensureCriticalDefaults()
       } catch (err) {
         this.logger.error('Backfill of critical defaults failed — server will still start', err as Error)
@@ -70,6 +73,7 @@ export class BootstrapService implements OnApplicationBootstrap {
       await this.dataSource.transaction((manager) => this.seed(manager))
 
       await this.rolePermissionsService.ensureAdminGrants(ADMIN_GRANT_EXCLUDED_ACTION_CODES)
+      await this.rolePermissionsService.ensureSuperAdminGrant('WORKFLOW_MANAGE_APPROVERS')
 
       const adminEmail = this.config.get<string>(
         'DEFAULT_ADMIN_EMAIL',
@@ -319,14 +323,19 @@ export class BootstrapService implements OnApplicationBootstrap {
     const passwordHash = await bcrypt.hash(rawPassword, 12)
 
     const admin = manager.create(User, {
-      role: superAdminRole,
       firstName,
       lastName,
       email,
       active: true,
       passwordHash,
     })
-    await manager.save(admin)
+    const saved = await manager.save(admin)
+
+    // user_roles is the only place a user's role is recorded (users.role_id no longer exists) —
+    // written in the same transaction as the rest of seed() so a fresh install never ends up with a
+    // Super Admin that has no role. setPrimaryRole() itself is idempotent (delete-then-insert), so
+    // this call is also safe if onApplicationBootstrap's seed() path is ever re-entered.
+    await this.userRoleService.setPrimaryRole(saved.id, superAdminRole.id, manager)
 
     this.logger.debug(`Super Admin user created: ${email}`)
   }

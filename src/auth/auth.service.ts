@@ -6,6 +6,7 @@ import { createHash, randomBytes, randomUUID } from 'crypto';
 import { Repository } from 'typeorm';
 import * as bcrypt from 'bcryptjs';
 import { UserService } from '../modules/user/user.service';
+import { UserRoleService } from '../modules/user-role/user-role.service';
 import { CustomerService } from '../modules/customer/customer.service';
 import { CustomerAccountStatus } from '../modules/customer/entities/customer.entity';
 import { AttributeService } from '../modules/attribute/attribute.service';
@@ -33,6 +34,7 @@ export class AuthService {
 
   constructor(
     private readonly users: UserService,
+    private readonly userRoles: UserRoleService,
     private readonly customers: CustomerService,
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
@@ -53,7 +55,7 @@ export class AuthService {
    *  tell "no such account", "wrong password", and "which session type" apart from the server logs
    *  without ever exposing credentials. */
   async login(dto: LoginDto, deviceCtx?: DeviceContext): Promise<TokenResponseDto> {
-    const user = await this.users.findByEmailWithRole(dto.email);
+    const user = await this.users.findByEmailWithPasswordHash(dto.email);
     if (user) {
       if (!user.passwordHash || !user.active) {
         this.logger.warn(`Staff login rejected for ${maskEmail(dto.email)} — inactive account or no password set`);
@@ -66,12 +68,20 @@ export class AuthService {
         throw new UnauthorizedException('Invalid credentials');
       }
 
+      // RBAC-source-of-truth role lookup goes through user_roles, not the legacy users.role_id
+      // column still present on `user` — see UserRole entity's own doc comment on this migration.
+      const primaryRole = await this.userRoles.getPrimaryRole(user.id);
+      if (!primaryRole) {
+        this.logger.warn(`Staff login rejected for ${maskEmail(dto.email)} — no role assigned (userId=${user.id})`);
+        throw new UnauthorizedException('Invalid credentials');
+      }
+
       await this.users.updateLastLogin(user.id);
       await this.insertLoginHistory('staff', user.id, deviceCtx);
       this.logger.log(`Staff login succeeded for ${maskEmail(dto.email)} (userId=${user.id})`);
 
       return this.issueTokenPair(
-        { sub: user.id, email: user.email, roleId: user.role.id, roleName: user.role.roleName, type: 'staff' },
+        { sub: user.id, email: user.email, roleId: primaryRole.roleId, roleName: primaryRole.roleName, type: 'staff' },
         undefined,
         deviceCtx,
       );
@@ -178,8 +188,13 @@ export class AuthService {
       throw new UnauthorizedException('Account is deactivated');
     }
 
+    const primaryRole = await this.userRoles.getPrimaryRole(user.id);
+    if (!primaryRole) {
+      throw new UnauthorizedException('No role assigned');
+    }
+
     return this.issueTokenPair(
-      { sub: user.id, email: user.email, roleId: user.role.id, roleName: user.role.roleName, type: 'staff' },
+      { sub: user.id, email: user.email, roleId: primaryRole.roleId, roleName: primaryRole.roleName, type: 'staff' },
       stored.family,
       effectiveCtx,
     );

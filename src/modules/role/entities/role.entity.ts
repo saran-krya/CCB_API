@@ -3,11 +3,9 @@ import {
   Entity,
   JoinColumn,
   ManyToOne,
-  OneToMany,
 } from 'typeorm';
 
 import { BaseEntity } from '../../../common/entities/base.entity';
-import { User } from '../../user/entities/user.entity';
 import { LovValue } from '../../lov/entities/lov-value.entity';
 
 @Entity('roles')
@@ -56,10 +54,4 @@ export class Role extends BaseEntity {
     default: false,
   })
   canBeFieldInspector!: boolean;
-
-  @OneToMany(
-    () => User,
-    (user) => user.role,
-  )
-  users!: User[];
 }

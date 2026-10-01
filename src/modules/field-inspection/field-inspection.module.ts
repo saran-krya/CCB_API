@@ -7,11 +7,13 @@ import { MeterReading } from '../sftp/entities/meter-reading.entity';
 import { FieldInspectionRequest } from './entities/field-inspection-request.entity';
 import { FieldInspectionController } from './field-inspection.controller';
 import { FieldInspectionService } from './field-inspection.service';
+import { UserRoleModule } from '../user-role/user-role.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([FieldInspectionRequest, Property, User, MeterReading]),
     LovModule,
+    UserRoleModule,
   ],
   controllers: [FieldInspectionController],
   providers: [FieldInspectionService],

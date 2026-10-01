@@ -375,6 +375,42 @@ export class RolePermissionsService {
     await this.ensureLeafModuleGrants(adminRoles);
   }
 
+  /** Grants ONE specific action to SUPER_ADMIN only (never ADMIN) — for an action deliberately kept
+   *  out of ensureAdminGrants' blanket auto-grant loop (ADMIN_GRANT_EXCLUDED_ACTION_CODES) but that
+   *  still needs at least one holder from day one, or nothing could ever use it (no auto-grant, and
+   *  no reachable UI to self-grant an excluded action after the fact). Idempotent — a no-op once the
+   *  grant already exists. Runs on every boot alongside ensureAdminGrants, not just fresh installs,
+   *  the same convention as this codebase's other ensure-prefixed / ensureCriticalDefaults methods. */
+  async ensureSuperAdminGrant(actionCode: string): Promise<void> {
+    const superAdmin = await this.roleRepository.findOne({ where: { roleName: 'SUPER_ADMIN' } });
+    if (!superAdmin) return;
+
+    const action = await this.actionRepository.findOne({
+      where: { code: actionCode },
+      relations: { screen: { subModule: true, pModule: true } },
+    });
+    if (!action) return;
+
+    const screen = action.screen;
+    if (!screen) return;
+    const moduleId = screen.subModule?.pModuleId ?? screen.pModuleId;
+    if (!moduleId) return;
+
+    const exists = await this.rolePermissionRepository.findOne({
+      where: { roleId: superAdmin.id, actionId: action.id },
+    });
+    if (exists) return;
+
+    const grant = this.rolePermissionRepository.create({
+      roleId: superAdmin.id,
+      moduleId,
+      subModuleId: screen.subModuleId ?? null,
+      screenId: screen.id,
+      actionId: action.id,
+    });
+    await this.rolePermissionRepository.save(grant);
+  }
+
   private async ensureLeafModuleGrants(adminRoles: Role[]): Promise<void> {
     const modules = await this.pModuleRepository.find({ where: { isActive: true } });
     const subModules = await this.subModuleRepository.find({ where: { isActive: true } });

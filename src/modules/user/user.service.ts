@@ -1,7 +1,7 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import * as bcrypt from 'bcryptjs';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { AuditService } from '../../audit/audit.service';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 import { paginate } from '../../common/utils/pagination.util';
@@ -12,6 +12,7 @@ import { User } from './entities/user.entity';
 import { RolePermissionsService } from '../role-permissions/role-permissions.service';
 import { AttributeService } from '../attribute/attribute.service';
 import { LovService } from '../lov/lov.service';
+import { UserRoleService } from '../user-role/user-role.service';
 
 interface DynamicFieldRequirement {
   field: keyof CreateUserDto;
@@ -38,6 +39,8 @@ export class UserService {
     private readonly attributes: AttributeService,
 
     private readonly lov: LovService,
+
+    private readonly userRoles: UserRoleService,
   ) { }
 
   private async assertDynamicRequiredFields(dto: CreateUserDto | UpdateUserDto): Promise<void> {
@@ -73,8 +76,6 @@ export class UserService {
         : null;
 
     const user = new User();
-
-    user.role = role;
 
     user.reportingManager =
       reportingManager ??
@@ -115,6 +116,10 @@ export class UserService {
     const saved =
       await this.users.save(user);
 
+    // user_roles is the only place a user's role is recorded — see UserRole entity's own doc
+    // comment.
+    await this.userRoles.setPrimaryRole(saved.id, role.id);
+
     await this.audit.record({
       moduleName: "users",
       entityId: saved.id,
@@ -131,9 +136,16 @@ export class UserService {
   ) {
     const qb = this.users
       .createQueryBuilder("user")
-      .leftJoinAndSelect(
+      .leftJoin(
+        "user_roles",
+        "user_role",
+        "user_role.user_id = user.id AND user_role.deleted_at IS NULL",
+      )
+      .leftJoinAndMapOne(
         "user.role",
+        "roles",
         "role",
+        "role.id = user_role.role_id",
       );
 
 
@@ -240,7 +252,6 @@ export class UserService {
     const user = await this.users.findOne({
       where: { id },
       relations: {
-        role: true,
         reportingManager: true,
       },
     });
@@ -250,40 +261,36 @@ export class UserService {
       throw new NotFoundException("User not found");
     }
 
+    // user_roles is the only source of a user's role — see UserRole entity's own doc comment.
+    // A user has exactly one role today, so the first (and only) row is the detail-screen's `role`.
+    const [role] = await this.userRoles.getRolesForUser(id);
+    (user as User & { role: typeof role | null }).role = role ?? null;
+
     return user;
   }
 
-  async getReportingManagers() {
-    const users = await this.users
-      .createQueryBuilder("user")
-      .leftJoinAndSelect(
-        "user.role",
-        "role",
-      )
-      .where(
-        "user.active = :active",
-        {
-          active: true,
-        },
-      )
-      .andWhere(
-        "role.canBeReportingManager = :can",
-        {
-          can: true,
-        },
-      )
-      .orderBy(
-        "user.firstName",
-        "ASC",
-      )
-      .getMany();
+  private async getActiveUsersByRoleCapability(capability: 'canBeReportingManager' | 'canBeFieldInspector') {
+    const grants = await this.userRoles.getUsersByRoleCapability(capability);
+    if (grants.length === 0) return [];
+    const roleNameByUserId = new Map(grants.map((g) => [g.userId, g.roleName]));
 
-    return users.map((user) => ({
+    const users = await this.users.find({
+      where: { id: In([...roleNameByUserId.keys()]), active: true },
+      order: { firstName: 'ASC' },
+    });
+
+    return users.map((user) => ({ user, roleName: roleNameByUserId.get(user.id) ?? null }));
+  }
+
+  async getReportingManagers() {
+    const rows = await this.getActiveUsersByRoleCapability('canBeReportingManager');
+
+    return rows.map(({ user, roleName }) => ({
       id: user.id,
       firstName: user.firstName,
       lastName: user.lastName,
       employeeCode: user.employeeCode,
-      roleName: user.role?.roleName ?? null,
+      roleName,
     }));
   }
 
@@ -291,27 +298,25 @@ export class UserService {
   // the real "who can this field-inspection request be assigned to" picker for Request Field
   // Inspection's Assign To field (CCB_Web/components/billing-readiness/FieldInspectionModal.tsx).
   async getFieldInspectors() {
-    const users = await this.users
-      .createQueryBuilder('user')
-      .leftJoinAndSelect('user.role', 'role')
-      .where('user.active = :active', { active: true })
-      .andWhere('role.canBeFieldInspector = :can', { can: true })
-      .orderBy('user.firstName', 'ASC')
-      .getMany();
+    const rows = await this.getActiveUsersByRoleCapability('canBeFieldInspector');
 
-    return users.map((user) => ({
+    return rows.map(({ user, roleName }) => ({
       id: user.id,
       firstName: user.firstName,
       lastName: user.lastName,
       employeeCode: user.employeeCode,
-      roleName: user.role?.roleName ?? null,
+      roleName,
     }));
   }
 
   async getProfile(id: number) {
     const user = await this.findOne(id);
 
-    const permissions = await this.rolePermissionService.getUserPermissions(user.role.id);
+    const primaryRole = await this.userRoles.getPrimaryRole(id);
+    if (!primaryRole) {
+      throw new NotFoundException('No role assigned to this user');
+    }
+    const permissions = await this.rolePermissionService.getUserPermissions(primaryRole.roleId);
 
     return {
       id: user.id,
@@ -323,8 +328,8 @@ export class UserService {
       designation: user.designation,
 
       role: {
-        id: user.role.id,
-        name: user.role.roleName,
+        id: primaryRole.roleId,
+        name: primaryRole.roleName,
       },
 
       themeMode: user.themeMode ?? null,
@@ -361,11 +366,13 @@ export class UserService {
     };
   }
 
-  findByEmailWithRole(email: string) {
+  /** Narrowly-scoped shape (addSelect the hidden passwordHash column) for AuthService.login, which
+   *  needs only identity/credential fields here — the user's role comes from UserRoleService, not
+   *  from this query (see AuthService.login's own doc comment). */
+  findByEmailWithPasswordHash(email: string) {
     return this.users
       .createQueryBuilder('user')
       .addSelect('user.passwordHash')
-      .leftJoinAndSelect('user.role', 'role')
       .where('user.email = :email', { email })
       .getOne();
   }
@@ -409,7 +416,9 @@ export class UserService {
     );
     await this.assertDynamicRequiredFields(dto);
     if (dto.roleId) {
-      user.role = await this.roles.findOne(dto.roleId);
+      // Validates the role exists (throws NotFoundException otherwise) before setPrimaryRole below
+      // writes it — user_roles is the only place a user's role is recorded, see create()'s same note.
+      await this.roles.findOne(dto.roleId);
     }
 
     if ('reportingManagerId' in dto) {
@@ -454,6 +463,11 @@ export class UserService {
       user.passwordHash = await bcrypt.hash(dto.password, 12);
     }
     const saved = await this.users.save(user);
+
+    if (dto.roleId) {
+      await this.userRoles.setPrimaryRole(saved.id, dto.roleId);
+    }
+
     await this.audit.record({ moduleName: 'users', entityId: id, action: 'UPDATE', oldValue, newValue: saved, performedBy: actorId });
     return saved;
   }
@@ -553,7 +567,8 @@ export class UserService {
     const adminUsers =
       await this.users
         .createQueryBuilder("user")
-        .leftJoin("user.role", "role")
+        .innerJoin("user_roles", "user_role", "user_role.user_id = user.id AND user_role.deleted_at IS NULL")
+        .innerJoin("roles", "role", "role.id = user_role.role_id")
         .where(
           "role.roleName IN (:...roles)",
           {
@@ -568,7 +583,8 @@ export class UserService {
     const roleDistribution =
       await this.users
         .createQueryBuilder("user")
-        .leftJoin("user.role", "role")
+        .innerJoin("user_roles", "user_role", "user_role.user_id = user.id AND user_role.deleted_at IS NULL")
+        .innerJoin("roles", "role", "role.id = user_role.role_id")
         .select(
           "role.roleName",
           "role"

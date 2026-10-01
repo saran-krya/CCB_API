@@ -7,6 +7,7 @@ import { UserService } from './user.service';
 import { RolePermissionsModule } from '../role-permissions/role-permissions.module';
 import { AttributeModule } from '../attribute/attribute.module';
 import { LovModule } from '../lov/lov.module';
+import { UserRoleModule } from '../user-role/user-role.module';
 
 @Module({
   imports: [
@@ -16,6 +17,7 @@ import { LovModule } from '../lov/lov.module';
     RolePermissionsModule,
     AttributeModule,
     LovModule,
+    UserRoleModule,
 
   ], controllers: [UserController],
   providers: [UserService],

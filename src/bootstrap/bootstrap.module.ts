@@ -7,6 +7,7 @@ import { ScreensModule } from '../modules/screens/screens.module'
 import { ActionsModule } from '../modules/actions/actions.module'
 import { RolePermissionsModule } from '../modules/role-permissions/role-permissions.module'
 import { RegistrationDocumentRuleModule } from '../modules/registration-document-rule/registration-document-rule.module'
+import { UserRoleModule } from '../modules/user-role/user-role.module'
 import { BootstrapService } from './bootstrap.service'
 
 @Module({
@@ -19,6 +20,7 @@ import { BootstrapService } from './bootstrap.service'
     ActionsModule,
     RolePermissionsModule,
     RegistrationDocumentRuleModule,
+    UserRoleModule,
   ],
   providers: [BootstrapService],
 })

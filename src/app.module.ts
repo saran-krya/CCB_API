@@ -4,6 +4,7 @@ import { EventEmitterModule } from '@nestjs/event-emitter';
 import { ScheduleModule } from '@nestjs/schedule';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AuditModule } from './audit/audit.module';
+import { RedisModule } from './redis/redis.module';
 import { AuthModule } from './auth/auth.module';
 import { BootstrapModule } from './bootstrap/bootstrap.module';
 import { MailModule } from './mail/mail.module';
@@ -14,6 +15,7 @@ import { RoleModule } from './modules/role/role.module';
 import { UnitModule } from './modules/unit/unit.module';
 import { CustomerModule } from './modules/customer/customer.module';
 import { UserModule } from './modules/user/user.module';
+import { UserRoleModule } from './modules/user-role/user-role.module';
 import { SubModulesModule } from './modules/sub-modules/sub-modules.module';
 import { RolePermissionsModule } from './modules/role-permissions/role-permissions.module';
 import { ScreensModule } from './modules/screens/screens.module';
@@ -36,6 +38,7 @@ import { BillingReadinessModule } from './modules/billing-readiness/billing-read
 import { BillingManagementModule } from './modules/billing-management/billing-management.module';
 import { BillRunModule } from './modules/bill-run/bill-run.module';
 import { FieldInspectionModule } from './modules/field-inspection/field-inspection.module';
+import { WorkflowModule } from './modules/workflow/workflow.module';
 
 @Module({
   imports: [
@@ -44,10 +47,12 @@ import { FieldInspectionModule } from './modules/field-inspection/field-inspecti
     ScheduleModule.forRoot(),
     TypeOrmModule.forRootAsync(typeOrmConfig),
     AuditModule,
+    RedisModule,
     MailModule,
     AuthModule,
     RoleModule,
     UserModule,
+    UserRoleModule,
     CommunityModule,
     PropertyModule,
     UnitModule,
@@ -75,6 +80,7 @@ import { FieldInspectionModule } from './modules/field-inspection/field-inspecti
     BillingManagementModule,
     BillRunModule,
     FieldInspectionModule,
+    WorkflowModule,
   ],
 })
 export class AppModule {}

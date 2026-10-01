@@ -6,23 +6,14 @@ import {
   ManyToOne,
 } from "typeorm";
 import { BaseEntity } from "../../../common/entities/base.entity";
-import { Role } from "../../role/entities/role.entity";
 
+// A user's role is NOT a relation on this entity — see UserRoleService (user_roles is the only
+// source of truth for User -> Role; `users.role_id` has been removed, see migration
+// *-DropUsersRoleId.ts). Some query paths (UserService.findAll/findOne) still attach a `role`
+// property to a loaded User instance at runtime via `leftJoinAndMapOne`/manual assignment for
+// response-shape compatibility — that is NOT this entity's own column, just a query-time virtual.
 @Entity("users")
 export class User extends BaseEntity {
-  @ManyToOne(
-    () => Role,
-    (role) => role.users,
-    {
-      eager: true,
-      nullable: true,
-    },
-  )
-  @JoinColumn({
-    name: "role_id",
-  })
-  role!: Role;
-
   @ManyToOne(
     () => User,
     {

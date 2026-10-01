@@ -7,7 +7,11 @@ import {
     OneToMany,
 } from 'typeorm';
 
-@Entity('pmodules')
+// Table renamed from 'pmodules' to 'modules' per the RBAC schema update — the TS class name
+// PModule is deliberately kept as-is (not renamed to Module) to avoid an unnecessary, purely
+// cosmetic rename across the ~20 files that reference this entity; only the actual DB table name
+// changed (via migration — see migrations/*-RenamePModulesToModules.ts).
+@Entity('modules')
 export class PModule extends BaseEntity {
     @Column({
         unique: true,

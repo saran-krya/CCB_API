@@ -304,6 +304,17 @@ export const SUB_MODULES: SeedSubModule[] = [
     icon: 'CalendarRange',
     displayOrder: 2,
   },
+  // Centralized, READ-ONLY approval visibility/queue over Tariff + Bill Run (Billing Cycle
+  // deliberately excluded this phase — it keeps its own existing Finance approval screen,
+  // untouched). Workflow performs no approve/reject/return mutation of its own — every item links
+  // back to its real, authoritative domain screen (Tariff Approval / Bill Run Register) to act.
+  {
+    pModuleCode: 'BUSINESS_ADMIN',
+    name: 'Workflow',
+    code: 'WORKFLOW',
+    icon: 'GitBranch',
+    displayOrder: 3,
+  },
   {
     pModuleCode: 'FINANCE',
     name: 'Tariff Approval',
@@ -363,6 +374,13 @@ export const SCREENS: SeedScreen[] = [
     name: 'Tariff Configuration',
     code: 'TARIFF_CONFIG',
     url: '/admin/business/tariff-config',
+    displayOrder: 1,
+  },
+  {
+    subModuleCode: 'WORKFLOW',
+    name: 'Workflow',
+    code: 'WORKFLOW',
+    url: '/admin/business/workflow',
     displayOrder: 1,
   },
   {
@@ -651,6 +669,21 @@ export const ACTIONS: SeedAction[] = [
     description: 'Clone an active tariff into a new editable version',
     parentActionCode: 'TARIFF_EDIT',
     displayOrder: 4,
+  },
+  {
+    screenCode: 'WORKFLOW',
+    name: 'View Workflow',
+    code: 'WORKFLOW_VIEW',
+    description: 'View the centralized Workflow approval visibility/queue (Tariff + Bill Run) — read-only, no approve/reject/return action lives here',
+    displayOrder: 1,
+  },
+  {
+    screenCode: 'WORKFLOW',
+    name: 'Manage Workflow Approvers',
+    code: 'WORKFLOW_MANAGE_APPROVERS',
+    description: 'Add or remove which roles may approve a Tariff or Bill Run — excluded from the SUPER_ADMIN/ADMIN auto-grant, same as TARIFF_APPROVE/BILL_RUN_APPROVE',
+    parentActionCode: 'WORKFLOW_VIEW',
+    displayOrder: 2,
   },
   {
     screenCode: 'TARIFF_CONFIG',
@@ -1196,6 +1229,10 @@ export const ADMIN_GRANT_EXCLUDED_ACTION_CODES = [
   // codes) — excluded from the SUPER_ADMIN auto-grant for the same segregation-of-duties reason:
   // Finance review should require an explicit grant, not come bundled with full system access.
   'BILL_RUN_APPROVE',
+  // Edits who ELSE holds TARIFF_APPROVE/TARIFF_APPROVAL_APPROVE/BILL_RUN_APPROVE — same
+  // segregation-of-duties reasoning as those codes themselves: the power to grant approve access
+  // should require an explicit grant, not come bundled with full system access.
+  'WORKFLOW_MANAGE_APPROVERS',
 ]
 
 export const ROLES: SeedRole[] = [

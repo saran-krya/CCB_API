@@ -3,6 +3,7 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -11,11 +12,20 @@ import { EntityManager, In, Repository } from 'typeorm';
 import { AuditService } from '../../audit/audit.service';
 import { ROLES } from '../../common/constants/global';
 import { paginate } from '../../common/utils/pagination.util';
+import { RedisService } from '../../redis/redis.service';
 import { RolePermissionsService } from '../role-permissions/role-permissions.service';
 import { AttributeQueryDto, attributeValueErrorMessage, isValueValidForType, UpdateAttributeDto } from './dto/attribute.dto';
 import { Attribute, AttributeScope, AttributeValueType } from './entities/attribute.entity';
 import { LOCKABLE_TARIFF_FIELDS } from '../tariff/tariff.constants';
 import { REGISTRATION_TERMS_AND_CONDITIONS_DEFAULT } from '../../bootstrap/seed-data';
+
+// Cache-aside for getValueByKey — the single hottest Attribute read in the codebase (isMandatory/
+// getJsonValueByKey/getCustomerValueByKey all call it, plus the controller's own findAll({ key })
+// path). Deterministic, single-key-per-attribute cache key; see getValueByKey's own doc comment for
+// the full read flow and update()'s own comment for invalidation.
+function attributeCacheKey(key: string): string {
+  return `attribute:${key}`;
+}
 
 const CYCLE_SENSITIVE_KEYS = new Set([
   'VAT_RATE',
@@ -533,12 +543,15 @@ const RETIRED_ATTRIBUTE_KEYS = [
 
 @Injectable()
 export class AttributeService {
+  private readonly logger = new Logger(AttributeService.name);
+
   constructor(
     @InjectRepository(Attribute)
     private readonly attributes: Repository<Attribute>,
     private readonly audit: AuditService,
     private readonly config: ConfigService,
     private readonly rolePermissions: RolePermissionsService,
+    private readonly redis: RedisService,
   ) {}
 
   async findAll(query: AttributeQueryDto) {
@@ -571,9 +584,35 @@ export class AttributeService {
     return attribute;
   }
 
+  /** Cache-aside read for a single attribute's value — the hottest Attribute read path in the
+   *  codebase (isMandatory/getJsonValueByKey/getCustomerValueByKey all call this).
+   *
+   *  Flow: Redis GET attribute:{key} -> HIT: return it, never touch the DB. MISS: read the DB,
+   *  and if a value was found, Redis SET it with a TTL (ATTRIBUTE_CACHE_TTL_SECONDS, config-driven)
+   *  before returning it. A genuinely-missing attribute (no row, or a row with a null value) is
+   *  NEVER cached — every such call re-checks the DB, so a newly-added attribute is picked up
+   *  immediately with no cache warm-up step required. This keeps the cache correct-by-construction
+   *  without needing a negative-cache/tombstone concept, which would be more machinery than a
+   *  single boolean/string config value needs.
+   *
+   *  Redis itself is fail-open throughout (see RedisService's own doc comment) — if Redis is down,
+   *  every call here is simply always a MISS, and the DB (the source of truth) still answers every
+   *  request. This method never throws because of Redis; only a real DB error would propagate. */
   async getValueByKey(key: string): Promise<string | null> {
+    const cacheKey = attributeCacheKey(key);
+
+    const cached = await this.redis.get(cacheKey);
+    if (cached !== null) return cached;
+
     const attribute = await this.attributes.findOne({ where: { key } });
-    return attribute?.value ?? null;
+    const value = attribute?.value ?? null;
+
+    if (value !== null) {
+      const ttlSeconds = this.config.get<number>('ATTRIBUTE_CACHE_TTL_SECONDS', 600);
+      await this.redis.set(cacheKey, value, ttlSeconds);
+    }
+
+    return value;
   }
 
   /** The Customer-facing counterpart to getValueByKey — falls back to the same global `value` when
@@ -679,6 +718,12 @@ export class AttributeService {
     const oldValue = { value: attribute.value, customerValue: attribute.customerValue, editable: attribute.editable };
     Object.assign(attribute, fields);
     const saved = await this.attributes.save(attribute);
+
+    // Cache-aside invalidation — only THIS attribute's own key, never a broader/pattern delete (see
+    // RedisService.del's own doc comment). The next getValueByKey(attribute.key) call is guaranteed
+    // a MISS and re-reads the just-saved DB row, so a stale cached value can never outlive a
+    // successful write for longer than it takes the next read to happen.
+    await this.redis.del(attributeCacheKey(attribute.key));
 
     await this.audit.record({
       moduleName: 'attributes',
