@@ -4,6 +4,7 @@ import { AttributeModule } from '../attribute/attribute.module';
 import { LovModule } from '../lov/lov.module';
 import { Property } from '../property/entities/property.entity';
 import { Unit } from '../unit/entities/unit.entity';
+import { WorkflowModule } from '../workflow/workflow.module';
 import { TariffMaster } from './entities/tariff-master.entity';
 import { TariffTier } from './entities/tariff-tier.entity';
 import { TariffVersion } from './entities/tariff-version.entity';
@@ -16,6 +17,7 @@ import { TariffService } from './tariff.service';
     TypeOrmModule.forFeature([TariffMaster, TariffVersion, TariffTier, Property, Unit]),
     AttributeModule,
     LovModule,
+    WorkflowModule,
   ],
   controllers: [TariffController],
   providers: [TariffService, TariffSchedulerService],

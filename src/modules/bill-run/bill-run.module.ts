@@ -4,6 +4,7 @@ import { BillingReadinessModule } from '../billing-readiness/billing-readiness.m
 import { BillingCycleModule } from '../billing-cycle/billing-cycle.module';
 import { BillingManagementModule } from '../billing-management/billing-management.module';
 import { Property } from '../property/entities/property.entity';
+import { WorkflowModule } from '../workflow/workflow.module';
 import { BillRun } from './entities/bill-run.entity';
 import { BillRunBatch } from './entities/bill-run-batch.entity';
 import { BillRunController } from './bill-run.controller';
@@ -23,6 +24,7 @@ import { BillRunService } from './bill-run.service';
     BillingReadinessModule,
     BillingCycleModule,
     BillingManagementModule,
+    WorkflowModule,
   ],
   controllers: [BillRunController],
   providers: [BillRunService],

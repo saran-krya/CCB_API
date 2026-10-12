@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, In, Repository } from 'typeorm';
 import { Bill, BillStatus } from './entities/bill.entity';
@@ -395,10 +395,23 @@ export class BillingManagementService {
 
   async cancelBill(id: number, dto: CancelBillDto, actorId?: number): Promise<Bill> {
     return this.dataSource.transaction(async (manager) => {
-      const bill = await manager.findOne(Bill, { where: { id } });
+      // Row-locked re-check — same pattern as generateOneBill's own pessimistic_write guard
+      // (above). An unlocked findOne() here would let two concurrent cancel requests both read
+      // status !== CANCELLED, both pass the check, and both write — silently overwriting the
+      // first request's cancelledAt/cancelledById/cancellationReason and recording two audit
+      // entries for one real cancellation. The lock makes the second request's transaction wait
+      // for the first to commit, then see the now-CANCELLED status and correctly reject.
+      const bill = await manager
+        .createQueryBuilder(Bill, 'b')
+        .setLock('pessimistic_write')
+        .where('b.id = :id', { id })
+        .getOne();
       if (!bill) throw new NotFoundException('Bill not found');
       if (bill.status === BillStatus.CANCELLED) {
-        throw new BadRequestException('This bill is already cancelled');
+        // Same convention as WorkflowOrchestrationService's own already-processed guard — this is
+        // a state conflict (someone else already cancelled it, or the client is retrying a request
+        // that already succeeded), not a malformed request.
+        throw new ConflictException('This bill has already been cancelled — refresh to see its current status.');
       }
 
       bill.status = BillStatus.CANCELLED;

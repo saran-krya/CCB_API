@@ -26,6 +26,7 @@ import { LovModule } from './modules/lov/lov.module';
 import { AttributeModule } from './modules/attribute/attribute.module';
 import { BusinessCodeMigrationModule } from './common/migrations/business-code-migration.module';
 import { MeterUniquenessMigrationModule } from './common/migrations/meter-uniqueness-migration.module';
+import { MeterReadingUniquenessMigrationModule } from './common/migrations/meter-reading-uniqueness-migration.module';
 import { TariffModule } from './modules/tariff/tariff.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { MeterModule } from './modules/meter/meter.module';
@@ -68,6 +69,7 @@ import { WorkflowModule } from './modules/workflow/workflow.module';
     AttributeModule,
     BusinessCodeMigrationModule,
     MeterUniquenessMigrationModule,
+    MeterReadingUniquenessMigrationModule,
     DashboardModule,
     MeterModule,
     SftpModule,

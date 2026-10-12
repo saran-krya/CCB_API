@@ -13,6 +13,8 @@ import { assertNotSelfReview, nextMajorVersion } from '../../common/utils/versio
 import { Community } from '../community/entities/community.entity';
 import { Property } from '../property/entities/property.entity';
 import { LovService } from '../lov/lov.service';
+import { WorkflowType } from '../workflow/dto/workflow.dto';
+import { WorkflowOrchestrationService } from '../workflow/workflow-orchestration.service';
 import {
   BillingCycleQueryDto,
   CreateBillingCycleDto,
@@ -46,7 +48,13 @@ export class BillingCycleService {
     private readonly auditService: AuditService,
     private readonly dataSource: DataSource,
     private readonly lovService: LovService,
-  ) {}
+    private readonly workflowOrchestration: WorkflowOrchestrationService,
+  ) {
+    // Registers this service's own approve() as the AUTO_APPROVE handler for BILLING_CYCLE
+    // workflows — see WorkflowOrchestrationService.registerAutoApproveHandler's own doc comment for
+    // why this direction (domain -> workflow) replaced an earlier forwardRef()-based module import.
+    this.workflowOrchestration.registerAutoApproveHandler(WorkflowType.BILLING_CYCLE, (id) => this.approve(id, undefined, true).then(() => undefined));
+  }
 
   async getFilterMetadata() {
     const [communitiesRaw, propertiesRaw, frequencies] = await Promise.all([
@@ -290,6 +298,14 @@ export class BillingCycleService {
       master.currentVersionId = savedVersion.id;
       await manager.save(BillingCycleMaster, master);
 
+      // create() defaults to ACTIVE (no approval needed for a brand-new property's first billing
+      // cycle) — only starts a workflow instance in the less-common case where a caller explicitly
+      // submits it as PENDING. A cycle created ACTIVE never touches Workflow at all, exactly as
+      // before this change.
+      if (savedVersion.status === BillingCycleStatus.PENDING) {
+        await this.workflowOrchestration.startInstance(WorkflowType.BILLING_CYCLE, savedVersion.id, actorId, manager);
+      }
+
       await this.recordAudit(BillingCycleAuditAction.CREATE, savedVersion.id, undefined, {
         propertyId: dto.propertyId,
         communityId: dto.communityId,
@@ -456,7 +472,9 @@ export class BillingCycleService {
         submittedBy: actorId ? ({ id: actorId } as any) : null,
         submittedOn: today,
       });
-      return manager.save(BillingCycleVersion, clone);
+      const savedClone = await manager.save(BillingCycleVersion, clone);
+      await this.workflowOrchestration.startInstance(WorkflowType.BILLING_CYCLE, savedClone.id, actorId, manager);
+      return savedClone;
     });
 
     await this.recordAudit(
@@ -477,8 +495,18 @@ export class BillingCycleService {
   // arrived, approve()'s activateVersion() (which deprecates the parent + moves the master's
   // currentVersionId pointer) could race a concurrent reject() write. The lock forces the second
   // transaction to wait for the first to commit, then re-read and correctly see status !== PENDING.
-  async approve(id: number, actorId?: number) {
+  // `isSystemActor` — true ONLY from WorkflowSlaSchedulerService's AUTO_APPROVE path (the HTTP
+  // controller never passes a 3rd argument). `approvedBy` is only ever set `if (actorId)` below —
+  // with actorId undefined for a system call, a system-approved version correctly has NO human
+  // approver on record, never a faked one (requirement: "Do not fake a human approver").
+  async approve(id: number, actorId?: number, isSystemActor = false) {
     return this.dataSource.transaction(async (manager) => {
+      // Workflow check joins this SAME transaction/lock (not a separate one) — consistent with every
+      // other domain's own pessimistic-write lock already in place here; assertCanAct itself takes
+      // its own row lock on the WorkflowInstance, acquired before the BillingCycleVersion lock below,
+      // in the same order every other domain acquires it.
+      const workflowContext = await this.workflowOrchestration.assertCanAct(WorkflowType.BILLING_CYCLE, id, actorId, manager, isSystemActor);
+
       const cycle = await manager
         .createQueryBuilder(BillingCycleVersion, 'bcv')
         .setLock('pessimistic_write')
@@ -493,16 +521,29 @@ export class BillingCycleService {
       assertNotSelfReview(cycle.submittedBy?.id, actorId, 'approved');
 
       const oldValue = { ...cycle };
-      if (actorId) cycle.approvedBy = { id: actorId } as any;
-      cycle.approvalDate = new Date().toISOString().slice(0, 10);
 
-      const today = new Date().toISOString().slice(0, 10);
-      if (cycle.effectiveFrom && cycle.effectiveFrom <= today) {
-        await this.activateVersion(cycle, actorId, manager);
-      } else {
-        await manager.save(BillingCycleVersion, cycle);
+      // approvedBy/approvalDate are only set once the FINAL workflow level has approved — an
+      // intermediate level's approval must not make this version look fully approved (the frontend's
+      // "Approved by X on Y" display, and autoActivateDueVersions()'s own `approved_by_id IS NOT
+      // NULL` scheduler condition, both key off this field). When no workflow is configured,
+      // isFinalLevel is always true, so this runs exactly as before.
+      if (workflowContext.isFinalLevel) {
+        if (actorId) cycle.approvedBy = { id: actorId } as any;
+        cycle.approvalDate = new Date().toISOString().slice(0, 10);
+
+        const today = new Date().toISOString().slice(0, 10);
+        if (cycle.effectiveFrom && cycle.effectiveFrom <= today) {
+          await this.activateVersion(cycle, actorId, manager);
+        } else {
+          await manager.save(BillingCycleVersion, cycle);
+        }
       }
 
+      await this.workflowOrchestration.recordApproval(
+        workflowContext, actorId,
+        isSystemActor ? 'Auto-approved by system — SLA breach, no human action taken on this level.' : undefined,
+        manager,
+      );
       await this.recordAudit(BillingCycleAuditAction.APPROVE, id, oldValue, cycle, actorId, manager);
       return this.findOne(id, manager);
     });
@@ -511,6 +552,8 @@ export class BillingCycleService {
   // See approve()'s own comment on why this needs a transaction + pessimistic lock.
   async reject(id: number, dto: RejectBillingCycleDto, actorId?: number) {
     return this.dataSource.transaction(async (manager) => {
+      const workflowContext = await this.workflowOrchestration.assertCanAct(WorkflowType.BILLING_CYCLE, id, actorId, manager);
+
       const cycle = await manager
         .createQueryBuilder(BillingCycleVersion, 'bcv')
         .setLock('pessimistic_write')
@@ -529,6 +572,10 @@ export class BillingCycleService {
       if (actorId) cycle.approvedBy = { id: actorId } as any;
       cycle.approvalDate = new Date().toISOString().slice(0, 10);
       const saved = await manager.save(BillingCycleVersion, cycle);
+      // A rejection at ANY level ends the whole workflow — same principle as Tariff/BillRun. The
+      // version's own existing resubmit() path (REJECTED -> PENDING on the same row) is what starts
+      // a fresh workflow instance from Level 1 again; see resubmit()'s own comment below.
+      await this.workflowOrchestration.recordRejection(workflowContext, actorId, dto.notes, manager);
       await this.recordAudit(BillingCycleAuditAction.REJECT, id, oldValue, saved, actorId, manager);
       return this.findOne(id, manager);
     });
@@ -541,16 +588,23 @@ export class BillingCycleService {
       throw new BadRequestException('Only a rejected billing cycle version can be resubmitted');
     }
 
-    const oldValue = { ...cycle };
-    cycle.status = BillingCycleStatus.PENDING;
-    cycle.rejectionNotes = null;
-    cycle.approvedBy = null;
-    cycle.approvalDate = null;
-    if (actorId) cycle.submittedBy = { id: actorId } as any;
-    cycle.submittedOn = new Date().toISOString().slice(0, 10);
-    const saved = await this.versions.save(cycle);
-    await this.recordAudit(BillingCycleAuditAction.RESUBMIT, id, oldValue, saved, actorId);
-    return this.findOne(id);
+    return this.dataSource.transaction(async (manager) => {
+      const oldValue = { ...cycle };
+      cycle.status = BillingCycleStatus.PENDING;
+      cycle.rejectionNotes = null;
+      cycle.approvedBy = null;
+      cycle.approvalDate = null;
+      if (actorId) cycle.submittedBy = { id: actorId } as any;
+      cycle.submittedOn = new Date().toISOString().slice(0, 10);
+      const saved = await manager.save(BillingCycleVersion, cycle);
+      // Resubmitting reuses the SAME row (unlike Bill Run's resubmit, which inserts a new one) — the
+      // prior instance for this businessObjectId is already REJECTED/terminal, so startInstance
+      // begins a brand-new instance at Level 1 rather than resuming the old one. Approval must run
+      // the full configured sequence again from the start, exactly like a fresh submission.
+      await this.workflowOrchestration.startInstance(WorkflowType.BILLING_CYCLE, saved.id, actorId, manager);
+      await this.recordAudit(BillingCycleAuditAction.RESUBMIT, id, oldValue, saved, actorId, manager);
+      return this.findOne(id, manager);
+    });
   }
 
   async deprecate(id: number, dto: DeprecateBillingCycleDto, actorId?: number) {

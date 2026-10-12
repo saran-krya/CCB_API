@@ -40,6 +40,12 @@ export interface BillingReadinessItem {
   communityName: string;
   cyclePeriodStart: string | null;
   cyclePeriodEnd: string | null;
+  // The exact BillingCycleVersion this property's CURRENT cycle resolves to (same id
+  // BillRun.cycleVersionId is stamped with at submission time) — null when no cycle is
+  // configured. Exists so a caller can tell "this property's current cycle" apart from any other
+  // cycle the same property was billed under previously; matching on dates alone is not reliable
+  // for that (see BillingReadinessDashboard's own "Billed" badge, which this field fixes).
+  cycleVersionId: number | null;
   status: BillingReadinessStatus;
   reasons: BillingReadinessReason[];
   billableUnits: number;
@@ -142,6 +148,7 @@ export class BillingReadinessService {
       communityName: property.community.name,
       cyclePeriodStart: cycleInfo?.periodStart ?? null,
       cyclePeriodEnd: cycleInfo?.periodEnd ?? null,
+      cycleVersionId: cycleInfo?.versionId ?? null,
       status,
       reasons,
       billableUnits: unitIds.length,

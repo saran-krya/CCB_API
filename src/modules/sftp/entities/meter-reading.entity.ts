@@ -32,6 +32,7 @@ export enum ReadingApprovalStatus {
 @Index('IDX_meter_readings_reading_date', ['readingDate'])
 @Index('IDX_meter_readings_source_file_id', ['sourceFile'])
 @Index('IDX_meter_readings_validation_status', ['validationStatus'])
+@Index('UQ_meter_readings_sub_meter_reading_date', ['subMeter', 'readingDate'], { unique: true })
 export class MeterReading extends BaseEntity {
   @Column({ name: 'meter_id', type: 'varchar', length: 100 })
   meterId!: string;

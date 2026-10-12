@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException, UnauthorizedException } from '@nestjs/common';
+import { ForbiddenException, Injectable, Logger, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -57,15 +57,28 @@ export class AuthService {
   async login(dto: LoginDto, deviceCtx?: DeviceContext): Promise<TokenResponseDto> {
     const user = await this.users.findByEmailWithPasswordHash(dto.email);
     if (user) {
-      if (!user.passwordHash || !user.active) {
-        this.logger.warn(`Staff login rejected for ${maskEmail(dto.email)} — inactive account or no password set`);
+      // Password is verified BEFORE the account-status check below, deliberately — this is what
+      // lets the status check return a specific, account-status message without ever exposing
+      // "this account exists" to someone who merely guessed the email and got the password wrong.
+      // A wrong password always gets the same generic 'Invalid credentials' regardless of whether
+      // the account is active, inactive, or has no password hash at all (bcrypt.compare against
+      // undefined/'' never throws, it just returns false) — only once the password is CONFIRMED
+      // correct does the account's actual status get to shape the response.
+      const valid = !!user.passwordHash && (await bcrypt.compare(dto.password, user.passwordHash));
+      if (!valid) {
+        this.logger.warn(`Staff login rejected for ${maskEmail(dto.email)} — password mismatch or no password set`);
         throw new UnauthorizedException('Invalid credentials');
       }
 
-      const valid = await bcrypt.compare(dto.password, user.passwordHash);
-      if (!valid) {
-        this.logger.warn(`Staff login rejected for ${maskEmail(dto.email)} — password mismatch`);
-        throw new UnauthorizedException('Invalid credentials');
+      if (!user.active) {
+        this.logger.warn(`Staff login rejected for ${maskEmail(dto.email)} — correct password, account inactive (userId=${user.id})`);
+        // 403, not 401 — the credentials were verified correct above; this is the "authenticated
+        // identity, refused standing" case, not "who are you" (that's what 401 means here and
+        // everywhere else in this file). refresh()'s own '!user.active' check still throws 401
+        // ('Account is deactivated') — an existing, narrower inconsistency this fix deliberately
+        // does not touch (out of scope: refresh() re-validates an EXISTING session/token, a
+        // different enough situation that changing it was not requested).
+        throw new ForbiddenException('Your account is inactive. Please contact your administrator.');
       }
 
       // RBAC-source-of-truth role lookup goes through user_roles, not the legacy users.role_id
@@ -88,6 +101,16 @@ export class AuthService {
     }
 
     const customer = await this.customers.findByEmailForLogin(dto.email);
+    // Same password-before-status ordering as the staff branch above, for the same reason — the
+    // status check below must never run (and never shape the response) until the password is
+    // confirmed correct, so an attacker who doesn't know the password can't use the response to
+    // learn anything about whether the account exists or what state it's in.
+    const customerValid = !!customer?.passwordHash && (await bcrypt.compare(dto.password, customer.passwordHash));
+    if (!customerValid) {
+      this.logger.warn(`Customer login rejected for ${maskEmail(dto.email)} — password mismatch, no account, or no password set`);
+      throw new UnauthorizedException('Invalid credentials');
+    }
+
     // `accountStatus === ACTIVE` is NOT required to log in — a Customer who has completed account
     // setup (set a password) but is still awaiting a required Security Deposit stays `INACTIVE`
     // until RegistrationRequestService.verifyDeposit() flips it (see Customer.entity's own doc
@@ -97,22 +120,18 @@ export class AuthService {
     // login itself. `OVERDUE` is the one accountStatus value that DOES still block login outright
     // (an existing, separate billing-suspension concept, unrelated to this activation flow — see
     // CustomerAccountStatus's own doc comment).
-    if (!customer?.passwordHash || customer.accountStatus === CustomerAccountStatus.OVERDUE) {
-      this.logger.warn(`Customer login rejected for ${maskEmail(dto.email)} — no account, no password set, or overdue`);
-      throw new UnauthorizedException('Invalid credentials');
+    if (customer!.accountStatus === CustomerAccountStatus.OVERDUE) {
+      this.logger.warn(`Customer login rejected for ${maskEmail(dto.email)} — correct password, account overdue (customerId=${customer!.id})`);
+      // 403 — same reasoning as the staff branch above: credentials already verified correct,
+      // account status is what's refusing access now.
+      throw new ForbiddenException('Your account is inactive. Please contact your administrator.');
     }
 
-    const valid = await bcrypt.compare(dto.password, customer.passwordHash);
-    if (!valid) {
-      this.logger.warn(`Customer login rejected for ${maskEmail(dto.email)} — password mismatch`);
-      throw new UnauthorizedException('Invalid credentials');
-    }
-
-    await this.insertLoginHistory('customer', customer.id, deviceCtx);
-    this.logger.log(`Customer login succeeded for ${maskEmail(dto.email)} (customerId=${customer.id})`);
+    await this.insertLoginHistory('customer', customer!.id, deviceCtx);
+    this.logger.log(`Customer login succeeded for ${maskEmail(dto.email)} (customerId=${customer!.id})`);
 
     return this.issueTokenPair(
-      { sub: customer.id, email: customer.email!, type: 'customer' },
+      { sub: customer!.id, email: customer!.email!, type: 'customer' },
       undefined,
       deviceCtx,
     );

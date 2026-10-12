@@ -3,6 +3,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { Community } from '../community/entities/community.entity';
 import { Property } from '../property/entities/property.entity';
 import { LovModule } from '../lov/lov.module';
+import { WorkflowModule } from '../workflow/workflow.module';
 import { BillingCycleController } from './billing-cycle.controller';
 import { BillingCycleSchedulerService } from './billing-cycle-scheduler.service';
 import { BillingCycleService } from './billing-cycle.service';
@@ -13,6 +14,7 @@ import { BillingCycleVersion } from './entities/billing-cycle-version.entity';
   imports: [
     TypeOrmModule.forFeature([BillingCycleMaster, BillingCycleVersion, Community, Property]),
     LovModule,
+    WorkflowModule,
   ],
   controllers: [BillingCycleController],
   providers: [BillingCycleService, BillingCycleSchedulerService],

@@ -46,7 +46,10 @@ export class SftpIngestionLog extends BaseEntity {
   @Column({ name: 'anomaly_count', type: 'int', unsigned: true, default: 0 })
   anomalyCount!: number;
 
- 
+  @Column({ name: 'duplicate_reading_count', type: 'int', unsigned: true, default: 0 })
+  duplicateReadingCount!: number;
+
+
   @Column({ name: 'critical_anomaly_count', type: 'int', unsigned: true, default: 0 })
   criticalAnomalyCount!: number;
 

@@ -128,7 +128,8 @@ export class SftpCronService {
       }
 
       if (result.outcome === 'success') {
-        this.logger.log(`[${jobId}] File Completed — ${fileName} (log #${result.fileId}, ${result.rowsInserted} row(s), ${durationMs}ms)`);
+        const duplicateSuffix = result.duplicateReadingsSkipped > 0 ? `, ${result.duplicateReadingsSkipped} duplicate-reading row(s) skipped` : '';
+        this.logger.log(`[${jobId}] File Completed — ${fileName} (log #${result.fileId}, ${result.rowsInserted} row(s)${duplicateSuffix}, ${durationMs}ms)`);
         const move = await this.fileMovement.moveProcessed(fileName, result.fileId);
         this.logger.log(move.success ? `[${jobId}] Move Success — ${fileName} -> ${move.movedToFolder}` : `[${jobId}] Move Failed — ${fileName}: ${move.error}`);
         return 'processed';

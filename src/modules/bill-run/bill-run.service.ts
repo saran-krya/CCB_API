@@ -9,6 +9,8 @@ import { BillingReadinessService, BillingReadinessStatus } from '../billing-read
 import { BillingCycleService } from '../billing-cycle/billing-cycle.service';
 import { BillingManagementService } from '../billing-management/billing-management.service';
 import { Property } from '../property/entities/property.entity';
+import { WorkflowType } from '../workflow/dto/workflow.dto';
+import { WorkflowOrchestrationService } from '../workflow/workflow-orchestration.service';
 import { BillRun, BillRunStatus } from './entities/bill-run.entity';
 import { BillRunBatch } from './entities/bill-run-batch.entity';
 import {
@@ -50,7 +52,15 @@ export class BillRunService {
     private readonly billingManagement: BillingManagementService,
     private readonly auditService: AuditService,
     private readonly dataSource: DataSource,
-  ) {}
+    private readonly workflowOrchestration: WorkflowOrchestrationService,
+  ) {
+    // Registers this service's own approve() as the AUTO_APPROVE handler for BILL_RUN workflows —
+    // see WorkflowOrchestrationService.registerAutoApproveHandler's own doc comment for why this
+    // direction (domain -> workflow) replaced an earlier forwardRef()-based module import.
+    this.workflowOrchestration.registerAutoApproveHandler(WorkflowType.BILL_RUN, (id) =>
+      this.approve(id, { notes: 'Auto-approved by system — SLA breached, no human action taken on this level.' }, undefined, true).then(() => undefined),
+    );
+  }
 
   /** The exact same 5 checks the Bill Run UI shows as "Pre-Bill Validation" — computed from the
    *  SAME live BillingReadinessService.getReadiness() call the Billing Readiness screen itself
@@ -262,6 +272,7 @@ export class BillRunService {
     let saved = await manager.save(BillRun, entity);
     saved.businessCode = generateBusinessCode(BUSINESS_CODE_PREFIXES.BILLING_RUN, saved.id);
     saved = await manager.save(BillRun, saved);
+    await this.workflowOrchestration.startInstance(WorkflowType.BILL_RUN, saved.id, actorId, manager);
     return saved;
   }
 
@@ -309,73 +320,134 @@ export class BillRunService {
     return { batch, members };
   }
 
-  async approve(id: number, dto: ReviewBillRunDto, actorId?: number): Promise<BillRun> {
-    const billRun = await this.billRuns.findOne({ where: { id } });
-    if (!billRun) throw new NotFoundException('Bill run not found');
-    if (billRun.status !== BillRunStatus.PENDING_APPROVAL) {
-      throw new BadRequestException('Only a bill run pending approval can be approved');
-    }
-    assertNotSelfReview(billRun.submittedById, actorId, 'approved');
+  // `isSystemActor` — true ONLY from WorkflowSlaSchedulerService's AUTO_APPROVE path (the HTTP
+  // controller never passes a 3rd argument). The scheduler passes dto.notes itself (e.g.
+  // "Auto-approved by system — SLA breach..."), so recordApproval's notes already carry that
+  // distinction without any special-casing here — see Tariff's own approve() for why that one
+  // needed an inline note instead (its recordApproval call never threads dto.notes).
+  async approve(id: number, dto: ReviewBillRunDto, actorId?: number, isSystemActor = false): Promise<BillRun> {
+    const savedId = await this.dataSource.transaction(async (manager) => {
+      // Workflow check runs FIRST, before the domain row is even locked — mirrors Tariff/Billing
+      // Cycle. assertCanAct resolves the acting user's real active roles via UserRoleService (never
+      // users.role_id) and confirms their role matches the CURRENT workflow level's configured
+      // approver — a check that is entirely independent of, and in addition to, the
+      // PermissionGuard/@Permission(BILL_RUN_APPROVE) check that already ran before this method was
+      // ever called. If no workflow is configured for BILL_RUN, isFinalLevel is always true and
+      // nothing below changes behavior.
+      const workflowContext = await this.workflowOrchestration.assertCanAct(WorkflowType.BILL_RUN, id, actorId, manager, isSystemActor);
 
-    const oldValue = { ...billRun };
-    billRun.status = BillRunStatus.APPROVED;
-    billRun.reviewedById = actorId ?? null;
-    billRun.reviewedOn = new Date();
-    billRun.reviewNotes = dto.notes ?? null;
-    const saved = await this.billRuns.save(billRun);
-    await this.auditService.record({ moduleName: BILL_RUN_AUDIT_MODULE, entityId: id, action: 'APPROVE', oldValue, newValue: saved, performedBy: actorId });
+      const billRun = await manager
+        .createQueryBuilder(BillRun, 'br')
+        .setLock('pessimistic_write')
+        .where('br.id = :id', { id })
+        .getOne();
+      if (!billRun) throw new NotFoundException('Bill run not found');
+      if (billRun.status !== BillRunStatus.PENDING_APPROVAL) {
+        throw new BadRequestException('Only a bill run pending approval can be approved');
+      }
+      assertNotSelfReview(billRun.submittedById, actorId, 'approved');
 
-    // Deliberately called AFTER approval has already committed, never inside the same transaction —
-    // Bill Run approval is Bill Run Request's own responsibility and must never be contingent on,
-    // rolled back by, or otherwise coupled to Billing Management's outcome (see
-    // billing-management.service.ts's own doc comment on this exact boundary). Bill generation
-    // failures are handled entirely inside generateBillsForBillRun itself (per-unit, non-fatal,
-    // recorded and returned rather than thrown) — but as a final defensive boundary, a failure here
-    // is logged and swallowed rather than allowed to make this approve() call appear to fail when
-    // the actual Finance approval action — the thing this method exists for — already succeeded.
-    try {
-      await this.billingManagement.generateBillsForBillRun(saved.id, actorId);
-    } catch (err) {
-      this.logger.error(`Bill generation failed after approving bill run ${saved.id} — approval itself is unaffected`, err as Error);
+      const oldValue = { ...billRun };
+      billRun.reviewedById = actorId ?? null;
+      billRun.reviewedOn = new Date();
+      billRun.reviewNotes = dto.notes ?? null;
+      // Only the FINAL workflow level's approval actually moves the Bill Run to APPROVED — an
+      // intermediate level's approval advances the workflow instance (recordApproval, below) without
+      // changing the Bill Run's own domain status at all. The Bill Run stays PENDING_APPROVAL,
+      // waiting on the next level, exactly as the domain's pre-Workflow behavior left it waiting on
+      // the only level there used to be.
+      if (workflowContext.isFinalLevel) {
+        billRun.status = BillRunStatus.APPROVED;
+      }
+      const saved = await manager.save(BillRun, billRun);
+      await this.workflowOrchestration.recordApproval(workflowContext, actorId, dto.notes, manager);
+      await this.auditService.record({ moduleName: BILL_RUN_AUDIT_MODULE, entityId: id, action: 'APPROVE', oldValue, newValue: saved, performedBy: actorId }, manager);
+      return saved.id;
+    });
+
+    const result = await this.findOne(savedId);
+
+    // Deliberately called AFTER the transaction has already committed, never inside it — Bill Run
+    // approval is Bill Run Request's own responsibility and must never be contingent on, rolled back
+    // by, or otherwise coupled to Billing Management's outcome (see billing-management.service.ts's
+    // own doc comment on this exact boundary). Gated on the Bill Run's actual resulting status, not
+    // merely "approve() was called" — an intermediate workflow level's approval must NOT trigger bill
+    // generation; only the approval that actually flips the Bill Run to APPROVED should (requirement:
+    // final approval still triggers bill generation exactly once). Bill generation failures are
+    // handled entirely inside generateBillsForBillRun itself (per-unit, non-fatal, recorded and
+    // returned rather than thrown) — but as a final defensive boundary, a failure here is logged and
+    // swallowed rather than allowed to make this approve() call appear to fail when the actual
+    // approval action already succeeded.
+    if (result.status === BillRunStatus.APPROVED) {
+      try {
+        await this.billingManagement.generateBillsForBillRun(result.id, actorId);
+      } catch (err) {
+        this.logger.error(`Bill generation failed after approving bill run ${result.id} — approval itself is unaffected`, err as Error);
+      }
     }
 
     return this.findOne(id);
   }
 
   async reject(id: number, dto: RejectBillRunDto, actorId?: number): Promise<BillRun> {
-    const billRun = await this.billRuns.findOne({ where: { id } });
-    if (!billRun) throw new NotFoundException('Bill run not found');
-    if (billRun.status !== BillRunStatus.PENDING_APPROVAL) {
-      throw new BadRequestException('Only a bill run pending approval can be rejected');
-    }
-    assertNotSelfReview(billRun.submittedById, actorId, 'rejected');
+    return this.dataSource.transaction(async (manager) => {
+      const workflowContext = await this.workflowOrchestration.assertCanAct(WorkflowType.BILL_RUN, id, actorId, manager);
 
-    const oldValue = { ...billRun };
-    billRun.status = BillRunStatus.REJECTED;
-    billRun.reviewedById = actorId ?? null;
-    billRun.reviewedOn = new Date();
-    billRun.reviewNotes = dto.notes;
-    const saved = await this.billRuns.save(billRun);
-    await this.auditService.record({ moduleName: BILL_RUN_AUDIT_MODULE, entityId: id, action: 'REJECT', oldValue, newValue: saved, performedBy: actorId });
-    return this.findOne(id);
+      const billRun = await manager
+        .createQueryBuilder(BillRun, 'br')
+        .setLock('pessimistic_write')
+        .where('br.id = :id', { id })
+        .getOne();
+      if (!billRun) throw new NotFoundException('Bill run not found');
+      if (billRun.status !== BillRunStatus.PENDING_APPROVAL) {
+        throw new BadRequestException('Only a bill run pending approval can be rejected');
+      }
+      assertNotSelfReview(billRun.submittedById, actorId, 'rejected');
+
+      const oldValue = { ...billRun };
+      billRun.status = BillRunStatus.REJECTED;
+      billRun.reviewedById = actorId ?? null;
+      billRun.reviewedOn = new Date();
+      billRun.reviewNotes = dto.notes;
+      const saved = await manager.save(BillRun, billRun);
+      // A rejection at ANY level ends the whole workflow — never gated on isFinalLevel. There is no
+      // "reject just this level and continue" semantic; the configured levels are a sequence of
+      // required approvals, and any one of them refusing is a terminal outcome for the instance.
+      await this.workflowOrchestration.recordRejection(workflowContext, actorId, dto.notes, manager);
+      await this.auditService.record({ moduleName: BILL_RUN_AUDIT_MODULE, entityId: id, action: 'REJECT', oldValue, newValue: saved, performedBy: actorId }, manager);
+      return saved.id;
+    }).then((savedId) => this.findOne(savedId));
   }
 
   async returnForCorrection(id: number, dto: ReturnBillRunDto, actorId?: number): Promise<BillRun> {
-    const billRun = await this.billRuns.findOne({ where: { id } });
-    if (!billRun) throw new NotFoundException('Bill run not found');
-    if (billRun.status !== BillRunStatus.PENDING_APPROVAL) {
-      throw new BadRequestException('Only a bill run pending approval can be returned for correction');
-    }
-    assertNotSelfReview(billRun.submittedById, actorId, 'returned for correction');
+    return this.dataSource.transaction(async (manager) => {
+      const workflowContext = await this.workflowOrchestration.assertCanAct(WorkflowType.BILL_RUN, id, actorId, manager);
 
-    const oldValue = { ...billRun };
-    billRun.status = BillRunStatus.RETURNED_FOR_CORRECTION;
-    billRun.reviewedById = actorId ?? null;
-    billRun.reviewedOn = new Date();
-    billRun.reviewNotes = dto.notes;
-    const saved = await this.billRuns.save(billRun);
-    await this.auditService.record({ moduleName: BILL_RUN_AUDIT_MODULE, entityId: id, action: 'RETURN', oldValue, newValue: saved, performedBy: actorId });
-    return this.findOne(id);
+      const billRun = await manager
+        .createQueryBuilder(BillRun, 'br')
+        .setLock('pessimistic_write')
+        .where('br.id = :id', { id })
+        .getOne();
+      if (!billRun) throw new NotFoundException('Bill run not found');
+      if (billRun.status !== BillRunStatus.PENDING_APPROVAL) {
+        throw new BadRequestException('Only a bill run pending approval can be returned for correction');
+      }
+      assertNotSelfReview(billRun.submittedById, actorId, 'returned for correction');
+
+      const oldValue = { ...billRun };
+      billRun.status = BillRunStatus.RETURNED_FOR_CORRECTION;
+      billRun.reviewedById = actorId ?? null;
+      billRun.reviewedOn = new Date();
+      billRun.reviewNotes = dto.notes;
+      const saved = await manager.save(BillRun, billRun);
+      // Returning for correction is also a terminal exit from the workflow's perspective — the
+      // submitter must correct and resubmit via resubmit(), which creates a brand-new row and (via
+      // submitWithinTransaction) starts a brand-new workflow instance from Level 1. The original
+      // instance must not be left dangling mid-flight.
+      await this.workflowOrchestration.recordRejection(workflowContext, actorId, dto.notes, manager);
+      await this.auditService.record({ moduleName: BILL_RUN_AUDIT_MODULE, entityId: id, action: 'RETURN', oldValue, newValue: saved, performedBy: actorId }, manager);
+      return saved.id;
+    }).then((savedId) => this.findOne(savedId));
   }
 
   /** Corrects-and-resubmits a returned or rejected bill run as a brand NEW row — the original is

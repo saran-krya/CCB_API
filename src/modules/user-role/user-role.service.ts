@@ -86,6 +86,14 @@ export class UserRoleService {
     return rows.map((r) => ({ userId: Number(r.userId), roleId: Number(r.roleId), roleName: r.roleName }));
   }
 
+  /** Every user currently holding a specific roleId — the reverse of getRoleIds (which resolves a
+   *  user's roles; this resolves a role's users). Used by WorkflowSlaSchedulerService to find who to
+   *  notify when a workflow level's configured approver role breaches its SLA. */
+  async getUsersByRoleId(roleId: number): Promise<Array<{ userId: number }>> {
+    const rows = await this.userRoles.find({ where: { roleId }, select: ['userId'] });
+    return rows.map((r) => ({ userId: r.userId }));
+  }
+
   /** Sets this user's one role, replacing any existing row(s) — matches today's actual UI/DTO
    *  shape (`CreateUserDto.roleId: number`, a single-select dropdown), not a multi-role grant API.
    *  Accepts an optional transaction manager so UserService.create/update can keep this write in

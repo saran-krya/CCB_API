@@ -12,6 +12,8 @@ import {
 import { LovService } from '../lov/lov.service';
 import { Property } from '../property/entities/property.entity';
 import { Unit } from '../unit/entities/unit.entity';
+import { WorkflowType } from '../workflow/dto/workflow.dto';
+import { WorkflowOrchestrationService } from '../workflow/workflow-orchestration.service';
 import {
   CreateTariffDto,
   RejectTariffDto,
@@ -72,7 +74,13 @@ export class TariffService {
     private readonly auditService: AuditService,
     private readonly attributeService: AttributeService,
     private readonly lovService: LovService,
-  ) {}
+    private readonly workflowOrchestration: WorkflowOrchestrationService,
+  ) {
+    // Registers this service's own approve() as the AUTO_APPROVE handler for TARIFF workflows —
+    // see WorkflowOrchestrationService.registerAutoApproveHandler's own doc comment for why this
+    // direction (domain -> workflow) replaced an earlier forwardRef()-based module import.
+    this.workflowOrchestration.registerAutoApproveHandler(WorkflowType.TARIFF, (id) => this.approve(id, undefined, true).then(() => undefined));
+  }
 
   async checkConflict(query: TariffConflictQueryDto) {
     const qb = this.versions
@@ -594,45 +602,108 @@ export class TariffService {
     if (actorId) version.submittedBy = { id: actorId } as any;
     version.rejectionReason = null;
     version.rejectionNotes = null;
-    const saved = await this.versions.save(version);
 
-    await this.audit(TariffAuditAction.SUBMIT, id, oldValue, saved, actorId);
+    // Wrapped in a transaction so the Workflow instance (if TARIFF has an ACTIVE definition) is
+    // created atomically with the status flip — a workflow instance must never exist without its
+    // corresponding tariff actually being PENDING, or vice versa. startInstance() itself is a
+    // complete no-op when no ACTIVE definition exists, so a tariff with Workflow not configured
+    // behaves exactly as before this engine existed (see WorkflowOrchestrationService's own doc
+    // comment on this backward-compatibility guarantee).
+    await this.dataSource.transaction(async (manager) => {
+      const saved = await manager.save(TariffVersion, version);
+      await this.workflowOrchestration.startInstance(WorkflowType.TARIFF, id, actorId, manager);
+      await this.audit(TariffAuditAction.SUBMIT, id, oldValue, saved, actorId, manager);
+    });
+
     return this.findOne(id);
   }
 
-  async approve(id: number, actorId?: number) {
-    const version = await this.versions.findOne({ where: { id }, relations: ['submittedBy'] });
-    if (!version) throw new NotFoundException('Tariff not found');
-    if (version.status !== TariffStatus.PENDING) {
-      throw new BadRequestException('Only pending tariffs can be approved');
-    }
-    assertNotSelfReview(version.submittedBy?.id, actorId, 'approved');
-    const oldValue = { ...version };
-    version.status = TariffStatus.ACTIVE;
-    if (actorId) version.approvedBy = { id: actorId } as any;
-    version.approvalDate = new Date().toISOString().slice(0, 10);
-    const saved = await this.versions.save(version);
-    await this.audit(TariffAuditAction.APPROVE, id, oldValue, saved, actorId);
-    return this.findOne(id);
+  // `isSystemActor` — true ONLY when called from WorkflowSlaSchedulerService's AUTO_APPROVE path
+  // (never from the controller — the HTTP layer never passes a 3rd argument here). Threads straight
+  // through to assertCanAct, which is the only place this flag changes behavior (skips the human
+  // role-match; see that method's own doc comment). Everything else in this method — the row lock,
+  // the PENDING-status check, self-review (a no-op anyway when actorId is undefined), the ACTIVE
+  // transition at the final level, the audit call — runs completely unchanged, so a system-triggered
+  // approval produces byte-for-byte the same domain state a human final approval would.
+  async approve(id: number, actorId?: number, isSystemActor = false) {
+    return this.dataSource.transaction(async (manager) => {
+      // Workflow's OWN check first — "is this your turn" — before any domain-specific logic runs,
+      // so a wrong-level/wrong-role call fails fast without touching domain state (requirement §5).
+      // This is NOT a replacement for PermissionGuard's own "can this role ever approve a Tariff"
+      // check, which has already run, unconditionally, before this controller method was even
+      // entered — assertCanAct only ever compares roles against the configured level, it never
+      // re-queries role_permissions itself (see that method's own doc comment).
+      const workflowContext = await this.workflowOrchestration.assertCanAct(WorkflowType.TARIFF, id, actorId, manager, isSystemActor);
+
+      const version = await manager
+        .createQueryBuilder(TariffVersion, 'v')
+        .setLock('pessimistic_write')
+        .leftJoinAndSelect('v.submittedBy', 'submittedBy')
+        .where('v.id = :id', { id })
+        .getOne();
+      if (!version) throw new NotFoundException('Tariff not found');
+      if (version.status !== TariffStatus.PENDING) {
+        throw new BadRequestException('Only pending tariffs can be approved');
+      }
+      assertNotSelfReview(version.submittedBy?.id, actorId, 'approved');
+
+      const oldValue = { ...version };
+
+      // The domain's own terminal transition (PENDING -> ACTIVE) only runs at the workflow's FINAL
+      // level — see WorkflowOrchestrationService's own doc comment and the architecture design's
+      // state-machine section. An intermediate-level approval records progress in the workflow
+      // instance only; the tariff itself stays PENDING until the last configured approver acts.
+      // When no workflow is configured (workflowContext.instance === null), isFinalLevel is always
+      // true, so this branch always runs — byte-for-byte the pre-engine behavior.
+      if (workflowContext.isFinalLevel) {
+        version.status = TariffStatus.ACTIVE;
+        if (actorId) version.approvedBy = { id: actorId } as any;
+        version.approvalDate = new Date().toISOString().slice(0, 10);
+      }
+      const saved = await manager.save(TariffVersion, version);
+
+      await this.workflowOrchestration.recordApproval(
+        workflowContext, actorId,
+        isSystemActor ? 'Auto-approved by system — SLA breach, no human action taken on this level.' : undefined,
+        manager,
+      );
+      await this.audit(TariffAuditAction.APPROVE, id, oldValue, saved, actorId, manager);
+      return saved.id;
+    }).then((savedId) => this.findOne(savedId));
   }
 
   async reject(id: number, dto: RejectTariffDto, actorId?: number) {
-    const version = await this.versions.findOne({ where: { id }, relations: ['submittedBy'] });
-    if (!version) throw new NotFoundException('Tariff not found');
-    if (version.status !== TariffStatus.PENDING) {
-      throw new BadRequestException('Only pending tariffs can be rejected');
-    }
-    await this.assertValidRejectionReason(dto.rejectionReason);
-    assertNotSelfReview(version.submittedBy?.id, actorId, 'rejected');
-    const oldValue = { ...version };
-    version.status = TariffStatus.REJECTED;
-    version.rejectionReason = dto.rejectionReason;
-    version.rejectionNotes = dto.rejectionNotes;
-    if (actorId) version.approvedBy = { id: actorId } as any;
-    version.approvalDate = new Date().toISOString().slice(0, 10);
-    const saved = await this.versions.save(version);
-    await this.audit(TariffAuditAction.REJECT, id, oldValue, saved, actorId);
-    return this.findOne(id);
+    return this.dataSource.transaction(async (manager) => {
+      const workflowContext = await this.workflowOrchestration.assertCanAct(WorkflowType.TARIFF, id, actorId, manager);
+
+      const version = await manager
+        .createQueryBuilder(TariffVersion, 'v')
+        .setLock('pessimistic_write')
+        .leftJoinAndSelect('v.submittedBy', 'submittedBy')
+        .where('v.id = :id', { id })
+        .getOne();
+      if (!version) throw new NotFoundException('Tariff not found');
+      if (version.status !== TariffStatus.PENDING) {
+        throw new BadRequestException('Only pending tariffs can be rejected');
+      }
+      await this.assertValidRejectionReason(dto.rejectionReason);
+      assertNotSelfReview(version.submittedBy?.id, actorId, 'rejected');
+
+      const oldValue = { ...version };
+      // A rejection at ANY level ends the whole workflow journey immediately — never a partial
+      // "send back to a lower level" (requirement §12: do not invent new rejection semantics; the
+      // existing domain REJECTED status already means exactly this).
+      version.status = TariffStatus.REJECTED;
+      version.rejectionReason = dto.rejectionReason;
+      version.rejectionNotes = dto.rejectionNotes;
+      if (actorId) version.approvedBy = { id: actorId } as any;
+      version.approvalDate = new Date().toISOString().slice(0, 10);
+      const saved = await manager.save(TariffVersion, version);
+
+      await this.workflowOrchestration.recordRejection(workflowContext, actorId, dto.rejectionNotes ?? dto.rejectionReason, manager);
+      await this.audit(TariffAuditAction.REJECT, id, oldValue, saved, actorId, manager);
+      return saved.id;
+    }).then((savedId) => this.findOne(savedId));
   }
 
   async deactivate(id: number, actorId?: number) {
@@ -774,15 +845,19 @@ export class TariffService {
     oldValue: unknown,
     newValue: unknown,
     actorId?: number,
+    manager?: EntityManager,
   ): Promise<void> {
-    await this.auditService.record({
-      moduleName: TARIFF_AUDIT_MODULE_NAME,
-      entityId,
-      action,
-      oldValue,
-      newValue,
-      performedBy: actorId,
-    });
+    await this.auditService.record(
+      {
+        moduleName: TARIFF_AUDIT_MODULE_NAME,
+        entityId,
+        action,
+        oldValue,
+        newValue,
+        performedBy: actorId,
+      },
+      manager,
+    );
   }
 
   private async getActiveLockedFields(): Promise<(keyof UpdateTariffDto)[]> {

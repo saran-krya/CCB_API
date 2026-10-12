@@ -40,6 +40,7 @@ export interface IngestSuccessResult {
   success: true;
   fileId: number;
   rowsInserted: number;
+  duplicateReadingsSkipped: number;
 }
 
 export interface IngestDuplicateResult {
@@ -210,8 +211,36 @@ export class IngestionService {
 
     const resolvedPropertyIds = new Set<number>();
     const resolvedCommunityIds = new Set<number>();
+    let duplicateReadingCount = 0;
 
     const saved = await this.dataSource.transaction(async (manager) => {
+      // Reading-level duplicate check (defense in depth alongside the DB unique constraint on
+      // meter_readings(sub_meter_id, reading_date)): for every row that resolved to a real
+      // subMeter, skip it if a reading already exists for that (subMeterId, readingDate) pair —
+      // either from a prior file (different file, same meter+date) or earlier in this same batch.
+      // Rows that did not resolve to a subMeter (hierarchy undefined) are untouched by this check
+      // and insert exactly as before.
+      const candidateSubMeterIds = new Set<number>();
+      for (const row of rows) {
+        const meterId = row.meter_id?.trim();
+        const hierarchy = meterId ? hierarchyByMeterId.get(meterId) : undefined;
+        if (hierarchy) candidateSubMeterIds.add(hierarchy.subMeterId);
+      }
+
+      const existingPairs = new Set<string>();
+      if (candidateSubMeterIds.size > 0) {
+        const existingReadings = await manager
+          .getRepository(MeterReading)
+          .createQueryBuilder('mr')
+          .select('mr.sub_meter_id', 'subMeterId')
+          .addSelect('mr.reading_date', 'readingDate')
+          .where('mr.sub_meter_id IN (:...subMeterIds)', { subMeterIds: [...candidateSubMeterIds] })
+          .getRawMany<{ subMeterId: number; readingDate: string }>();
+        for (const r of existingReadings) {
+          existingPairs.add(`${r.subMeterId}::${r.readingDate}`);
+        }
+      }
+
       const log = manager.create(SftpIngestionLog, {
         fileName,
         originalFileName: fileName,
@@ -227,6 +256,7 @@ export class IngestionService {
         highAnomalyCount: rowResult.severityCounts[AnomalySeverity.HIGH],
         mediumAnomalyCount: rowResult.severityCounts[AnomalySeverity.MEDIUM],
         lowAnomalyCount: rowResult.severityCounts[AnomalySeverity.LOW],
+        duplicateReadingCount: 0,
         processingStartedAt,
         triggerSource,
         jobId: options.jobId ?? null,
@@ -235,10 +265,27 @@ export class IngestionService {
       const savedLog = await manager.save(SftpIngestionLog, log);
 
       if (rows.length > 0) {
-        const readingEntities = rows.map((row, index) => {
+        const readingEntities: MeterReading[] = [];
+
+        rows.forEach((row, index) => {
           const meterId = row.meter_id?.trim() ?? '';
           const hierarchy = meterId ? hierarchyByMeterId.get(meterId) : undefined;
+
+          const resolvedReadingDate = row.reading_date?.trim() || processingStartedAt.toISOString().slice(0, 10);
+
           if (hierarchy) {
+            const pairKey = `${hierarchy.subMeterId}::${resolvedReadingDate}`;
+            if (existingPairs.has(pairKey)) {
+              // Already have a reading for this sub-meter + date (from this file or an earlier
+              // one) — skip without overwriting the existing value and without inserting a
+              // second row. Do not pick a "winner"; this is a reject, not a merge.
+              duplicateReadingCount += 1;
+              return;
+            }
+            // Track within this batch too, so two rows in the same file for the same
+            // sub-meter + date don't both insert.
+            existingPairs.add(pairKey);
+
             resolvedPropertyIds.add(hierarchy.propertyId);
             resolvedCommunityIds.add(hierarchy.communityId);
           }
@@ -248,26 +295,58 @@ export class IngestionService {
 
           const isAutoApproved = validationStatus === ReadingValidationStatus.CLEAN;
 
-          return manager.create(MeterReading, {
-            meterId,
-            readingDate: row.reading_date?.trim() || processingStartedAt.toISOString().slice(0, 10),
-            readingValue: row.reading_value?.trim() || null,
-            unit: row.unit?.trim() || null,
-            validationStatus,
-            anomalyCode: worstError ? toAnomalyCode(worstError) : null,
-            anomalySeverity: worstError?.severity ?? null,
-            anomalyMessage: worstError?.message ?? null,
-            approvalStatus: isAutoApproved ? ReadingApprovalStatus.APPROVED : ReadingApprovalStatus.PENDING,
-            approvedAt: isAutoApproved ? processingStartedAt : null,
-            approvedBy: isAutoApproved ? 'SYSTEM' : null,
-            sourceFile: savedLog,
-            subMeter: hierarchy ? ({ id: hierarchy.subMeterId } as SubMeter) : null,
-            propertyUnit: hierarchy?.unitId ? ({ id: hierarchy.unitId } as Unit) : null,
-            property: hierarchy ? ({ id: hierarchy.propertyId } as Property) : null,
-            community: hierarchy ? ({ id: hierarchy.communityId } as Community) : null,
-          });
+          readingEntities.push(
+            manager.create(MeterReading, {
+              meterId,
+              readingDate: resolvedReadingDate,
+              readingValue: row.reading_value?.trim() || null,
+              unit: row.unit?.trim() || null,
+              validationStatus,
+              anomalyCode: worstError ? toAnomalyCode(worstError) : null,
+              anomalySeverity: worstError?.severity ?? null,
+              anomalyMessage: worstError?.message ?? null,
+              approvalStatus: isAutoApproved ? ReadingApprovalStatus.APPROVED : ReadingApprovalStatus.PENDING,
+              approvedAt: isAutoApproved ? processingStartedAt : null,
+              approvedBy: isAutoApproved ? 'SYSTEM' : null,
+              sourceFile: savedLog,
+              subMeter: hierarchy ? ({ id: hierarchy.subMeterId } as SubMeter) : null,
+              propertyUnit: hierarchy?.unitId ? ({ id: hierarchy.unitId } as Unit) : null,
+              property: hierarchy ? ({ id: hierarchy.propertyId } as Property) : null,
+              community: hierarchy ? ({ id: hierarchy.communityId } as Community) : null,
+            }),
+          );
         });
-        await manager.save(MeterReading, readingEntities);
+
+        if (readingEntities.length > 0) {
+          try {
+            await manager.save(MeterReading, readingEntities);
+          } catch (err) {
+            if (!this.isDuplicateKeyError(err)) throw err;
+
+            // The pre-query above is a best-effort check, not a lock — a concurrent ingestion run
+            // for the same sub-meter + reading date can still race past it and reach this bulk
+            // insert first. When that happens, the DB's own UNIQUE(sub_meter_id, reading_date)
+            // constraint is the real backstop and rejects the whole bulk statement. Falling back to
+            // one-row-at-a-time here (only on this rare path, never on the common path) lets every
+            // genuinely-new row in the batch still insert — only the row(s) that actually lost the
+            // race are skipped, exactly like a pre-detected duplicate.
+            this.logger.warn(
+              `Bulk insert hit a duplicate-key conflict for "${fileName}" (concurrent ingestion race) — retrying ${readingEntities.length} row(s) individually so non-conflicting rows still insert`,
+            );
+            for (const entity of readingEntities) {
+              try {
+                await manager.save(MeterReading, entity);
+              } catch (rowErr) {
+                if (!this.isDuplicateKeyError(rowErr)) throw rowErr;
+                duplicateReadingCount += 1;
+              }
+            }
+          }
+        }
+
+        if (duplicateReadingCount > 0) {
+          await manager.update(SftpIngestionLog, savedLog.id, { duplicateReadingCount });
+        }
       }
 
       return savedLog;
@@ -286,15 +365,31 @@ export class IngestionService {
       ...(resolvedCommunityId ? { community: { id: resolvedCommunityId } as Community } : {}),
     });
 
+    const rowsInserted = rows.length - duplicateReadingCount;
+
     this.logger.log(
-      `Ingested "${fileName}" — log #${saved.id}, ${rows.length} reading(s) inserted ` +
-      `(${rowResult.validRows} clean, ${rowResult.invalidRows} anomaly), ${processingDurationMs}ms`,
+      `Ingested "${fileName}" — log #${saved.id}, ${rowsInserted} reading(s) inserted ` +
+      `(${rowResult.validRows} clean, ${rowResult.invalidRows} anomaly)` +
+      `${duplicateReadingCount > 0 ? `, ${duplicateReadingCount} duplicate-reading row(s) skipped` : ''}, ${processingDurationMs}ms`,
     );
 
-    return { outcome: 'success', success: true, fileId: saved.id, rowsInserted: rows.length };
+    return {
+      outcome: 'success',
+      success: true,
+      fileId: saved.id,
+      rowsInserted,
+      duplicateReadingsSkipped: duplicateReadingCount,
+    };
   }
 
   
+  // Same idiom as MeterService's toCommitFailure/toDuplicateKeyException — MySQL's ER_DUP_ENTRY,
+  // recognized either by TypeORM's wrapped driver error code or by its message text.
+  private isDuplicateKeyError(err: unknown): boolean {
+    const message = err instanceof Error ? err.message : String(err);
+    return /duplicate entry/i.test(message) || (err as { code?: string })?.code === 'ER_DUP_ENTRY';
+  }
+
   private hashFile(localPath: string): Promise<string> {
     return new Promise((resolve, reject) => {
       const hash = createHash('sha256');
