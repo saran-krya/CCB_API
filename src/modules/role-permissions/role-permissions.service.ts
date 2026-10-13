@@ -132,6 +132,9 @@ export class RolePermissionsService {
           canBeReportingManager:
             dto.canBeReportingManager ??
             false,
+          canBeFieldInspector:
+            dto.canBeFieldInspector ??
+            false,
         }),
       );
 
@@ -530,6 +533,7 @@ export class RolePermissionsService {
       roleDescription: role?.roleDescription ?? null,
       userCategoryId: role?.userCategoryId ?? null,
       canBeReportingManager: role?.canBeReportingManager ?? false,
+      canBeFieldInspector: role?.canBeFieldInspector ?? false,
       userId: 0,
 
       screenPermissionList: modules.map((module) => ({
@@ -590,6 +594,8 @@ export class RolePermissionsService {
         dto.userCategoryId,
       canBeReportingManager:
         dto.canBeReportingManager,
+      canBeFieldInspector:
+        dto.canBeFieldInspector,
     });
 
     await this.roleRepository.save(role);

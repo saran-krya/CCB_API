@@ -46,6 +46,13 @@ export class SaveRoleWithPermissionsDto {
   @IsBoolean()
   canBeReportingManager?: boolean;
 
+  @ApiPropertyOptional({
+    default: false,
+  })
+  @IsOptional()
+  @IsBoolean()
+  canBeFieldInspector?: boolean;
+
   @ApiProperty({
     type: [Object],
     description:

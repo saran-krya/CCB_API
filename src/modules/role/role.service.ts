@@ -19,6 +19,7 @@ import {
 import { Role } from './entities/role.entity';
 import { RoleQueryDto } from '@app/common/dto/role-paginatoin.dto';
 import { LovService } from '../lov/lov.service';
+import { UserRoleService } from '../user-role/user-role.service';
 
 @Injectable()
 export class RoleService {
@@ -29,6 +30,8 @@ export class RoleService {
     private readonly lovService: LovService,
 
     private readonly audit: AuditService,
+
+    private readonly userRoleService: UserRoleService,
   ) { }
 
   async create(
@@ -155,6 +158,12 @@ export class RoleService {
         query,
       );
 
+    // One grouped query for the whole page's "assigned users" count, not one query per row —
+    // see UserRoleService.getUserCountsByRoleIds's own doc comment on why this avoids N+1.
+    const userCounts = await this.userRoleService.getUserCountsByRoleIds(
+      result.items.map((role) => role.id),
+    );
+
     return {
       items: result.items.map(
         (role) => ({
@@ -168,6 +177,8 @@ export class RoleService {
               ?.label ?? null,
           created:
             role.createdAt,
+          assignedUserCount:
+            userCounts.get(role.id) ?? 0,
         }),
       ),
       pagination:
@@ -240,6 +251,37 @@ export class RoleService {
     }
 
     return role;
+  }
+
+  /** The Role Detail page's own read — same role lookup as `findOne`, plus the two facts that page
+   *  needs beyond the plain entity: how many users currently hold this role, and its user-facing
+   *  display fields (userCategoryType label, matching RoleLists' own projection). Kept separate from
+   *  `findOne` rather than folding this into it, since `findOne`'s other two callers
+   *  (RoleController's plain GET and UserService.create/update's existence check) don't need this
+   *  extra query on every call — this is deliberately only for the one screen that does. */
+  async findOneWithDetails(id: number) {
+    // userCategory is `eager: true` on the entity, so a plain findOne already joins it — no
+    // explicit `relations` needed here (same reason RoleLists' own leftJoinAndSelect would be
+    // redundant, if this read ever switched to a query builder).
+    const role = await this.roles.findOne({ where: { id } });
+    if (!role) {
+      throw new NotFoundException('Role not found');
+    }
+
+    const assignedUsers = await this.userRoleService.getUsersByRoleId(id);
+
+    return {
+      roleId: role.id,
+      roleName: role.roleName,
+      roleDescription: role.roleDescription,
+      userCategoryId: role.userCategoryId,
+      userCategoryType: role.userCategory?.label ?? null,
+      canBeReportingManager: role.canBeReportingManager,
+      canBeFieldInspector: role.canBeFieldInspector,
+      assignedUserCount: assignedUsers.length,
+      createdAt: role.createdAt,
+      updatedAt: role.updatedAt,
+    };
   }
 
   async update(

@@ -52,6 +52,15 @@ export class RoleController {
     return this.roles.findOne(id);
   }
 
+  // Backs the Role Detail page specifically — assigned-user count + updatedAt, neither of which
+  // plain findOne() above needs for its other two callers (see RoleService.findOneWithDetails'
+  // own doc comment). Nested under the numeric id (`:id/details`), not a bare `:id`, so it can't
+  // collide with `dropdown`/`filter`/`metaFilters` above and never shadows the plain findOne route.
+  @Get(':id/details')
+  findOneWithDetails(@Param('id') id: number) {
+    return this.roles.findOneWithDetails(id);
+  }
+
   @Patch(':id')
   update(@Param('id') id: number, @Body() dto: UpdateRoleDto, @CurrentUser() user?: AuthenticatedUser) {
     return this.roles.update(id, dto, user?.sub);

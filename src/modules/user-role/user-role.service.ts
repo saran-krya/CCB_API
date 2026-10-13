@@ -94,6 +94,22 @@ export class UserRoleService {
     return rows.map((r) => ({ userId: r.userId }));
   }
 
+  /** The batched equivalent of `getUsersByRoleId().length` — for the Roles list screen, which needs
+   *  an "assigned users" count per role across a whole page of roles in one query, not one count
+   *  query per row (N+1). A role with zero assigned users is simply absent from the result map —
+   *  callers default to 0 via `?? 0`, never treat a missing entry as an error. */
+  async getUserCountsByRoleIds(roleIds: number[]): Promise<Map<number, number>> {
+    if (roleIds.length === 0) return new Map();
+    const rows = await this.userRoles
+      .createQueryBuilder('ur')
+      .where('ur.roleId IN (:...roleIds)', { roleIds })
+      .select('ur.roleId', 'roleId')
+      .addSelect('COUNT(*)', 'count')
+      .groupBy('ur.roleId')
+      .getRawMany();
+    return new Map(rows.map((r) => [Number(r.roleId), Number(r.count)]));
+  }
+
   /** Sets this user's one role, replacing any existing row(s) — matches today's actual UI/DTO
    *  shape (`CreateUserDto.roleId: number`, a single-select dropdown), not a multi-role grant API.
    *  Accepts an optional transaction manager so UserService.create/update can keep this write in
