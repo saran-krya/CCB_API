@@ -1,4 +1,4 @@
-import { ApiPropertyOptional } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform, Type } from 'class-transformer';
 import { IsArray, IsDateString, IsEnum, IsIn, IsInt, IsNotEmpty, IsNumber, IsObject, IsOptional, IsString, MaxLength, ValidateNested } from 'class-validator';
 import { BasePaginationDto } from '../../../common/dto/base-pagination.dto';
@@ -304,6 +304,53 @@ export class DailyMeterReadingSummaryQueryDto {
   propertyId?: number;
 }
 
+// Shared by the three "by-community" daily-reading aggregate endpoints (anomalies-by-community,
+// reading-status-by-community, property-summary) — previously each took `date`/`communityId` as bare
+// `@Query()` strings with no validation at all, so a malformed date or a non-numeric communityId
+// silently reached the query builder (an invalid date yields zero/all rows instead of a clear 400; a
+// non-numeric communityId becomes `NaN` and matches nothing). A valid request behaves identically to
+// before — this only adds a 400 for input that was already wrong, never new default/behavior for
+// correct input. anomalies-by-community takes `date` only; the other two also accept `communityId`.
+export class DailyReadingsByCommunityQueryDto {
+  @ApiPropertyOptional({ description: 'Reading date (YYYY-MM-DD) — defaults to today' })
+  @IsOptional()
+  @IsDateString()
+  date?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  communityId?: number;
+}
+
+
+// Received-vs-missing trend — startDate/endDate are REQUIRED (unlike the single-date endpoints
+// above, a trend with no explicit range isn't a meaningful request). The 1-90-day span check lives
+// in the controller (mirrors the identical, already-established convention on
+// EstateSummaryController.getTrend — same TREND_MAX_DAYS-style limit, same reason: bound the
+// response size and the day-by-day loop this powers).
+export class DailyReadingsTrendQueryDto {
+  @ApiProperty({ description: 'Range start (YYYY-MM-DD), inclusive' })
+  @IsDateString()
+  startDate!: string;
+
+  @ApiProperty({ description: 'Range end (YYYY-MM-DD), inclusive' })
+  @IsDateString()
+  endDate!: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  communityId?: number;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  propertyId?: number;
+}
 
 export type DailyReadingValidationStatus = 'clean' | 'anomaly' | 'missing';
 
@@ -341,6 +388,12 @@ export class DailyMeterReadingQueryDto extends BasePaginationDto {
   @IsInt()
   unitId?: number;
 
+  @ApiPropertyOptional({ description: 'Filter to readings created by one ingested SFTP file (SftpIngestionLog.id, via meter_readings.source_file_id)' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  sourceFileId?: number;
+
   @ApiPropertyOptional({ enum: ['clean', 'anomaly', 'missing'] })
   @IsOptional()
   @IsIn(['clean', 'anomaly', 'missing'])
@@ -351,11 +404,6 @@ export class DailyMeterReadingQueryDto extends BasePaginationDto {
   @IsIn(['pending', 'approved'])
   approvalStatus?: 'pending' | 'approved';
 
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsString()
-  billingStatus?: string;
-
   @ApiPropertyOptional({ example: 'readingDate', description: 'Field to sort by' })
   @IsOptional()
   @IsString()
@@ -365,4 +413,16 @@ export class DailyMeterReadingQueryDto extends BasePaginationDto {
   @IsOptional()
   @IsIn(['ASC', 'DESC'])
   sortOrder?: 'ASC' | 'DESC';
+}
+
+// Approve/revoke one or more Daily Meter Readings by their real MeterReading.id (the same `id`
+// field already returned on every mapped row — see mapDailyReadingToItem). Bulk, not per-row, since
+// the existing (previously fake, now real) UI already supports "Approve Selected"/"Approve All
+// Clean" as one action across many rows — a single endpoint handles both the 1-row and N-row case.
+export class SetReadingApprovalDto {
+  @ApiProperty({ type: [Number], description: 'MeterReading ids to approve or revoke' })
+  @IsArray()
+  @IsInt({ each: true })
+  @Type(() => Number)
+  readingIds!: number[];
 }

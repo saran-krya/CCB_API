@@ -4,7 +4,7 @@ import { Cron } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { randomUUID } from 'crypto';
-import { SftpService } from './sftp.service';
+import { ACCEPTED_READING_FILE_EXTENSIONS, SftpService } from './sftp.service';
 import { IngestionService } from './ingestion.service';
 import { FileMovementService } from './file-movement.service';
 import { EstateSummaryService } from './estate-summary.service';
@@ -78,7 +78,8 @@ export class SftpCronService {
     let skipped = 0;
     for (const file of files) {
      
-      if (file.type !== '-' || !file.name.toLowerCase().endsWith('.csv')) continue;
+      const isAcceptedExtension = ACCEPTED_READING_FILE_EXTENSIONS.some((ext) => file.name.toLowerCase().endsWith(ext));
+      if (file.type !== '-' || !isAcceptedExtension) continue;
       const outcome = await this.processOneFile(file.name, jobId, triggerSource);
       if (outcome === 'processed') processed += 1;
       else if (outcome === 'skipped') skipped += 1;
@@ -88,7 +89,20 @@ export class SftpCronService {
     const durationMs = Date.now() - startedAt;
     this.logger.log(`[${jobId}] Cron Finished — ${processed} processed, ${failed} failed, ${skipped} skipped, ${durationMs}ms`);
 
-   
+    // Regenerate ONLY "today" (runDate) — EstateSummaryService.generateSummaryForDate now selects
+    // strictly by upload/processing date (created_at), per an explicit decision that the Estate
+    // Summary dashboard means "what was uploaded on day X," never "what day are these readings for."
+    //
+    // This deliberately DROPS a previous backfill behavior (see git history / prior version of this
+    // comment) that used to ALSO regenerate every distinct reading_date found among this run's files
+    // — so a backdated file's reading_date would get its own summary/trend-chart entry even on a day
+    // nothing was literally uploaded. That backfill is incompatible with the new upload-date-only
+    // selection: calling generateSummaryForDate for a reading_date with no real uploads would now
+    // select zero rows and — persistSummary does a blind findOne+Object.assign+save overwrite —
+    // silently zero out whatever real summary already existed for that date. Removing the backfill
+    // avoids that overwrite entirely, at the accepted cost that a historical reading-date with no
+    // uploads of its own no longer gets a dashboard/trend-chart entry — an explicit, approved
+    // tradeoff, not an oversight.
     await this.estateSummary.generateSummaryForDate(runDate);
 
     return { jobId, processed, failed, skipped };
@@ -137,9 +151,19 @@ export class SftpCronService {
 
       if (result.outcome === 'duplicate') {
         this.logger.warn(`[${jobId}] Duplicate — ${fileName} (matches existing log #${result.existingFileId}, recorded as log #${result.duplicateLogId})`);
-       
+
         const move = await this.fileMovement.moveDuplicate(fileName, result.duplicateLogId);
         this.logger.log(move.success ? `[${jobId}] Move Success — ${fileName} -> ${move.movedToFolder}` : `[${jobId}] Move Failed — ${fileName}: ${move.error}`);
+        return 'failed';
+      }
+
+      if (result.outcome === 'rejected_test_file') {
+        // No ingestion log row was ever created for this file (ingestFile rejects it before any
+        // write), so there is no fileId to move-by-log the way the other branches above do. Left
+        // in place where a human can see it and decide what to do — never auto-deleted or silently
+        // relocated, since a real test-named file sitting in the incoming path is itself a signal
+        // that should surface, not be hidden by this job moving it somewhere by itself.
+        this.logger.error(`[${jobId}] Rejected — ${fileName}: ${result.message}`);
         return 'failed';
       }
 

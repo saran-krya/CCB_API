@@ -13,6 +13,8 @@ import {
 } from '@nestjs/swagger';
 import { ROLES } from '@app/common/constants/global';
 import { Roles } from '../../common/decorators/roles.decorator';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { AuthenticatedUser } from '../../auth/interfaces/authenticated-user.interface';
 import { RolePermissionsService } from './role-permissions.service';
 import {
   CreateRolePermissionDto
@@ -56,9 +58,11 @@ export class RolePermissionsController {
   savePermissions(
     @Body()
     dto: SaveRoleWithPermissionsDto,
+    @CurrentUser() user?: AuthenticatedUser,
   ) {
     return this.rolePermissionsService.savePermissions(
       dto,
+      user?.sub,
     );
   }
 
@@ -67,10 +71,12 @@ export class RolePermissionsController {
     @Param("roleId") roleId: number,
     @Body()
     dto: SaveRoleWithPermissionsDto,
+    @CurrentUser() user?: AuthenticatedUser,
   ) {
     return this.rolePermissionsService.updateRolePermissions(
       Number(roleId),
       dto,
+      user?.sub,
     );
   }
 

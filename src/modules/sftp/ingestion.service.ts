@@ -63,6 +63,13 @@ export interface IngestSkippedResult {
   message: string;
 }
 
+export interface IngestRejectedTestFileResult {
+  outcome: 'rejected_test_file';
+  success: false;
+  fileName: string;
+  message: string;
+}
+
 export interface IngestValidationFailureResult {
   outcome: 'validation_failure';
   success: false;
@@ -76,7 +83,22 @@ export interface IngestValidationFailureResult {
   invalidRows: number;
 }
 
-export type IngestResult = IngestSuccessResult | IngestDuplicateResult | IngestValidationFailureResult | IngestSkippedResult;
+export type IngestResult = IngestSuccessResult | IngestDuplicateResult | IngestValidationFailureResult | IngestSkippedResult | IngestRejectedTestFileResult;
+
+// Guards against the EXACT incident this constant exists to document: a filename ending "_TEST" (or
+// "-TEST", case-insensitive) in the extension-bearing part of the name reaching real ingestion. Two
+// separate incidents (2026-10-15, 2026-10-16) each put a file like "DTU_DTU-AZG-001_20260928_TEST.csv"
+// into the real incoming directory and had it ingested as if it were genuine field data — 95
+// fabricated meter_readings rows resulted, soft-deleted after investigation. This check runs FIRST,
+// before any download/parse/write, so a test-named file is rejected loudly and immediately rather
+// than silently processed or quietly skipped. Deliberately unconditional (not gated behind an
+// environment flag) — this project has no existing NODE_ENV/environment-detection convention to
+// branch on, and a filename ending in "_TEST" should never be treated as real production data in
+// ANY environment this code runs in; inventing an environment flag just for this check would be a
+// bigger, riskier change than the guard itself and could be left misconfigured. If a genuine need
+// arises to ingest a deliberately-named test file in a non-production environment, this check
+// should be revisited then, with that real environment distinction in hand — not guessed at now.
+const TEST_FILENAME_PATTERN = /[_-]TEST\.[A-Za-z0-9]+$/i;
 
 @Injectable()
 export class IngestionService {
@@ -94,6 +116,13 @@ export class IngestionService {
     fileName: string,
     options: { triggerSource?: TriggerSource; jobId?: string; isRetrigger?: boolean } = {},
   ): Promise<IngestResult> {
+    // Runs before ANY download/parse/write — see TEST_FILENAME_PATTERN's own doc comment for why.
+    if (TEST_FILENAME_PATTERN.test(fileName)) {
+      const message = `Rejected "${fileName}" — filenames ending in "_TEST" (or "-TEST") are never treated as real reading data, regardless of trigger source or environment.`;
+      this.logger.error(message);
+      return { outcome: 'rejected_test_file', success: false, fileName, message };
+    }
+
     const triggerSource = options.triggerSource ?? TriggerSource.MANUAL;
 
     const processingStartedAt = new Date();
@@ -101,7 +130,7 @@ export class IngestionService {
     const readingDate = parseReadingDateFromFilename(fileName);
 
     const { localPath } = await this.sftp.downloadFile(fileName);
-    const { rows } = await this.sftp.parseCsv(localPath);
+    const { rows } = await this.sftp.parseFile(localPath);
 
     const fileChecksumSha256 = await this.hashFile(localPath);
 

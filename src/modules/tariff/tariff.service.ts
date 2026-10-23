@@ -1154,4 +1154,134 @@ export class TariffService {
 
     return result;
   }
+
+  // Statuses a tariff genuinely passed through while live, for historical as-of-date matching —
+  // DELIBERATELY different from resolveForUnits' bare `ACTIVE` (today-only) and from checkConflict's
+  // {ACTIVE, PENDING, REQUEST_FOR_CORRECTION} (present-day "would a NEW save collide with anything
+  // in-flight" set). A tariff that was correct for a past billing period has very likely since been
+  // superseded — its status today is DEPRECATED or EXPIRED, never still ACTIVE — so excluding those
+  // would make every genuinely-historical lookup return null. DRAFT/PENDING/REQUEST_FOR_CORRECTION/
+  // REJECTED never went live and are excluded regardless of what dates they carry.
+  private static readonly HISTORICAL_MATCH_STATUSES = [
+    TariffStatus.ACTIVE,
+    TariffStatus.DEPRECATED,
+    TariffStatus.EXPIRED,
+  ];
+
+  /**
+   * As-of-date sibling of resolveForUnits, for historical billing — resolves whichever
+   * TariffVersion's effective window actually covered `historicalDate`, not whichever is ACTIVE
+   * today. Same unit > property > global precedence, same propertyType scoping. A unit whose scope
+   * tier has MORE THAN ONE version covering `historicalDate` (overlapping effective periods — a
+   * real data-quality defect, not a resolution-logic choice to paper over) resolves to `'ambiguous'`
+   * rather than silently picking one; the caller (Historical Billing's readiness check) must treat
+   * both `null` (no match) and `'ambiguous'` (more than one match) as explicit validation failures —
+   * never a fallback to today's tariff, per this feature's own hard requirement.
+   */
+  async resolveForUnitsAsOf(
+    unitIds: number[],
+    historicalDate: string,
+  ): Promise<Map<number, TariffVersion | null | 'ambiguous'>> {
+    const result = new Map<number, TariffVersion | null | 'ambiguous'>();
+    const distinctIds = Array.from(new Set(unitIds));
+    if (distinctIds.length === 0) return result;
+
+    const units = await this.unitRepo.find({
+      where: { id: In(distinctIds) },
+      relations: { property: true },
+    });
+    for (const id of distinctIds) result.set(id, null);
+    if (units.length === 0) return result;
+
+    const propertyTypes = Array.from(new Set(units.map((u) => u.property.propertyType)));
+    const propertyIds = Array.from(new Set(units.map((u) => u.property.id)));
+
+    // Same overlap predicate checkConflict already uses elsewhere in this file
+    // (effective_to IS NULL OR effective_to >= :date) AND (effective_from IS NULL OR
+    // effective_from <= :date) — a version with a null bound is open-ended on that side.
+    const dateFilter = (qb: ReturnType<Repository<TariffVersion>['createQueryBuilder']>) =>
+      qb
+        .andWhere('(version.effective_to IS NULL OR version.effective_to >= :historicalDate)', { historicalDate })
+        .andWhere('(version.effective_from IS NULL OR version.effective_from <= :historicalDate)', { historicalDate });
+
+    const [unitScopedVersions, propertyScopedVersions, globalScopedVersions] = await Promise.all([
+      dateFilter(
+        this.versions
+          .createQueryBuilder('version')
+          .leftJoinAndSelect('version.units', 'units')
+          .where('version.status IN (:...statuses)', { statuses: TariffService.HISTORICAL_MATCH_STATUSES })
+          .andWhere('version.applicability = :applicability', { applicability: TariffApplicability.UNIT })
+          .andWhere('version.propertyType IN (:...propertyTypes)', { propertyTypes }),
+      ).getMany(),
+      dateFilter(
+        this.versions
+          .createQueryBuilder('version')
+          .leftJoinAndSelect('version.properties', 'properties')
+          .where('version.status IN (:...statuses)', { statuses: TariffService.HISTORICAL_MATCH_STATUSES })
+          .andWhere('version.applicability = :applicability', { applicability: TariffApplicability.PROPERTY })
+          .andWhere('version.propertyType IN (:...propertyTypes)', { propertyTypes }),
+      ).getMany(),
+      dateFilter(
+        this.versions
+          .createQueryBuilder('version')
+          .where('version.status IN (:...statuses)', { statuses: TariffService.HISTORICAL_MATCH_STATUSES })
+          .andWhere('version.applicability = :applicability', { applicability: TariffApplicability.GLOBAL })
+          .andWhere('version.propertyType IN (:...propertyTypes)', { propertyTypes }),
+      ).getMany(),
+    ]);
+
+    // Collect ALL matches per key (not just the first) so more than one match at a tier is
+    // detectable as 'ambiguous' instead of silently resolved by array/map insertion order.
+    const unitScopedByUnitId = new Map<number, TariffVersion[]>();
+    for (const version of unitScopedVersions) {
+      for (const u of version.units ?? []) {
+        if (!distinctIds.includes(u.id)) continue;
+        const arr = unitScopedByUnitId.get(u.id) ?? [];
+        arr.push(version);
+        unitScopedByUnitId.set(u.id, arr);
+      }
+    }
+
+    const propertyScopedByKey = new Map<string, TariffVersion[]>();
+    for (const version of propertyScopedVersions) {
+      for (const p of version.properties ?? []) {
+        const key = `${p.id}::${version.propertyType}`;
+        const arr = propertyScopedByKey.get(key) ?? [];
+        arr.push(version);
+        propertyScopedByKey.set(key, arr);
+      }
+    }
+
+    const globalScopedByType = new Map<string, TariffVersion[]>();
+    for (const version of globalScopedVersions) {
+      const arr = globalScopedByType.get(version.propertyType) ?? [];
+      arr.push(version);
+      globalScopedByType.set(version.propertyType, arr);
+    }
+
+    const resolveTier = (matches: TariffVersion[] | undefined): TariffVersion | null | 'ambiguous' | undefined => {
+      if (!matches || matches.length === 0) return undefined;
+      if (matches.length > 1) return 'ambiguous';
+      return matches[0];
+    };
+
+    for (const unit of units) {
+      if (!propertyIds.includes(unit.property.id)) continue;
+
+      const unitTier = resolveTier(unitScopedByUnitId.get(unit.id));
+      if (unitTier !== undefined) {
+        result.set(unit.id, unitTier);
+        continue;
+      }
+      const propertyTier = resolveTier(propertyScopedByKey.get(`${unit.property.id}::${unit.property.propertyType}`));
+      if (propertyTier !== undefined) {
+        result.set(unit.id, propertyTier);
+        continue;
+      }
+      const globalTier = resolveTier(globalScopedByType.get(unit.property.propertyType));
+      result.set(unit.id, globalTier ?? null);
+    }
+
+    return result;
+  }
 }

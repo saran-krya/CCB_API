@@ -5,7 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, EntityManager, Repository } from 'typeorm';
+import { DataSource, EntityManager, In, Repository } from 'typeorm';
 import { AuditService } from '../../audit/audit.service';
 import { paginate } from '../../common/utils/pagination.util';
 import { BUSINESS_CODE_PREFIXES, generateBusinessCode } from '../../common/utils/business-code.util';
@@ -142,8 +142,17 @@ export class BillingCycleService {
    *  its own, or they silently drift apart the way billIssueDate/billDueDate previously did.
    */
   private currentReadingPeriod(readingStartDay: number, readingEndDay: number): { start: Date; end: Date } {
-    const now = new Date();
-    const start = new Date(now.getFullYear(), now.getMonth(), readingStartDay);
+    return this.readingPeriodAnchoredTo(readingStartDay, readingEndDay, new Date());
+  }
+
+  // Same day-of-month math as currentReadingPeriod, anchored to an explicit reference date instead
+  // of always `new Date()` — needed for a DEPRECATED version, whose readingStartDay/readingEndDay
+  // rule must be evaluated against the MONTH IT WAS ACTUALLY LIVE IN (its own effectiveFrom), never
+  // today's month. Calling currentReadingPeriod directly for a deprecated version would silently
+  // compute THIS month's window under that version's day-rule — a wrong, confusing result that has
+  // nothing to do with the real historical period the version covered.
+  private readingPeriodAnchoredTo(readingStartDay: number, readingEndDay: number, anchor: Date): { start: Date; end: Date } {
+    const start = new Date(anchor.getFullYear(), anchor.getMonth(), readingStartDay);
     const endMonthOffset = readingEndDay <= readingStartDay ? 1 : 0;
     const end = new Date(start.getFullYear(), start.getMonth() + endMonthOffset, readingEndDay);
     return { start, end };
@@ -429,6 +438,246 @@ export class BillingCycleService {
       billIssueDays: version.billIssueDays,
       billDueDays: version.billDueDays,
     };
+  }
+
+  /** The version-level bill-issue/due-date CONFIGURATION only (no period/master resolution) — for a
+   *  caller that already has a resolved cycleVersionId from elsewhere (e.g.
+   *  BillingReadinessService.checkRecoveredReadingEligibility's own resolution) and needs this
+   *  version's day-offset config without re-deriving "today's" period via
+   *  getReadingPeriodForProperty, which would be wrong for an explicitly-resolved PAST period. */
+  async getVersionDayConfig(versionId: number): Promise<{
+    billGenerationDays: number;
+    billIssueDays: number;
+    billDueDays: number;
+  } | null> {
+    const version = await this.versions.findOne({
+      where: { id: versionId },
+      select: ['id', 'billGenerationDays', 'billIssueDays', 'billDueDays'],
+    });
+    if (!version) return null;
+    return {
+      billGenerationDays: version.billGenerationDays,
+      billIssueDays: version.billIssueDays,
+      billDueDays: version.billDueDays,
+    };
+  }
+
+  /** Lists a property's DEPRECATED cycle versions with their actual historical reading period —
+   *  the explicit-selection source for Historical Billing. Deliberately filters to DEPRECATED only:
+   *  ACTIVE is the live/current version (out of scope — historical billing is never a backdoor to
+   *  the current cycle), and INACTIVE/REJECTED never went live at all (no real reading period was
+   *  ever in effect under them, so there is nothing genuine to bill against).
+   *
+   *  A version with no `effectiveFrom` can never have had a real reading period (the day-rule has
+   *  nothing to anchor to) and is excluded — this should not occur for a genuinely DEPRECATED row in
+   *  practice, but is handled explicitly rather than silently producing a wrong, today-anchored
+   *  period. */
+  async getHistoricalVersionsForProperty(propertyId: number): Promise<Array<{
+    versionId: number;
+    masterId: number;
+    periodStart: string;
+    periodEnd: string;
+    effectiveFrom: string;
+    deprecatedOn: string | null;
+    ageDays: number;
+  }>> {
+    const master = await this.masters.findOne({ where: { propertyId } });
+    if (!master) return [];
+
+    const deprecatedVersions = await this.versions.find({
+      where: { masterId: master.id, status: BillingCycleStatus.DEPRECATED },
+      select: ['id', 'readingStartDay', 'readingEndDay', 'effectiveFrom', 'deprecatedOn'],
+      order: { effectiveFrom: 'DESC' },
+    });
+
+    const today = new Date();
+    const results: Array<{
+      versionId: number;
+      masterId: number;
+      periodStart: string;
+      periodEnd: string;
+      effectiveFrom: string;
+      deprecatedOn: string | null;
+      ageDays: number;
+    }> = [];
+
+    for (const version of deprecatedVersions) {
+      if (!version.effectiveFrom) continue;
+      const anchor = new Date(`${version.effectiveFrom}T00:00:00`);
+      const { start, end } = this.readingPeriodAnchoredTo(version.readingStartDay, version.readingEndDay, anchor);
+      const periodStart = this.formatDate(start);
+      const periodEnd = this.formatDate(end);
+      if (!periodStart || !periodEnd) continue;
+
+      const ageDays = Math.max(0, Math.round((today.getTime() - end.getTime()) / (24 * 60 * 60 * 1000)));
+
+      results.push({
+        versionId: version.id,
+        masterId: master.id,
+        periodStart,
+        periodEnd,
+        effectiveFrom: version.effectiveFrom,
+        deprecatedOn: version.deprecatedOn ?? null,
+        ageDays,
+      });
+    }
+
+    return results;
+  }
+
+  /** Resolves WHICH billing-cycle version's reading period a specific, already-known reading date
+   *  actually falls into — the reverse of getReadingPeriodForProperty/getHistoricalVersionsForProperty,
+   *  both of which answer "what period does version X have" given an already-known version. This
+   *  answers "which version covers date Y," for Missed Reading Recovery: a recovered reading's own
+   *  date is the known fact; the version it belongs to is what must be determined, never assumed or
+   *  manually picked.
+   *
+   *  Critical correctness point this method gets right where a naive "anchor once to effectiveFrom"
+   *  approach would not: a version that stays CURRENT (master.currentVersionId still points to it)
+   *  recurs a NEW reading period every month for as long as it remains current — this is implicit in
+   *  getReadingPeriodForProperty always anchoring to `new Date()` (live), not a stored date. A version
+   *  live for 6 months genuinely had 6 different real periods under the same version id. This method
+   *  mirrors that by generating one candidate period per calendar month across each version's own
+   *  live window — [effectiveFrom, deprecatedOn) for a version that was later superseded, or
+   *  [effectiveFrom, today] for one that is still ACTIVE/current — and testing date-containment
+   *  against every candidate, not just the version's first occurrence.
+   *
+   *  Only ACTIVE/DEPRECATED versions are considered — PENDING/REJECTED/INACTIVE never had
+   *  currentVersionId pointed at them, so no real reading period was ever genuinely in effect under
+   *  them (same reasoning TariffService.resolveForUnitsAsOf uses for its own historical status set).
+   *
+   *  A version's recorded `deprecatedOn` is NOT always a reliable "real end" boundary — confirmed by
+   *  reading activateVersion()/autoActivateDueVersions() directly: a parent's deprecatedOn is always
+   *  stamped with `new Date()` at the moment the daily activation CRON actually runs and finds a
+   *  pending child whose effectiveFrom has arrived, never with the child's own effectiveFrom value.
+   *  If that cron is delayed (confirmed to have happened in real data — Grand Tower A's version 16
+   *  shows deprecatedOn=2026-09-28 while its real successor, version 22, had effectiveFrom=2026-09-26
+   *  and was already approved+active by then), deprecatedOn can lag the TRUE transition date by
+   *  however long the cron was delayed, producing a real, spurious overlap between a version and its
+   *  own successor. effectiveFrom itself IS the documented, business-meaningful transition date
+   *  (createBillingCycle/newVersion validate it must be a real future date — "cannot activate
+   *  mid-cycle" — and it is the exact, sole condition autoActivateDueVersions checks), so a version's
+   *  true effective end for date-resolution purposes is the EARLIER of its own deprecatedOn and its
+   *  own child's effectiveFrom, wherever that child itself ever genuinely went live (ACTIVE or
+   *  DEPRECATED — a REJECTED child, like version 21 in the same real data, never actually took over
+   *  anything and must never shorten the parent's window). This reads ONLY the already-stored
+   *  effectiveFrom/deprecatedOn/status columns — no database write, no correction of deprecatedOn
+   *  itself; the stored historical row is left exactly as it is. */
+  async resolveVersionForReadingDate(
+    propertyId: number,
+    readingDate: string,
+  ): Promise<
+    | { versionId: number; masterId: number; periodStart: string; periodEnd: string }
+    | 'none'
+    | 'ambiguous'
+  > {
+    const master = await this.masters.findOne({ where: { propertyId } });
+    if (!master) return 'none';
+
+    const candidateVersions = await this.versions.find({
+      where: { masterId: master.id, status: In([BillingCycleStatus.ACTIVE, BillingCycleStatus.DEPRECATED]) },
+      select: ['id', 'readingStartDay', 'readingEndDay', 'effectiveFrom', 'deprecatedOn'],
+    });
+
+    // ALL versions for this master (any status) — needed to find each candidate's real children,
+    // since a child could itself be PENDING/REJECTED and must be correctly excluded (see doc comment
+    // above) rather than silently absent from an already-status-filtered query. parentVersion must
+    // be explicitly loaded via `relations` — unlike a plain @Column, TypeORM never populates a
+    // @ManyToOne relation from a bare `select` list of scalar field names.
+    const allVersionsForMaster = await this.versions.find({
+      where: { masterId: master.id },
+      relations: ['parentVersion'],
+      select: { id: true, status: true, effectiveFrom: true, parentVersion: { id: true } },
+    });
+    const childrenByParentId = new Map<number, typeof allVersionsForMaster>();
+    for (const v of allVersionsForMaster) {
+      const parentId = v.parentVersion?.id;
+      if (parentId == null) continue;
+      const arr = childrenByParentId.get(parentId) ?? [];
+      arr.push(v);
+      childrenByParentId.set(parentId, arr);
+    }
+    const LIVE_CHILD_STATUSES = new Set<BillingCycleStatus>([BillingCycleStatus.ACTIVE, BillingCycleStatus.DEPRECATED]);
+
+    const target = new Date(`${readingDate}T00:00:00`);
+    const today = new Date();
+    const matches: Array<{ versionId: number; periodStart: string; periodEnd: string }> = [];
+
+    for (const version of candidateVersions) {
+      if (!version.effectiveFrom) continue; // No real anchor — never genuinely live, same guard as getHistoricalVersionsForProperty.
+
+      const windowStart = new Date(`${version.effectiveFrom}T00:00:00`);
+
+      // The child-derived bound (Option A): among this version's own children that ever genuinely
+      // went live, the EARLIEST such child's effectiveFrom is this version's true handover date —
+      // that child becoming current is what actually ended this version's own reading periods,
+      // regardless of when deprecatedOn was later stamped. More than one live child with DIFFERENT
+      // effectiveFrom dates is a genuinely contradictory state (the data claims this version was
+      // superseded twice, at two different times) — surfaced as 'ambiguous' for THIS version's
+      // resolution rather than silently picking the earliest or latest.
+      const liveChildren = (childrenByParentId.get(version.id) ?? []).filter(
+        (c) => LIVE_CHILD_STATUSES.has(c.status) && !!c.effectiveFrom,
+      );
+      const distinctChildEffectiveFroms = new Set(liveChildren.map((c) => c.effectiveFrom));
+      if (distinctChildEffectiveFroms.size > 1) return 'ambiguous';
+      const childEffectiveFrom = liveChildren[0]?.effectiveFrom ?? null;
+
+      // Exclusive upper bound: whichever is EARLIER of the recorded deprecatedOn and a live child's
+      // own effectiveFrom (Option A) — deprecatedOn can lag the true handover (see doc comment
+      // above), so it alone is not trusted when a live child's own effectiveFrom is available and
+      // earlier. A still-current version (deprecatedOn null, no live child) is bounded by today — no
+      // period can exist for a month that hasn't happened yet.
+      const candidateBounds = [
+        version.deprecatedOn ? new Date(`${version.deprecatedOn}T00:00:00`) : null,
+        childEffectiveFrom ? new Date(`${childEffectiveFrom}T00:00:00`) : null,
+      ].filter((d): d is Date => d !== null);
+      const windowEndExclusive = candidateBounds.length > 0
+        ? new Date(Math.min(...candidateBounds.map((d) => d.getTime())))
+        : today;
+      if (windowEndExclusive <= windowStart) continue; // Defensive — a malformed/zero-length window has no real periods.
+
+      // One candidate period per calendar month, walked from the version's anchor month through
+      // (at most) one month past windowEndExclusive — a loose outer bound only; the real guard is
+      // the per-candidate check below, which verifies the COMPUTED PERIOD ITSELF (not merely "the
+      // month it falls in") lies within [windowStart, windowEndExclusive). Bounding only by month
+      // was the actual bug a boundary test caught here: a version deprecated exactly on the 1st of
+      // a month has zero live days in that month, yet its day-rule can still mathematically produce
+      // a period dated within that same month (e.g. periodStart = the 1st) — checking the month
+      // alone would wrongly count it. Checking the period's own start/end against the real window
+      // is what correctly excludes that case while still correctly INCLUDING a version deprecated
+      // mid-month whose period genuinely completed before the deprecation date.
+      let cursor = new Date(windowStart.getFullYear(), windowStart.getMonth(), 1);
+      const cursorStop = new Date(windowEndExclusive.getFullYear(), windowEndExclusive.getMonth() + 1, 1);
+      while (cursor.getTime() < cursorStop.getTime()) {
+        const { start, end } = this.readingPeriodAnchoredTo(version.readingStartDay, version.readingEndDay, cursor);
+        const periodGenuinelyLive = start.getTime() >= windowStart.getTime() && start.getTime() < windowEndExclusive.getTime();
+        // The TARGET date itself must also fall strictly before windowEndExclusive — checking only
+        // the period's own START (above) is not sufficient: a period can legitimately START inside
+        // this version's live window yet still EXTEND past the moment a child version actually took
+        // over (e.g. version 16's 25-30 Sep period starts within its own window but, once Option A
+        // shortens that window to end at version 22's 26 Sep effectiveFrom, the 28th itself falls
+        // after the real handover even though the period's start date does not). Without this check,
+        // a version's trailing days after its own successor's effectiveFrom would still wrongly
+        // match, silently defeating the whole point of the child-derived bound above.
+        const targetBeforeHandover = target.getTime() < windowEndExclusive.getTime();
+        if (periodGenuinelyLive && targetBeforeHandover && target.getTime() >= start.getTime() && target.getTime() <= end.getTime()) {
+          const periodStart = this.formatDate(start);
+          const periodEnd = this.formatDate(end);
+          if (periodStart && periodEnd) matches.push({ versionId: version.id, periodStart, periodEnd });
+        }
+        cursor = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1);
+      }
+    }
+
+    if (matches.length === 0) return 'none';
+    // More than one match (e.g. two versions whose computed windows both happen to touch this exact
+    // date — a real data overlap, not a resolution-logic choice) is surfaced explicitly, never
+    // silently resolved to "the first one" or "the most recent one."
+    const distinctVersionIds = new Set(matches.map((m) => m.versionId));
+    if (distinctVersionIds.size > 1) return 'ambiguous';
+
+    const { versionId, periodStart, periodEnd } = matches[0];
+    return { versionId, masterId: master.id, periodStart, periodEnd };
   }
 
   async newVersion(id: number, dto: NewVersionBillingCycleDto, actorId?: number) {

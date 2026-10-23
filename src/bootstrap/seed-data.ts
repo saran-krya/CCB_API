@@ -268,26 +268,48 @@ export const SUB_MODULES: SeedSubModule[] = [
     url: '/admin/system/roles',
     displayOrder: 2,
   },
+  // Policy Management and Resource Catalog — IAM administration, siblings of Role Management under
+  // the existing System Admin module rather than new top-level sidebar modules (per the explicit
+  // navigation-architecture instruction: reuse PModule->SubModule->Screen->Action, don't bypass it).
+  // Both are SUPER_ADMIN-only at the backend (@Roles(SUPER_ADMIN) on PolicyController/
+  // ResourceController/RolePolicyController, unchanged by this addition) — these SubModule/Screen/
+  // Action rows control sidebar VISIBILITY only, never the real authorization boundary.
+  {
+    pModuleCode: 'SYSTEM_ADMIN',
+    name: 'Policy Management',
+    code: 'POLICY_MANAGEMENT',
+    icon: 'ShieldCheck',
+    url: '/admin/system/policies',
+    displayOrder: 3,
+  },
+  {
+    pModuleCode: 'SYSTEM_ADMIN',
+    name: 'Resource Catalog',
+    code: 'RESOURCE_CATALOG',
+    icon: 'Boxes',
+    url: '/admin/system/resources',
+    displayOrder: 4,
+  },
   {
     pModuleCode: 'SYSTEM_ADMIN',
     name: 'Attributes',
     code: 'ATTRIBUTES',
     icon: 'SlidersHorizontal',
-    displayOrder: 3,
+    displayOrder: 5,
   },
   {
     pModuleCode: 'SYSTEM_ADMIN',
     name: 'Lookup Field Master',
     code: 'LFM',
     icon: 'ListChecks',
-    displayOrder: 4,
+    displayOrder: 6,
   },
   {
     pModuleCode: 'SYSTEM_ADMIN',
     name: 'Document Set Definition',
     code: 'DOCUMENT_SET_DEFINITION',
     icon: 'FileCheck2',
-    displayOrder: 5,
+    displayOrder: 7,
   },
 
   {
@@ -345,6 +367,20 @@ export const SCREENS: SeedScreen[] = [
     name: 'Roles',
     code: 'ROLE',
     url: '/admin/system/roles',
+    displayOrder: 1,
+  },
+  {
+    subModuleCode: 'POLICY_MANAGEMENT',
+    name: 'Policies',
+    code: 'POLICY',
+    url: '/admin/system/policies',
+    displayOrder: 1,
+  },
+  {
+    subModuleCode: 'RESOURCE_CATALOG',
+    name: 'Resources',
+    code: 'RESOURCE',
+    url: '/admin/system/resources',
     displayOrder: 1,
   },
   {
@@ -591,6 +627,42 @@ export const ACTIONS: SeedAction[] = [
     description: 'Delete a role',
   },
 
+  // Nav-visibility actions only, same as every other screen's Action set — the real Policy/Resource
+  // authorization boundary is the backend's unchanged @Roles(SUPER_ADMIN) check on PolicyController/
+  // ResourceController, completely independent of whether a role holds these codes. Granting one of
+  // these makes the sidebar link and page reachable; it does not itself grant any Policy/Resource
+  // management capability.
+  {
+    screenCode: 'POLICY',
+    name: 'View Policies',
+    code: 'VIEW_POLICY',
+    description: 'View the policy list and policy details',
+  },
+  {
+    screenCode: 'POLICY',
+    name: 'Create Policy',
+    code: 'CREATE_POLICY',
+    description: 'Access the create-policy form',
+  },
+  {
+    screenCode: 'POLICY',
+    name: 'Edit Policy',
+    code: 'EDIT_POLICY',
+    description: 'Access the edit-policy form',
+  },
+  {
+    screenCode: 'POLICY',
+    name: 'Delete Policy',
+    code: 'DELETE_POLICY',
+    description: 'Delete a policy',
+  },
+  {
+    screenCode: 'RESOURCE',
+    name: 'View Resources',
+    code: 'VIEW_RESOURCE',
+    description: 'View the read-only resource and action catalog',
+  },
+
   {
     screenCode: 'ATTRIBUTES',
     name: 'View Attribute',
@@ -824,7 +896,8 @@ export const ACTIONS: SeedAction[] = [
   },
 
   // BILL_RUN_VIEW/APPROVE live on BILLING_READINESS_BILL_RUN (nested under Billing Management's
-  // BILL_RUN_REGISTER sub-module) — Finance's review/approve UI. BILL_RUN_SUBMIT ("Run Billing")
+  // BILL_RUN_REGISTER sub-module) — Finance's review/approve UI. BILL_RUN_SUBMIT ("Submit Bill
+  // Run" — labeled "Run Billing" before an RBAC label-clarity pass)
   // is deliberately attached to the BILLING_READINESS screen instead, as a sibling of
   // BILLING_READINESS_VIEW (see that action's own comment) — explicit request that "Run Billing"
   // appear under Meter Management → Billing Readiness in the Roles UI, not under Billing
@@ -841,20 +914,19 @@ export const ACTIONS: SeedAction[] = [
   },
   {
     screenCode: 'BILLING_READINESS',
-    name: 'Run Billing',
+    name: 'Submit Bill Run',
     code: 'BILL_RUN_SUBMIT',
     description: 'Submit an individual or batch bill run request, and correct/resubmit a returned one',
     displayOrder: 2,
   },
   {
     screenCode: 'BILLING_READINESS_BILL_RUN',
-    name: 'Approve Bill Run',
+    name: 'Approve / Reject / Return Bill Run',
     code: 'BILL_RUN_APPROVE',
     description: 'Approve, reject, or return a pending bill run request — intended for Finance roles; grant only to roles that should review bill runs',
     parentActionCode: 'BILL_RUN_VIEW',
     displayOrder: 2,
   },
-
   {
     screenCode: 'COMMUNITY',
     name: 'View Community',
@@ -1022,7 +1094,7 @@ export const ACTIONS: SeedAction[] = [
     screenCode: 'REGISTRATION_APPROVAL',
     name: 'Approve Registration Request (Registration Approval)',
     code: 'REGISTRATION_APPROVAL_APPROVE',
-    description: 'Approve a registration request from the Registration Approval screen — accepted as an alternate to APPROVE_REGISTRATION_REQUEST, the same underlying approve action',
+    description: 'Approve a registration request from the Registration Approval screen — accepted as an alternate to APPROVE_REGISTRATION_REQUEST, the same underlying approve action. Scoped to the /approve route ONLY — this code no longer gates the deposit-handling routes (request-deposit/record-deposit-payment/verify-deposit/return-receipt), see REGISTRATION_APPROVAL_DEPOSIT_MANAGE for those (RBAC security-assessment finding, now fully remediated: a role holding only this code used to also silently get deposit-handling capability its name/description never signaled).',
     parentActionCode: 'REGISTRATION_APPROVAL_VIEW',
     displayOrder: 2,
   },
@@ -1033,6 +1105,14 @@ export const ACTIONS: SeedAction[] = [
     description: 'Reject a registration request from the Registration Approval screen — accepted as an alternate to REJECT_REGISTRATION_REQUEST, the same underlying reject action',
     parentActionCode: 'REGISTRATION_APPROVAL_VIEW',
     displayOrder: 3,
+  },
+  {
+    screenCode: 'REGISTRATION_APPROVAL',
+    name: 'Manage Registration Deposit',
+    code: 'REGISTRATION_APPROVAL_DEPOSIT_MANAGE',
+    description: 'Request a security deposit, record a deposit payment, verify a paid deposit, or return a payment receipt for correction — split out from REGISTRATION_APPROVAL_APPROVE (RBAC security-assessment remediation) so holding the approve code no longer silently also grants deposit-handling capability. This is now the sole deposit-route code besides EDIT_REGISTRATION_REQUEST — REGISTRATION_APPROVAL_APPROVE was removed from these 4 routes once every role needing deposit access was confirmed to hold this one instead.',
+    parentActionCode: 'REGISTRATION_APPROVAL_VIEW',
+    displayOrder: 4,
   },
 
   {
@@ -1084,6 +1164,19 @@ export const ACTIONS: SeedAction[] = [
     name: 'View Meter Information',
     code: 'METER_VIEW',
     description: 'View the meter dashboard, community/property/unit drill-down, master and sub meter lists',
+    displayOrder: 1,
+  },
+  // Deliberately on the DAILY_METER_READINGS screen (not METER_LIST, and not parented under
+  // METER_VIEW — parent/child actions must share one screen, see ActionsService.assertValidParent)
+  // — same precedent as SFTP_MONITOR_TRIGGER's own standalone-sibling-action pattern below: a
+  // reading's approval_status directly feeds Billing Readiness/Field Inspection's real eligibility
+  // checks, so holding METER_VIEW (read-only, reused across both screens) must never be enough to
+  // mutate it.
+  {
+    screenCode: 'DAILY_METER_READINGS',
+    name: 'Approve Meter Readings',
+    code: 'METER_READING_APPROVE',
+    description: 'Approve or revoke approval of individual or bulk meter readings on the Daily Meter Readings list — a real, persisted write distinct from read-only viewing',
     displayOrder: 1,
   },
   {
@@ -1167,8 +1260,23 @@ export const ACTIONS: SeedAction[] = [
     screenCode: 'SFTP_MONITOR',
     name: 'View SFTP File Monitor',
     code: 'SFTP_MONITOR_VIEW',
-    description: 'View SFTP ingestion status, estate summary, file lists, and trigger/download/parse SFTP files',
+    description: 'View SFTP ingestion status, estate summary, file lists, and download/parse/validate SFTP files — read-only; does not permit triggering real ingestion (see SFTP_MONITOR_TRIGGER)',
     displayOrder: 1,
+  },
+  // Deliberately SEPARATE from SFTP_MONITOR_VIEW above — a confirmed incident (two production
+  // ingestions of synthetic test data, 2026-10-15/16) traced directly to SFTP_MONITOR_VIEW's own
+  // description previously claiming it covered "trigger/download/parse," which meant anyone with
+  // read-only monitoring access could also call POST /sftp/test-ingest/:fileName or POST
+  // /sftp/run-now and cause a REAL write (meter_readings rows, sftp_ingestion_logs rows) with only a
+  // view-level permission. Splitting this out so holding VIEW alone can never authorize those two
+  // write-capable endpoints, without taking away anyone's existing read-only monitoring access —
+  // same reasoning as BILL_RUN_SUBMIT's own separation from BILL_RUN_VIEW above.
+  {
+    screenCode: 'SFTP_MONITOR',
+    name: 'Trigger SFTP Ingestion',
+    code: 'SFTP_MONITOR_TRIGGER',
+    description: 'Manually trigger SFTP file ingestion (test-ingest a named file, or run the full ingestion job now) — a real, write-capable action distinct from read-only monitoring',
+    displayOrder: 2,
   },
 
   // BILLING_READINESS_VIEW is the SINGLE permission for the entire Billing Readiness sub-module —
@@ -1186,7 +1294,7 @@ export const ACTIONS: SeedAction[] = [
   // access) — see the RemoveBillingReadinessPropertyView migration for the actual removal.
   {
     screenCode: 'BILLING_READINESS',
-    name: 'View',
+    name: 'View Billing Readiness',
     code: 'BILLING_READINESS_VIEW',
     description: 'View the Billing Readiness sub-module — Dashboard, Property Billing Readiness, Anomaly Review, and Readings List all derive their visibility from this one permission',
     displayOrder: 1,

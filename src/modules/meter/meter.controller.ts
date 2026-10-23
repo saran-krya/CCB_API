@@ -23,6 +23,8 @@ import {
   CreateSubMeterDto,
   DailyMeterReadingQueryDto,
   DailyMeterReadingSummaryQueryDto,
+  DailyReadingsByCommunityQueryDto,
+  DailyReadingsTrendQueryDto,
   DownloadErrorReportDto,
   DownloadSuccessReportDto,
   ImportHistoryQueryDto,
@@ -31,6 +33,7 @@ import {
   MeterUnitsOverviewQueryDto,
   MeterQueryDto,
   SetMeterStatusDto,
+  SetReadingApprovalDto,
   UpdateMasterMeterDto,
   UpdateSubMeterDto,
 } from './dto/meter.dto';
@@ -38,7 +41,10 @@ import { MeterImportType } from './entities/meter-import-type.enum';
 import { MeterService } from './meter.service';
 
 const EXCEL_CONTENT_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
-const MAX_IMPORT_UPLOAD_BYTES = 10 * 1024 * 1024; 
+const MAX_IMPORT_UPLOAD_BYTES = 10 * 1024 * 1024;
+// Same limit/reasoning as EstateSummaryController's own TREND_MAX_DAYS — bounds the response size
+// and the day-by-day loop getDailyReadingsTrend runs.
+const TREND_MAX_DAYS = 90;
 
 @ApiBearerAuth()
 @ApiTags('Meters')
@@ -285,10 +291,14 @@ export class MeterController {
 
   @Patch('sub-meters/:id')
   @Permission('METER_INVENTORY_EDIT', 'METER_MAPPING')
-  @ApiOperation({ summary: 'Edit a sub meter, including mapping/unmapping it to a unit' })
+  @ApiOperation({
+    summary:
+      'Edit a sub meter. METER_INVENTORY_EDIT allows every field; METER_MAPPING alone only allows ' +
+      'changing unitId (mapping/unmapping) — MeterService.updateSubMeter enforces the narrower scope',
+  })
   @ApiParam({ name: 'id', type: Number })
   updateSubMeter(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateSubMeterDto, @CurrentUser() user?: AuthenticatedUser) {
-    return this.meters.updateSubMeter(id, dto, user?.sub);
+    return this.meters.updateSubMeter(id, dto, user?.sub, user?.roleId);
   }
 
   @Patch('sub-meters/:id/status')
@@ -325,6 +335,22 @@ export class MeterController {
     return this.meters.getDailyMeterReadings(query);
   }
 
+  // Separate from METER_VIEW (read-only) — see this action's own seed-data comment on why
+  // approving a reading is a real, distinct write capability, not bundled with viewing.
+  @Patch('daily-readings/approve')
+  @Permission('METER_READING_APPROVE')
+  @ApiOperation({ summary: 'Approve one or more meter readings — persists approval_status=approved, approvedAt, approvedBy' })
+  approveReadings(@Body() dto: SetReadingApprovalDto, @CurrentUser() user?: AuthenticatedUser) {
+    return this.meters.setReadingApproval(dto, true, user?.sub);
+  }
+
+  @Patch('daily-readings/revoke')
+  @Permission('METER_READING_APPROVE')
+  @ApiOperation({ summary: 'Revoke approval of one or more meter readings — reverts to approval_status=pending' })
+  revokeReadingApproval(@Body() dto: SetReadingApprovalDto, @CurrentUser() user?: AuthenticatedUser) {
+    return this.meters.setReadingApproval(dto, false, user?.sub);
+  }
+
   @Get('daily-readings/history/:meterId')
   @Permission('METER_VIEW')
   @ApiOperation({ summary: 'Trailing daily-consumption history for one meter — powers the reading detail drawer chart' })
@@ -336,17 +362,38 @@ export class MeterController {
   @Get('daily-readings/anomalies-by-community')
   @Permission('METER_VIEW')
   @ApiOperation({ summary: 'Anomaly counts by community and severity for one date — powers the Dashboard chart' })
-  getAnomaliesByCommunity(@Query('date') date?: string) {
-    return this.meters.getAnomaliesByCommunity(date ?? new Date().toISOString().slice(0, 10));
+  getAnomaliesByCommunity(@Query() query: DailyReadingsByCommunityQueryDto) {
+    return this.meters.getAnomaliesByCommunity(query.date ?? new Date().toISOString().slice(0, 10));
+  }
+
+  @Get('daily-readings/reading-status-by-community')
+  @Permission('METER_VIEW', 'SFTP_MONITOR_VIEW')
+  @ApiOperation({ summary: 'Valid/anomaly/missing reading counts by community for one date — powers the SFTP Monitor "Reading Status by Community" chart' })
+  getReadingStatusByCommunity(@Query() query: DailyReadingsByCommunityQueryDto) {
+    return this.meters.getReadingStatusByCommunity(query.date ?? new Date().toISOString().slice(0, 10));
   }
 
   @Get('daily-readings/property-summary')
   @Permission('METER_VIEW')
   @ApiOperation({ summary: 'Per-property Expected/Received/Valid/DataQuality/anomaly-severity breakdown — powers the Property Reading Summary tab' })
-  getPropertyReadingSummary(@Query('date') date?: string, @Query('communityId') communityId?: string) {
+  getPropertyReadingSummary(@Query() query: DailyReadingsByCommunityQueryDto) {
     return this.meters.getPropertyReadingSummary(
-      date ?? new Date().toISOString().slice(0, 10),
-      communityId ? parseInt(communityId, 10) : undefined,
+      query.date ?? new Date().toISOString().slice(0, 10),
+      query.communityId,
     );
+  }
+
+  @Get('daily-readings/trend')
+  @Permission('METER_VIEW')
+  @ApiOperation({ summary: 'Received-vs-missing reading counts, one point per day in [startDate, endDate] (max 90 days) — powers the Dashboard trend chart' })
+  getDailyReadingsTrend(@Query() query: DailyReadingsTrendQueryDto) {
+    if (query.startDate > query.endDate) {
+      throw new BadRequestException('startDate must not be after endDate');
+    }
+    const spanDays = Math.round((Date.parse(query.endDate) - Date.parse(query.startDate)) / (24 * 60 * 60 * 1000)) + 1;
+    if (spanDays > TREND_MAX_DAYS) {
+      throw new BadRequestException(`Date range cannot exceed ${TREND_MAX_DAYS} days (got ${spanDays})`);
+    }
+    return this.meters.getDailyReadingsTrend(query.startDate, query.endDate, query.communityId, query.propertyId);
   }
 }

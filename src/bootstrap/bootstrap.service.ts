@@ -19,6 +19,7 @@ import { SubModulesService } from '../modules/sub-modules/sub-modules.service'
 import { RegistrationDocumentRuleService } from '../modules/registration-document-rule/registration-document-rule.service'
 import { User } from '../modules/user/entities/user.entity'
 import { UserRoleService } from '../modules/user-role/user-role.service'
+import { IamService } from '../modules/iam/iam.service'
 import {
   ACTIONS,
   ADMIN_GRANT_EXCLUDED_ACTION_CODES,
@@ -44,6 +45,7 @@ export class BootstrapService implements OnApplicationBootstrap {
     private readonly rolePermissionsService: RolePermissionsService,
     private readonly registrationDocumentRuleService: RegistrationDocumentRuleService,
     private readonly userRoleService: UserRoleService,
+    private readonly iamService: IamService,
   ) {}
 
   async onApplicationBootstrap(): Promise<void> {
@@ -58,6 +60,7 @@ export class BootstrapService implements OnApplicationBootstrap {
         await this.subModulesService.ensureCriticalDefaults()
         await this.screensService.ensureCriticalDefaults()
         await this.actionsService.ensureCriticalDefaults()
+        await this.iamService.ensureResourceCatalog()
         await this.rolePermissionsService.ensureAdminGrants(ADMIN_GRANT_EXCLUDED_ACTION_CODES)
         await this.rolePermissionsService.ensureSuperAdminGrant('WORKFLOW_MANAGE_APPROVERS')
         await this.registrationDocumentRuleService.ensureCriticalDefaults()
@@ -72,6 +75,7 @@ export class BootstrapService implements OnApplicationBootstrap {
     try {
       await this.dataSource.transaction((manager) => this.seed(manager))
 
+      await this.iamService.ensureResourceCatalog()
       await this.rolePermissionsService.ensureAdminGrants(ADMIN_GRANT_EXCLUDED_ACTION_CODES)
       await this.rolePermissionsService.ensureSuperAdminGrant('WORKFLOW_MANAGE_APPROVERS')
 

@@ -7,6 +7,8 @@ import { MeterService } from '../meter/meter.service';
 import { RegistrationRequestService } from '../registration-request/registration-request.service';
 import { LovService } from '../lov/lov.service';
 import { AttributeService } from '../attribute/attribute.service';
+import { BillingManagementService } from '../billing-management/billing-management.service';
+import { BillQueryDto } from '../billing-management/dto/billing-management.dto';
 import { DailyMeterReadingQueryDto } from '../meter/dto/meter.dto';
 import { RecordDepositPaymentDto } from '../registration-request/dto/registration-request.dto';
 import { UpdateMyProfileDto } from '../customer/dto/update-my-profile.dto';
@@ -14,16 +16,17 @@ import { MyRegistrationConfigDto, MyRegistrationConfigLovValueDto } from './dto/
 
 /**
  * Composes the SAME services staff controllers already use (CommunityService/PropertyService/
- * UnitService/MeterService/RegistrationRequestService/CustomerService/LovService/AttributeService)
- * — no duplicated query logic, no second copy of any entity's read path. The ONLY thing this
- * service adds is ownership/exposure scoping: every method here first resolves the authenticated
- * customer's own unit ids (via CustomerService.getOwnedUnitIds, the ONE reusable resolver — see its
- * own doc comment) and either filters by them or throws ForbiddenException if a requested id falls
- * outside that set — OR, for getMyRegistrationConfig, composes only the specific LOV categories/
- * attribute keys the customer wizard actually renders, rather than exposing the generic staff-only
- * /lov and /attributes endpoints to a Customer session at all. This is where "prevent a Customer
- * from accessing another Customer's data, or data outside its intended scope" actually lives — one
- * place, not scattered per-controller checks.
+ * UnitService/MeterService/RegistrationRequestService/CustomerService/LovService/AttributeService/
+ * BillingManagementService) — no duplicated query logic, no second copy of any entity's read path.
+ * The ONLY thing this service adds is ownership/exposure scoping: every method here first resolves
+ * the authenticated customer's own unit ids (via CustomerService.getOwnedUnitIds, the ONE reusable
+ * resolver — see its own doc comment) and either filters by them or throws ForbiddenException if a
+ * requested id falls outside that set — OR, for getMyRegistrationConfig, composes only the specific
+ * LOV categories/attribute keys the customer wizard actually renders, rather than exposing the
+ * generic staff-only /lov and /attributes endpoints to a Customer session at all. This is where
+ * "prevent a Customer from accessing another Customer's data, or data outside its intended scope"
+ * actually lives — one place, not scattered per-controller checks. getMyInvoices/getMyInvoice follow
+ * the SAME pattern for Bill.customerId as getMyRegistrationRequest(s) do for RegistrationRequest.
  */
 @Injectable()
 export class CustomerPortalService {
@@ -36,6 +39,7 @@ export class CustomerPortalService {
     private readonly registrationRequests: RegistrationRequestService,
     private readonly lov: LovService,
     private readonly attributes: AttributeService,
+    private readonly billingManagement: BillingManagementService,
   ) {}
 
   async getMyProfile(customerId: number) {
@@ -217,6 +221,28 @@ export class CustomerPortalService {
   async getMyDocuments(customerId: number) {
     const request = await this.getMyOriginRequest(customerId);
     return request?.documents ?? [];
+  }
+
+  /** Reuses BillingManagementService.findAll exactly as the staff Manage Invoices screen does —
+   *  never a second, parallel Bill query. `customerId` is ALWAYS overridden to the authenticated
+   *  customer's own id here, last, after spreading the caller's query — a client-supplied
+   *  `customerId` (there is no such field on MyInvoicesQueryDto, but even if the underlying query
+   *  object ever gained one) can never override this. This is the one thing standing between "my own
+   *  invoices" and "any customer's invoices by guessing an id" — see this service's own top doc
+   *  comment on where that boundary lives. */
+  async getMyInvoices(customerId: number, query: Omit<BillQueryDto, 'customerId'>) {
+    return this.billingManagement.findAll({ ...query, customerId });
+  }
+
+  /** Real ownership check, same shape as getMyRegistrationRequest's own pattern — findOne itself has
+   *  no customer scoping at all (by design: staff can view any Bill), so this is the ONE place that
+   *  stops a customer from reaching another customer's invoice by guessing a numeric id in the URL. */
+  async getMyInvoice(customerId: number, billId: number) {
+    const bill = await this.billingManagement.findOne(billId);
+    if (bill.customerId !== customerId) {
+      throw new ForbiddenException('This invoice is not associated with your account');
+    }
+    return bill;
   }
 
   /**

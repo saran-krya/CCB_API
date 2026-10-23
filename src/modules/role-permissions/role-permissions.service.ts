@@ -5,7 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { IsNull, Repository } from 'typeorm';
+import { DataSource, IsNull, Repository } from 'typeorm';
 import {
   CreateRolePermissionDto,
 
@@ -17,6 +17,8 @@ import { Action } from '../actions/entities/action.entity';
 import { PModule } from '../pmodules/entities/pmodule.entity';
 import { Screen } from '../screens/entities/screen.entity';
 import { SaveRoleWithPermissionsDto } from './dto/save-role-with-permissions.dto';
+import { AuditService } from '../../audit/audit.service';
+import { IamService } from '../iam/iam.service';
 
 @Injectable()
 export class RolePermissionsService {
@@ -41,7 +43,11 @@ export class RolePermissionsService {
     @InjectRepository(Screen)
     private readonly screenRepository: Repository<Screen>,
 
+    private readonly dataSource: DataSource,
 
+    private readonly audit: AuditService,
+
+    private readonly iamService: IamService,
 
   ) { }
 
@@ -107,9 +113,14 @@ export class RolePermissionsService {
 
   async savePermissions(
     dto: SaveRoleWithPermissionsDto,
+    actorId?: number,
   ) {
+    return this.dataSource.transaction(async (manager) => {
+    const roleRepo = manager.getRepository(Role);
+    const rolePermissionRepo = manager.getRepository(RolePermission);
+
     const existingRole =
-      await this.roleRepository.findOne({
+      await roleRepo.findOne({
         where: {
           roleName: dto.roleName,
         },
@@ -122,8 +133,8 @@ export class RolePermissionsService {
     }
 
     const role =
-      await this.roleRepository.save(
-        this.roleRepository.create({
+      await roleRepo.save(
+        roleRepo.create({
           roleName: dto.roleName,
           roleDescription:
             dto.roleDescription,
@@ -138,7 +149,7 @@ export class RolePermissionsService {
         }),
       );
 
-    await this.rolePermissionRepository.delete({
+    await rolePermissionRepo.delete({
       roleId: role.id,
     });
 
@@ -151,14 +162,14 @@ export class RolePermissionsService {
 
       if (module.hasAccess && !hasSubModules && !hasDirectScreens) {
         permissions.push(
-          this.rolePermissionRepository.create({ roleId: role.id, moduleId: module.moduleId }),
+          rolePermissionRepo.create({ roleId: role.id, moduleId: module.moduleId }),
         );
       }
 
       for (const subModule of module.subModule ?? []) {
         if (subModule.hasAccess && (!subModule.screens || subModule.screens.length === 0)) {
           permissions.push(
-            this.rolePermissionRepository.create({
+            rolePermissionRepo.create({
               roleId: role.id,
               moduleId: module.moduleId,
               subModuleId: subModule.subModuleId,
@@ -169,7 +180,7 @@ export class RolePermissionsService {
         for (const screen of subModule.screens ?? []) {
           if (screen.hasAccess && (!screen.actions || screen.actions.length === 0)) {
             permissions.push(
-              this.rolePermissionRepository.create({
+              rolePermissionRepo.create({
                 roleId: role.id,
                 moduleId: module.moduleId,
                 subModuleId: subModule.subModuleId,
@@ -181,7 +192,7 @@ export class RolePermissionsService {
           for (const action of screen.actions ?? []) {
             if (action.hasAccess) {
               permissions.push(
-                this.rolePermissionRepository.create({
+                rolePermissionRepo.create({
                   roleId: role.id,
                   moduleId: module.moduleId,
                   subModuleId: subModule.subModuleId,
@@ -194,7 +205,7 @@ export class RolePermissionsService {
             for (const child of action.children ?? []) {
               if (!child.hasAccess) continue;
               permissions.push(
-                this.rolePermissionRepository.create({
+                rolePermissionRepo.create({
                   roleId: role.id,
                   moduleId: module.moduleId,
                   subModuleId: subModule.subModuleId,
@@ -210,7 +221,7 @@ export class RolePermissionsService {
       for (const screen of module.screens ?? []) {
         if (screen.hasAccess && (!screen.actions || screen.actions.length === 0)) {
           permissions.push(
-            this.rolePermissionRepository.create({
+            rolePermissionRepo.create({
               roleId: role.id,
               moduleId: module.moduleId,
               screenId: screen.screenId,
@@ -221,7 +232,7 @@ export class RolePermissionsService {
         for (const action of screen.actions ?? []) {
           if (action.hasAccess) {
             permissions.push(
-              this.rolePermissionRepository.create({
+              rolePermissionRepo.create({
                 roleId: role.id,
                 moduleId: module.moduleId,
                 screenId: screen.screenId,
@@ -233,7 +244,7 @@ export class RolePermissionsService {
           for (const child of action.children ?? []) {
             if (!child.hasAccess) continue;
             permissions.push(
-              this.rolePermissionRepository.create({
+              rolePermissionRepo.create({
                 roleId: role.id,
                 moduleId: module.moduleId,
                 screenId: screen.screenId,
@@ -246,10 +257,26 @@ export class RolePermissionsService {
     }
 
     if (permissions.length > 0) {
-      await this.rolePermissionRepository.save(
+      await rolePermissionRepo.save(
         permissions,
       );
     }
+
+    // Audited inside the SAME transaction as the role + permission rows above — a thrown error
+    // anywhere before this point rolls back the whole transaction, so this call only ever runs
+    // after the role/permissions are actually committed-pending (never a misleading success log for
+    // a save that didn't happen). oldValue is omitted: this is a brand-new role, so there is no
+    // prior permission state to record.
+    await this.audit.record(
+      {
+        moduleName: 'role_permissions',
+        entityId: role.id,
+        action: 'CREATE',
+        newValue: { roleId: role.id, roleName: role.roleName, grantedCount: permissions.length },
+        performedBy: actorId,
+      },
+      manager,
+    );
 
     return {
       message:
@@ -258,6 +285,7 @@ export class RolePermissionsService {
       count:
         permissions.length,
     };
+    });
   }
 
   async getUserPermissions(roleId: number) {
@@ -324,14 +352,26 @@ export class RolePermissionsService {
     }));
   }
 
+  /**
+   * IAM migration (Role -> Policy -> Resource -> Action) — FULL CUTOVER (post AddIamPolicyBackfill).
+   * This is now the ONLY authorization source: every role's access is resolved exclusively through
+   * its attached Policies' Allow statements. Legacy `role_permissions` rows are never consulted here
+   * again, for ANY role, including a role with zero attached Policies — zero Policies resolves to
+   * zero granted actions (deny-by-default), never a fallback read of the old table. This is
+   * deliberate: an OR/fallback to legacy grants would let a stale RolePermission row silently
+   * override a Policy revocation, which is exactly the "one clear source of truth" requirement this
+   * migration exists to satisfy. `role_permissions` rows are kept in the table as historical/rollback
+   * data only (see AddIamPolicyBackfill's down()) — they are inert for every live authorization check
+   * (this method and PermissionGuard) from this point on. The three roles that had zero actionable
+   * legacy grants to begin with (Technical: no rows at all; user01/user02: a single bare
+   * module-level row with a null actionId, which this method's old legacy branch could never have
+   * matched anyway since it always joined on a non-null actionId) needed no backfill — zero attached
+   * Policies is already their exact equivalent. Their module-level nav-visibility flag is unaffected:
+   * getPermissionTree() reads role_permissions directly and is a wholly separate code path from this
+   * method, untouched by this cutover.
+   */
   async roleHasAction(roleId: number, actionCode: string): Promise<boolean> {
-    const count = await this.rolePermissionRepository
-      .createQueryBuilder('rp')
-      .innerJoin(Action, 'a', 'a.id = rp.actionId')
-      .where('rp.roleId = :roleId', { roleId })
-      .andWhere('a.code = :actionCode', { actionCode })
-      .getCount();
-    return count > 0;
+    return this.iamService.roleHasActionViaPolicy(roleId, actionCode);
   }
 
   async ensureAdminGrants(excludedActionCodes: string[] = []): Promise<void> {
@@ -574,9 +614,14 @@ export class RolePermissionsService {
   async updateRolePermissions(
     roleId: number,
     dto: SaveRoleWithPermissionsDto,
+    actorId?: number,
   ) {
+    return this.dataSource.transaction(async (manager) => {
+    const roleRepo = manager.getRepository(Role);
+    const rolePermissionRepo = manager.getRepository(RolePermission);
+
     const role =
-      await this.roleRepository.findOne({
+      await roleRepo.findOne({
         where: { id: roleId },
       });
 
@@ -585,6 +630,17 @@ export class RolePermissionsService {
         "Role not found",
       );
     }
+
+    // Captured BEFORE the delete below, as the audit's oldValue — action codes only (not full
+    // RolePermission rows with their internal ids), so the audit log reads as "which actions this
+    // role could do before" rather than opaque foreign-key numbers.
+    const previousActionCodes = await rolePermissionRepo
+      .createQueryBuilder('rp')
+      .innerJoin(Action, 'a', 'a.id = rp.actionId')
+      .where('rp.roleId = :roleId', { roleId })
+      .select('a.code', 'code')
+      .getRawMany<{ code: string }>()
+      .then((rows) => rows.map((r) => r.code));
 
     Object.assign(role, {
       roleName: dto.roleName,
@@ -598,9 +654,9 @@ export class RolePermissionsService {
         dto.canBeFieldInspector,
     });
 
-    await this.roleRepository.save(role);
+    await roleRepo.save(role);
 
-    await this.rolePermissionRepository.delete({
+    await rolePermissionRepo.delete({
       roleId,
     });
 
@@ -613,14 +669,14 @@ export class RolePermissionsService {
 
       if (module.hasAccess && !hasSubModules && !hasDirectScreens) {
         permissions.push(
-          this.rolePermissionRepository.create({ roleId, moduleId: module.moduleId }),
+          rolePermissionRepo.create({ roleId, moduleId: module.moduleId }),
         );
       }
 
       for (const subModule of module.subModule ?? []) {
         if (subModule.hasAccess && (!subModule.screens || subModule.screens.length === 0)) {
           permissions.push(
-            this.rolePermissionRepository.create({
+            rolePermissionRepo.create({
               roleId,
               moduleId: module.moduleId,
               subModuleId: subModule.subModuleId,
@@ -631,7 +687,7 @@ export class RolePermissionsService {
         for (const screen of subModule.screens ?? []) {
           if (screen.hasAccess && (!screen.actions || screen.actions.length === 0)) {
             permissions.push(
-              this.rolePermissionRepository.create({
+              rolePermissionRepo.create({
                 roleId,
                 moduleId: module.moduleId,
                 subModuleId: subModule.subModuleId,
@@ -643,7 +699,7 @@ export class RolePermissionsService {
           for (const action of screen.actions ?? []) {
             if (action.hasAccess) {
               permissions.push(
-                this.rolePermissionRepository.create({
+                rolePermissionRepo.create({
                   roleId,
                   moduleId: module.moduleId,
                   subModuleId: subModule.subModuleId,
@@ -656,7 +712,7 @@ export class RolePermissionsService {
             for (const child of action.children ?? []) {
               if (!child.hasAccess) continue;
               permissions.push(
-                this.rolePermissionRepository.create({
+                rolePermissionRepo.create({
                   roleId,
                   moduleId: module.moduleId,
                   subModuleId: subModule.subModuleId,
@@ -672,7 +728,7 @@ export class RolePermissionsService {
       for (const screen of module.screens ?? []) {
         if (screen.hasAccess && (!screen.actions || screen.actions.length === 0)) {
           permissions.push(
-            this.rolePermissionRepository.create({
+            rolePermissionRepo.create({
               roleId,
               moduleId: module.moduleId,
               screenId: screen.screenId,
@@ -683,7 +739,7 @@ export class RolePermissionsService {
         for (const action of screen.actions ?? []) {
           if (action.hasAccess) {
             permissions.push(
-              this.rolePermissionRepository.create({
+              rolePermissionRepo.create({
                 roleId,
                 moduleId: module.moduleId,
                 screenId: screen.screenId,
@@ -695,7 +751,7 @@ export class RolePermissionsService {
           for (const child of action.children ?? []) {
             if (!child.hasAccess) continue;
             permissions.push(
-              this.rolePermissionRepository.create({
+              rolePermissionRepo.create({
                 roleId,
                 moduleId: module.moduleId,
                 screenId: screen.screenId,
@@ -708,10 +764,33 @@ export class RolePermissionsService {
     }
 
     if (permissions.length > 0) {
-      await this.rolePermissionRepository.save(
+      await rolePermissionRepo.save(
         permissions,
       );
     }
+
+    const newActionCodes = await rolePermissionRepo
+      .createQueryBuilder('rp')
+      .innerJoin(Action, 'a', 'a.id = rp.actionId')
+      .where('rp.roleId = :roleId', { roleId })
+      .select('a.code', 'code')
+      .getRawMany<{ code: string }>()
+      .then((rows) => rows.map((r) => r.code));
+
+    // Same in-transaction audit guarantee as savePermissions above — only runs after the delete +
+    // re-insert above have actually succeeded within this same transaction, so a thrown error
+    // anywhere in this method rolls back both the permission change AND this audit row together.
+    await this.audit.record(
+      {
+        moduleName: 'role_permissions',
+        entityId: roleId,
+        action: 'UPDATE',
+        oldValue: { actionCodes: previousActionCodes },
+        newValue: { actionCodes: newActionCodes },
+        performedBy: actorId,
+      },
+      manager,
+    );
 
     return {
       message:
@@ -719,5 +798,6 @@ export class RolePermissionsService {
       roleId,
       count: permissions.length,
     };
+    });
   }
 }

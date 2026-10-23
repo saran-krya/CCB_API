@@ -3,7 +3,10 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { BillingReadinessModule } from '../billing-readiness/billing-readiness.module';
 import { BillingCycleModule } from '../billing-cycle/billing-cycle.module';
 import { BillingManagementModule } from '../billing-management/billing-management.module';
+import { BillingCycleMaster } from '../billing-cycle/entities/billing-cycle-master.entity';
 import { Property } from '../property/entities/property.entity';
+import { MeterReading } from '../sftp/entities/meter-reading.entity';
+import { User } from '../user/entities/user.entity';
 import { WorkflowModule } from '../workflow/workflow.module';
 import { BillRun } from './entities/bill-run.entity';
 import { BillRunBatch } from './entities/bill-run-batch.entity';
@@ -20,7 +23,17 @@ import { BillRunService } from './bill-run.service';
 // BillRunService itself.
 @Module({
   imports: [
-    TypeOrmModule.forFeature([BillRun, BillRunBatch, Property]),
+    // MeterReading is reused directly (same pattern as BillingManagementModule reusing the BillRun
+    // entity above) — only for a read-only "does this property have any out-of-cycle readings on
+    // file" check in getValidationChecks' messaging, never for billing calculation itself (that
+    // stays exclusively in BillingManagementService.calculateConsumption). User is reused the same
+    // way — read-only, batched lookups only, resolving AuditLog.performedBy ids to real names for
+    // getApprovalHistory (Period-wise Billing History feature); never writes, never auth-related.
+    // BillingCycleMaster is reused the same way again — read-only, estate-wide enumeration of which
+    // properties have a billing cycle at all, for getPastBillingOverview (Global Past Billing
+    // Overview feature); never writes, cycle-version mutation logic stays exclusively in
+    // BillingCycleService/BillingCycleModule.
+    TypeOrmModule.forFeature([BillRun, BillRunBatch, Property, MeterReading, User, BillingCycleMaster]),
     BillingReadinessModule,
     BillingCycleModule,
     BillingManagementModule,

@@ -16,6 +16,7 @@ import {
 import { Action } from './entities/action.entity';
 import { Screen } from '../screens/entities/screen.entity';
 import { ACTIONS } from '../../bootstrap/seed-data';
+import { AuditService } from '../../audit/audit.service';
 
 @Injectable()
 export class ActionsService {
@@ -28,9 +29,11 @@ export class ActionsService {
     @InjectRepository(Screen)
     private readonly screenRepository: Repository<Screen>,
 
+    private readonly audit: AuditService,
+
   ) {}
 
-  async create(dto: CreateActionDto) {
+  async create(dto: CreateActionDto, actorId?: number) {
 
 
     if (dto.screenId) {
@@ -67,7 +70,17 @@ export class ActionsService {
     const action =
       this.actionRepository.create(dto);
 
-    return this.actionRepository.save(action);
+    const saved = await this.actionRepository.save(action);
+
+    await this.audit.record({
+      moduleName: 'actions',
+      entityId: saved.id,
+      action: 'CREATE',
+      newValue: saved,
+      performedBy: actorId,
+    });
+
+    return saved;
   }
 
   private async assertValidParent(parentActionId: number, childScreenId?: number): Promise<void> {
@@ -122,9 +135,12 @@ export class ActionsService {
   async update(
     id: number,
     dto: UpdateActionDto,
+    actorId?: number,
   ) {
     const action =
       await this.findOne(id);
+
+    const oldValue = { ...action };
 
     if (dto.parentActionId != null) {
       if (dto.parentActionId === id) {
@@ -135,18 +151,37 @@ export class ActionsService {
 
     Object.assign(action, dto);
 
-    return this.actionRepository.save(
+    const saved = await this.actionRepository.save(
       action,
     );
+
+    await this.audit.record({
+      moduleName: 'actions',
+      entityId: id,
+      action: 'UPDATE',
+      oldValue,
+      newValue: saved,
+      performedBy: actorId,
+    });
+
+    return saved;
   }
 
-  async remove(id: number) {
+  async remove(id: number, actorId?: number) {
     const action =
       await this.findOne(id);
 
     await this.actionRepository.softRemove(
       action,
     );
+
+    await this.audit.record({
+      moduleName: 'actions',
+      entityId: id,
+      action: 'DELETE',
+      oldValue: action,
+      performedBy: actorId,
+    });
 
     return {
       message:

@@ -41,7 +41,7 @@ export class SftpFileListService {
   ) {}
 
   async findAll(query: SftpFileQueryDto): Promise<SftpFileListResponseDto> {
-    const { status, communityId, property, date, search, sortBy, sortOrder } = query;
+    const { status, communityId, property, sftpDate, readingDate, search, sortBy, sortOrder } = query;
 
     const orderCol = SORTABLE_COLUMNS[sortBy ?? ''] ?? SORTABLE_COLUMNS.createdAt;
 
@@ -54,8 +54,15 @@ export class SftpFileListService {
     if (status) qb.andWhere('log.file_status = :status', { status });
     if (communityId) qb.andWhere('community.id = :communityId', { communityId });
     if (property) qb.andWhere('property.property_name LIKE :property', { property: `%${property}%` });
-    if (date) {
-      qb.andWhere('(log.reading_date = :date OR DATE(log.created_at) = :date)', { date });
+    // Two independent, single-column filters — never OR'd together. See SftpFileQueryDto's own doc
+    // comments on each field for exactly why: sftpDate (file upload/processing date) and
+    // readingDate (the meter-reading date parsed from the filename) answer two genuinely different
+    // questions and must never substitute for one another, even when one of the two is null.
+    if (sftpDate) {
+      qb.andWhere('DATE(log.created_at) = :sftpDate', { sftpDate });
+    }
+    if (readingDate) {
+      qb.andWhere('log.reading_date = :readingDate', { readingDate });
     }
     if (search) {
       qb.andWhere('(log.file_name LIKE :search OR log.dtu LIKE :search)', { search: `%${search}%` });

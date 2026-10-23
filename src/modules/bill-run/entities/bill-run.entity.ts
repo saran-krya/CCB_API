@@ -137,4 +137,19 @@ export class BillRun extends BaseEntity {
 
   @Column({ name: 'resubmitted_from_id', nullable: true })
   resubmittedFromId?: number | null;
+
+  // NULL for every routine BillRun — set ONLY when this row's cyclePeriodStart/End were explicitly
+  // resolved from a past reading date (Missed Reading Recovery), via
+  // BillingCycleService.resolveVersionForReadingDate, instead of today-anchored
+  // getReadingPeriodForProperty. Stores the resolved period's OWN start date — the value
+  // BillingManagementService.generateBillsForBillRun passes to TariffService.resolveForUnitsAsOf
+  // instead of calling the routine resolveForUnits, so a recovered period bills at the tariff rate
+  // that actually applied then, never today's. Deliberately NOT a boolean/"isHistorical"-style flag:
+  // it feeds exactly one decision (which tariff resolver to call) and nothing else — never workflow
+  // type, never permissions, never approval routing, which all stay on the single routine
+  // WorkflowType.BILL_RUN path regardless of this field. See generateBillsForBillRun's own doc
+  // comment (written before this field existed) explaining why this needed to be an explicit,
+  // per-row signal rather than a date-comparison heuristic.
+  @Column({ name: 'tariff_resolution_date', type: 'date', nullable: true })
+  tariffResolutionDate?: string | null;
 }

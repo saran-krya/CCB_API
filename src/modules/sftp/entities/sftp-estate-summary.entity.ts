@@ -39,6 +39,13 @@ export class SftpEstateSummary extends BaseEntity {
   @Column({ name: 'meters_received', type: 'int', unsigned: true, default: 0 })
   metersReceived!: number;
 
+  // COUNT(DISTINCT sub_meter_id) from meter_readings for this date, counting only rows that
+  // resolved to a real, known SubMeter — see the migration's own doc comment for why this replaced
+  // metersReceived as the real "coverage" KPI (metersReceived is a raw CSV row count, not a
+  // distinct-meter count, and can overcount via duplicate rows or unresolved meter_id values).
+  @Column({ name: 'distinct_meters_reporting', type: 'int', unsigned: true, default: 0 })
+  distinctMetersReporting!: number;
+
   @Column({ name: 'valid_readings', type: 'int', unsigned: true, default: 0 })
   validReadings!: number;
 

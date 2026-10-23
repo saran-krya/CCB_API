@@ -6,6 +6,7 @@ import { AuthenticatedCustomer } from '../../auth/interfaces/authenticated-user.
 import { DailyMeterReadingQueryDto } from '../meter/dto/meter.dto';
 import { RecordDepositPaymentDto } from '../registration-request/dto/registration-request.dto';
 import { UpdateMyProfileDto } from '../customer/dto/update-my-profile.dto';
+import { BillQueryDto } from '../billing-management/dto/billing-management.dto';
 import { MyRegistrationConfigDto } from './dto/my-registration-config.dto';
 import { CustomerPortalService } from './customer-portal.service';
 
@@ -189,5 +190,31 @@ export class CustomerPortalController {
   @ApiOperation({ summary: "Documents attached to the authenticated Customer's own registration request" })
   getMyDocuments(@CurrentCustomer() customer: AuthenticatedCustomer) {
     return this.portal.getMyDocuments(customer.sub);
+  }
+
+  @Get('invoices')
+  @CustomerAccessible()
+  @ApiOperation({
+    summary:
+      "The authenticated Customer's own generated Bills (invoices) — reuses " +
+      'BillingManagementService.findAll exactly as the staff Manage Invoices screen does, with ' +
+      'customerId always forced server-side to this session, never read from the query string',
+  })
+  getMyInvoices(
+    @Query() query: Omit<BillQueryDto, 'customerId'>,
+    @CurrentCustomer() customer: AuthenticatedCustomer,
+  ) {
+    return this.portal.getMyInvoices(customer.sub, query);
+  }
+
+  @Get('invoices/:id')
+  @CustomerAccessible()
+  @ApiOperation({
+    summary:
+      "One of the authenticated Customer's own invoices, including line items — throws " +
+      'ForbiddenException if the Bill exists but belongs to a different customer',
+  })
+  getMyInvoice(@Param('id', ParseIntPipe) id: number, @CurrentCustomer() customer: AuthenticatedCustomer) {
+    return this.portal.getMyInvoice(customer.sub, id);
   }
 }

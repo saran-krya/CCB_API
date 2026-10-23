@@ -8,10 +8,14 @@ import { PModule } from '../pmodules/entities/pmodule.entity';
 import { Screen } from '../screens/entities/screen.entity';
 import { RolePermissionsController } from './role-permissions.controller';
 import { RolePermissionsService } from './role-permissions.service';
+import { AuditModule } from '../../audit/audit.module';
+import { IamModule } from '../iam/iam.module';
 import { Module } from '@nestjs/common';
 
 @Module({
   imports: [
+    AuditModule,
+    IamModule,
     TypeOrmModule.forFeature([
       RolePermission,
       Role,

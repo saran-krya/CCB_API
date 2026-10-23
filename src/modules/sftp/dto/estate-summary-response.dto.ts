@@ -18,6 +18,16 @@ export interface SummaryResponseDto {
   date: string;
   ingestion_status: string;
   ingestion_completed_at: string | null;
+  // `files.failed` and `failed_dtus` below are scoped by DIFFERENT date fields — a confirmed,
+  // documented design choice, not a bug: `files` (built from aggregateRows, EstateSummaryService's
+  // own doc comment at its call site explains why) counts by UPLOAD/PROCESSING date (`created_at`),
+  // while `failed_dtus` (getFailedLogsForDate) counts by the READING date embedded in the filename
+  // (falling back to created_at only when no reading_date could be parsed). They answer genuinely
+  // different questions — "what happened during processing on this date" vs. "which files represent
+  // this reading period" — and CAN legitimately disagree for the same underlying rows (e.g. a file
+  // uploaded today whose filename encodes a reading date from weeks ago). The frontend labels each
+  // section with its own scoping explicitly for exactly this reason — never reconcile these into one
+  // number without first deciding which question the UI actually needs answered.
   files: {
     expected: number;
     received: number;
@@ -28,6 +38,7 @@ export interface SummaryResponseDto {
   readings: {
     meters_expected: number;
     meters_received: number;
+    distinct_meters_reporting: number;
     valid_readings: number;
     anomaly_count: number;
   };
@@ -62,6 +73,7 @@ export function toSummaryResponseDto(
     readings: {
       meters_expected: summary.metersExpected,
       meters_received: summary.metersReceived,
+      distinct_meters_reporting: summary.distinctMetersReporting,
       valid_readings: summary.validReadings,
       anomaly_count: summary.anomalyCount,
     },

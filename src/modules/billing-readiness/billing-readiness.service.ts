@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
 import { BillingCycleService } from '../billing-cycle/billing-cycle.service';
@@ -9,6 +9,7 @@ import { Unit, UnitStatus } from '../unit/entities/unit.entity';
 import { SubMeter } from '../meter/entities/sub-meter.entity';
 import { MeterReading, ReadingApprovalStatus, ReadingValidationStatus } from '../sftp/entities/meter-reading.entity';
 import { AnomalySeverity } from '../sftp/validation.service';
+import { BillRun } from '../bill-run/entities/bill-run.entity';
 import { BillingReadinessQueryDto } from './dto/billing-readiness.dto';
 
 export enum BillingReadinessStatus {
@@ -66,6 +67,7 @@ export class BillingReadinessService {
     @InjectRepository(Unit) private readonly units: Repository<Unit>,
     @InjectRepository(SubMeter) private readonly subMeters: Repository<SubMeter>,
     @InjectRepository(MeterReading) private readonly meterReadings: Repository<MeterReading>,
+    @InjectRepository(BillRun) private readonly billRuns: Repository<BillRun>,
     private readonly billingCycleService: BillingCycleService,
     private readonly tariffService: TariffService,
     private readonly customerService: CustomerService,
@@ -160,6 +162,323 @@ export class BillingReadinessService {
       highAnomalies: high,
       mediumAnomalies: medium,
       lowAnomalies: low,
+    };
+  }
+
+  /** Missed Reading Recovery — the real check for "a reading turned up for a date that was never
+   *  billed; what billing-cycle version does it belong to, and is that period already billed or
+   *  otherwise eligible?" Resolves which billing-cycle version a specific, already-recorded reading
+   *  date belongs to (via BillingCycleService.resolveVersionForReadingDate, which already fully
+   *  implements the approved Option A parent-child overlap resolution and 'none'/'ambiguous'
+   *  sentinels), then delegates every actual readiness check to the existing
+   *  evaluateHistoricalCycle(propertyId, cycleVersionId) below — this method adds NO new readiness/
+   *  tariff/occupant/duplicate-bill logic of its own, only the date-to-version resolution step in
+   *  front of it.
+   *
+   *  This is a READ-ONLY report, not a submission flow — there is no separate historical Bill Run
+   *  to submit here. A recovered reading that resolves to an unbilled past period is billed, if at
+   *  all, through the existing, single, routine Bill Run process once that is operationally
+   *  appropriate (see this module's own doc comments on why a standalone historical submission
+   *  workflow was deliberately NOT built). A caller never supplies a cycleVersionId directly — only
+   *  the reading's own date, so a user is never asked to manually pick a deprecated version.
+   *  'none'/'ambiguous' resolution results are reported explicitly as blocking reasons, never a
+   *  guess and never a silent fallback to any other cycle. */
+  async checkRecoveredReadingEligibility(propertyId: number, readingDate: string): Promise<{
+    propertyId: number;
+    propertyName: string;
+    propertyCode: string | null;
+    readingDate: string;
+    resolution: 'resolved' | 'none' | 'ambiguous';
+    cycleVersionId: number | null;
+    periodStart: string;
+    periodEnd: string;
+    ageDays: number;
+    eligibleForBilling: boolean;
+    blockingReasons: string[];
+    missingReadingMeterIds: string[];
+    existingBillRun: { id: number; businessCode: string | null; status: string } | null;
+    units: Array<{
+      unitId: number;
+      unitNumber: string;
+      hasQualifyingReading: boolean;
+      meterBusinessCode: string | null;
+      tariffStatus: 'resolved' | 'no_match' | 'ambiguous';
+      tariffVersionId: number | null;
+      resolvedCustomer: { id: number; businessCode: string | null; fullName: string } | null;
+      occupantVerificationRequired: boolean;
+    }>;
+  }> {
+    const property = await this.properties.findOne({ where: { id: propertyId }, relations: ['community'] });
+    if (!property) throw new NotFoundException('Property not found');
+
+    const resolution = await this.billingCycleService.resolveVersionForReadingDate(propertyId, readingDate);
+
+    if (resolution === 'none' || resolution === 'ambiguous') {
+      return {
+        propertyId: property.id,
+        propertyName: property.name,
+        propertyCode: property.businessCode ?? property.code ?? null,
+        readingDate,
+        resolution,
+        cycleVersionId: null,
+        periodStart: '',
+        periodEnd: '',
+        ageDays: 0,
+        eligibleForBilling: false,
+        blockingReasons: [
+          resolution === 'none'
+            ? `No billing-cycle version covers ${readingDate} for this property — the reading cannot be resolved to a billing period`
+            : `More than one billing-cycle version's computed reading period covers ${readingDate} — this cannot be resolved automatically and requires manual review of the property's billing-cycle configuration before recovery can proceed`,
+        ],
+        missingReadingMeterIds: [],
+        existingBillRun: null,
+        units: [],
+      };
+    }
+
+    // Delegates to the existing, already-tested evaluateHistoricalCycle for every real check — this
+    // method's own job ends at date-to-version resolution. CRITICAL: passes resolution's own
+    // periodStart/periodEnd explicitly, rather than letting evaluateHistoricalCycle re-derive them
+    // from the version id alone. A version that is STILL the property's current one (e.g. Grand
+    // Tower A's version 22) recurs a genuinely different period every month for as long as it stays
+    // current (getReadingPeriodForProperty always anchors to "today," confirmed in
+    // resolveVersionForReadingDate's own doc comment) — re-deriving "the period for version 22"
+    // independently here would silently return THIS month's occurrence instead of the specific past
+    // month resolveVersionForReadingDate already correctly matched the reading date against. Passing
+    // the already-correct period through explicitly is what prevents that exact regression.
+    const evaluated = await this.evaluateHistoricalCycle(propertyId, resolution.versionId, {
+      periodStart: resolution.periodStart,
+      periodEnd: resolution.periodEnd,
+      masterId: resolution.masterId,
+    });
+    return {
+      ...evaluated,
+      readingDate,
+      resolution: 'resolved',
+      cycleVersionId: evaluated.cycleVersionId,
+    };
+  }
+
+  /** Per-unit detail for a past/recovered billing-cycle period — deliberately its own shape, not
+   *  BillingReadinessItem: a recovery check needs things the live readiness item never does
+   *  (missing meter IDENTIFIERS not just a count, per-unit tariff ambiguity, and the resolved
+   *  customer's occupant-verification status — see that field's own doc comment below for why it's
+   *  always true, not a per-unit computed flag).
+   *
+   *  `periodOverride` — when the caller (checkRecoveredReadingEligibility) has ALREADY resolved the
+   *  exact correct period via BillingCycleService.resolveVersionForReadingDate, it is passed here
+   *  explicitly rather than letting this method re-derive "the period for cycleVersionId"
+   *  independently. This matters specifically for a version that is STILL the property's current
+   *  one: getReadingPeriodForProperty always anchors to "today" and would silently return THIS
+   *  month's occurrence of that version's day-rule, not the specific past month a recovered
+   *  reading's own date actually falls in — passing the override is what prevents that exact
+   *  regression. An explicit-id caller with no override keeps the prior re-derivation behavior
+   *  unchanged. */
+  async evaluateHistoricalCycle(
+    propertyId: number,
+    cycleVersionId: number,
+    periodOverride?: { periodStart: string; periodEnd: string; masterId: number },
+  ): Promise<{
+    propertyId: number;
+    propertyName: string;
+    propertyCode: string | null;
+    cycleVersionId: number;
+    periodStart: string;
+    periodEnd: string;
+    ageDays: number;
+    eligibleForBilling: boolean;
+    blockingReasons: string[];
+    missingReadingMeterIds: string[];
+    existingBillRun: { id: number; businessCode: string | null; status: string } | null;
+    units: Array<{
+      unitId: number;
+      unitNumber: string;
+      hasQualifyingReading: boolean;
+      meterBusinessCode: string | null;
+      tariffStatus: 'resolved' | 'no_match' | 'ambiguous';
+      tariffVersionId: number | null;
+      resolvedCustomer: { id: number; businessCode: string | null; fullName: string } | null;
+      occupantVerificationRequired: boolean;
+    }>;
+  }> {
+    const property = await this.properties.findOne({ where: { id: propertyId }, relations: ['community'] });
+    if (!property) throw new NotFoundException('Property not found');
+
+    let version: { versionId: number; masterId: number; periodStart: string; periodEnd: string; effectiveFrom: string; deprecatedOn: string | null; ageDays: number } | undefined;
+
+    if (periodOverride) {
+      // The caller already resolved the exact correct period (via
+      // resolveVersionForReadingDate) — use it verbatim, never re-deriving "the period for this
+      // version id" independently, which could silently diverge for a version that recurs monthly
+      // while still current (see this method's own doc comment above).
+      version = {
+        versionId: cycleVersionId,
+        masterId: periodOverride.masterId,
+        periodStart: periodOverride.periodStart,
+        periodEnd: periodOverride.periodEnd,
+        effectiveFrom: '',
+        deprecatedOn: null,
+        ageDays: 0,
+      };
+    } else {
+      const historicalVersions = await this.billingCycleService.getHistoricalVersionsForProperty(propertyId);
+      version = historicalVersions.find((v) => v.versionId === cycleVersionId);
+      // getHistoricalVersionsForProperty only ever lists DEPRECATED versions — but an explicit-id
+      // caller (no periodOverride) can still legitimately name the property's CURRENTLY ACTIVE
+      // version. Falling through to getReadingPeriodForProperty's own (today-anchored) period here
+      // is correct ONLY for this explicit-id, no-override path — it deliberately does NOT apply when
+      // periodOverride is given, since that's exactly the case where "today-anchored" would be
+      // wrong (see doc comment above). This never changes what "valid" means for a genuinely wrong
+      // id (still blocked below) — it only recognizes a real, currently-active version as valid,
+      // exactly as getReadingPeriodForProperty itself already defines "current" to mean.
+      if (!version) {
+        const currentPeriod = await this.billingCycleService.getReadingPeriodForProperty(propertyId);
+        if (currentPeriod && currentPeriod.versionId === cycleVersionId) {
+          version = {
+            versionId: currentPeriod.versionId,
+            masterId: currentPeriod.masterId,
+            periodStart: currentPeriod.periodStart,
+            periodEnd: currentPeriod.periodEnd,
+            effectiveFrom: '',
+            deprecatedOn: null,
+            ageDays: 0,
+          };
+        }
+      }
+    }
+    if (!version) {
+      // Never silently resolve a different version or fall back to some OTHER cycle — a genuinely
+      // invalid/unresolvable id (neither a real deprecated version nor the real current one) is a
+      // hard block, not a "closest match" substitution.
+      return {
+        propertyId: property.id,
+        propertyName: property.name,
+        propertyCode: property.businessCode ?? property.code ?? null,
+        cycleVersionId,
+        periodStart: '',
+        periodEnd: '',
+        ageDays: 0,
+        eligibleForBilling: false,
+        blockingReasons: ['Selected cycle version is not a valid historical or current version for this property'],
+        missingReadingMeterIds: [],
+        existingBillRun: null,
+        units: [],
+      };
+    }
+
+    const blockingReasons: string[] = [];
+
+    const billableUnits = await this.units.find({
+      where: { property: { id: property.id }, status: UnitStatus.ACTIVE },
+    });
+    const unitIds = billableUnits.map((u) => u.id);
+
+    // ANY prior Bill Run for this exact (property, cycleVersionId) — regardless of status, and
+    // regardless of whether it was ever flagged any particular way — is surfaced here so a user
+    // checking a recovered reading can see whether this period was already billed through the
+    // existing, single Bill Run mechanism. This is a read-only report for the recovery check; it
+    // does not gate or enable any submission path of its own (there is no separate historical
+    // submission flow — recovered readings are billed, if at all, through the existing routine Bill
+    // Run process once operationally appropriate).
+    const existingBillRun = await this.billRuns.findOne({
+      where: { propertyId: property.id, cycleVersionId },
+      order: { id: 'DESC' },
+    });
+    if (existingBillRun) {
+      blockingReasons.push(
+        `A bill run (${existingBillRun.businessCode ?? '#' + existingBillRun.id}) already exists for this property and cycle version — status: ${existingBillRun.status}`,
+      );
+    }
+
+    const [subMeterByUnitId, readingCountByUnitId, tariffResults, customersByUnit] = await Promise.all([
+      this.getMappedSubMetersByUnitId(unitIds),
+      this.getReadingCountsByUnitId(unitIds, version.periodStart, version.periodEnd),
+      this.tariffService.resolveForUnitsAsOf(unitIds, version.periodStart),
+      this.customerService.findByUnitIds(unitIds),
+    ]);
+
+    // Minimum 2, not 1: BillingManagementService.calculateConsumption needs an OPENING and a
+    // CLOSING reading inside the period to compute a diff — with exactly 1 reading in-window there
+    // is nothing to diff against, and generation would throw "No qualifying meter reading found"
+    // for that unit even though a naive presence check (>0) would have called it eligible. This is
+    // exactly the gap a live check on Grand Tower A's Sep 27-30 period surfaced: every one of the
+    // 24 units had exactly 1 reading in-window (1 genuine, 23 later confirmed to be synthetic test
+    // data that should never have reached this table — see MIN_QUALIFYING_READINGS_PER_UNIT's own
+    // note), so the OLD `>0` check reported `eligibleForBilling: true` for a period that would have
+    // generated zero real Bills on approval. hasQualifyingReading/missingReadingMeterIds below now
+    // mean "sufficient to compute consumption," not merely "a reading exists" — matching what
+    // generation itself actually requires, never a looser, misleading definition of "ready."
+    const MIN_QUALIFYING_READINGS_PER_UNIT = 2;
+
+    const missingReadingMeterIds: string[] = [];
+    const units = billableUnits.map((unit) => {
+      const subMeter = subMeterByUnitId.get(unit.id);
+      const readingCount = readingCountByUnitId.get(unit.id) ?? 0;
+      const hasQualifyingReading = subMeter ? readingCount >= MIN_QUALIFYING_READINGS_PER_UNIT : false;
+      if (!hasQualifyingReading && subMeter) {
+        // Distinguishes "no reading at all" from "exactly one reading, no opening value to diff
+        // against" — both block, but for a genuinely different reason a user should see explicitly
+        // rather than a single undifferentiated "missing" label.
+        const suffix = readingCount === 1 ? ' (only 1 reading in this period — no opening reading to compute consumption)' : '';
+        missingReadingMeterIds.push((subMeter.businessCode ?? `unit-${unit.id}`) + suffix);
+      } else if (!subMeter) missingReadingMeterIds.push(`unit-${unit.id} (no meter mapped)`);
+
+      const tariffResult = tariffResults.get(unit.id);
+      const tariffStatus: 'resolved' | 'no_match' | 'ambiguous' =
+        tariffResult === 'ambiguous' ? 'ambiguous' : tariffResult ? 'resolved' : 'no_match';
+
+      const unitCustomers = customersByUnit.get(unit.id) ?? [];
+      const { currentCustomer } = this.customerService.resolveCurrentCustomer(unitCustomers);
+
+      return {
+        unitId: unit.id,
+        unitNumber: unit.unitNumber,
+        hasQualifyingReading,
+        meterBusinessCode: subMeter?.businessCode ?? null,
+        tariffStatus,
+        tariffVersionId: tariffResult && tariffResult !== 'ambiguous' ? tariffResult.id : null,
+        resolvedCustomer: currentCustomer
+          ? { id: currentCustomer.id, businessCode: currentCustomer.businessCode, fullName: currentCustomer.fullName }
+          : null,
+        // Always true for every unit in this preview — NOT a per-unit computed flag. The schema has
+        // no point-in-time occupancy history (see the design audit's own finding): resolvedCustomer
+        // above is always "whoever occupies this unit RIGHT NOW," never verified against who
+        // actually occupied it during the historical period. Attestation is required unconditionally,
+        // not selectively, so this can never be misread as "most units are already verified."
+        occupantVerificationRequired: true,
+      };
+    });
+
+    if (missingReadingMeterIds.length > 0) {
+      blockingReasons.push(
+        `${missingReadingMeterIds.length} of ${unitIds.length} required meter(s) do not have enough readings in this period to compute consumption (at least ${MIN_QUALIFYING_READINGS_PER_UNIT} needed — an opening and a closing reading) — never assumed to be zero consumption`,
+      );
+    }
+
+    const unitsWithTariffIssue = units.filter((u) => u.tariffStatus !== 'resolved');
+    if (unitsWithTariffIssue.length > 0) {
+      const ambiguous = unitsWithTariffIssue.filter((u) => u.tariffStatus === 'ambiguous').length;
+      const noMatch = unitsWithTariffIssue.filter((u) => u.tariffStatus === 'no_match').length;
+      blockingReasons.push(
+        `Tariff as of ${version.periodStart} could not be unambiguously resolved for ${unitsWithTariffIssue.length} unit(s) (${noMatch} no match, ${ambiguous} ambiguous/overlapping) — never falls back to today's active tariff`,
+      );
+    }
+
+    return {
+      propertyId: property.id,
+      propertyName: property.name,
+      propertyCode: property.businessCode ?? property.code ?? null,
+      cycleVersionId,
+      periodStart: version.periodStart,
+      periodEnd: version.periodEnd,
+      ageDays: version.ageDays,
+      eligibleForBilling: blockingReasons.length === 0,
+      blockingReasons,
+      missingReadingMeterIds,
+      existingBillRun: existingBillRun
+        ? { id: existingBillRun.id, businessCode: existingBillRun.businessCode ?? null, status: existingBillRun.status }
+        : null,
+      units,
     };
   }
 

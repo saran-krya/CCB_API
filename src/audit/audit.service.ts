@@ -40,4 +40,18 @@ export class AuditService {
       take: limit,
     });
   }
+
+  // Scoped to ONE specific row (moduleName + entityId), not every row in a module — the real
+  // "event timeline for this one record" query, backed by this table's own
+  // [moduleName, entityId, createdAt] composite index (audit-log.entity.ts), so this is an
+  // already-supported, intended access pattern, not a new strain on the schema.
+  async findByModuleAndEntity(moduleName: string, entityId: number, action?: string | string[], limit = 50) {
+    return this.auditRepository.find({
+      where: action
+        ? { moduleName, entityId, action: Array.isArray(action) ? In(action) : action }
+        : { moduleName, entityId },
+      order: { createdAt: 'DESC' },
+      take: limit,
+    });
+  }
 }

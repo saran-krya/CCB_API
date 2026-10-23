@@ -5,6 +5,7 @@ import { SftpIngestionLog } from './entities/sftp-ingestion-log.entity';
 import { SftpIngestionStatus } from './entities/sftp-ingestion-status.enum';
 import { SftpEstateSummary } from './entities/sftp-estate-summary.entity';
 import { EstateIngestionStatus } from './entities/estate-ingestion-status.enum';
+import { MeterReading } from './entities/meter-reading.entity';
 import { MasterMeter } from '../meter/entities/master-meter.entity';
 import { SubMeter } from '../meter/entities/sub-meter.entity';
 
@@ -36,13 +37,23 @@ export class EstateSummaryService {
     @InjectRepository(SftpEstateSummary) private readonly summaries: Repository<SftpEstateSummary>,
     @InjectRepository(MasterMeter) private readonly masterMeters: Repository<MasterMeter>,
     @InjectRepository(SubMeter) private readonly subMeters: Repository<SubMeter>,
+    @InjectRepository(MeterReading) private readonly meterReadings: Repository<MeterReading>,
   ) {}
 
+  // Selects strictly by UPLOAD/PROCESSING date (created_at), never reading_date — a confirmed
+  // incident showed the OLD reading_date-first selection (falling back to created_at only when
+  // reading_date was null) incorrectly attributed a file's row to the day its READINGS were for,
+  // not the day it was actually processed (e.g. a file uploaded 2026-10-13 containing readings
+  // dated 2026-09-28 used to count toward Sep 28's summary, not Oct 13's). This dashboard now
+  // always means "what was uploaded/processed on day X," matching the Files tab's own SFTP Date
+  // filter exactly. See sftp-cron.service.ts's own comment on why this method is ONLY ever called
+  // with today's real run date now, never a reading-date — calling it with a date nothing was
+  // actually uploaded on would correctly persist an all-zero summary, silently overwriting whatever
+  // real summary already existed for that day.
   async generateSummaryForDate(date: string): Promise<SftpEstateSummary> {
     const rows = await this.ingestionLogs
       .createQueryBuilder('log')
-      .where('log.reading_date = :date', { date })
-      .orWhere('log.reading_date IS NULL AND DATE(log.created_at) = :date', { date })
+      .where('DATE(log.created_at) = :date', { date })
       .getMany();
 
     if (rows.length === 0) {
@@ -95,6 +106,7 @@ export class EstateSummaryService {
       filesDuplicate: 0,
       metersExpected,
       metersReceived: 0,
+      distinctMetersReporting: 0,
       validReadings: 0,
       anomalyCount: 0,
       criticalAnomalyCount: 0,
@@ -182,6 +194,7 @@ export class EstateSummaryService {
     const summaryDate = aggregate.summaryDate!;
     const filesExpected = await this.countRegisteredDtus();
     const metersExpected = await this.sumExpectedMeters();
+    const distinctMetersReporting = await this.countDistinctMetersReporting(summaryDate);
 
     const activeMeters = aggregate.validReadings + aggregate.anomalyCount;
 
@@ -207,6 +220,7 @@ export class EstateSummaryService {
       filesDuplicate: aggregate.filesDuplicate,
       metersExpected,
       metersReceived: aggregate.metersReceived,
+      distinctMetersReporting,
       validReadings: aggregate.validReadings,
       anomalyCount: aggregate.anomalyCount,
       criticalAnomalyCount: aggregate.criticalAnomalyCount,
@@ -222,6 +236,25 @@ export class EstateSummaryService {
       `Estate summary for ${summaryDate}: ${ingestionStatus}, ${aggregate.filesReceived} received / ${filesExpected} expected, quality ${dataQualityPct}%`,
     );
     return saved;
+  }
+
+  // Real "distinct meters reporting" count for one date — COUNT(DISTINCT sub_meter_id) from
+  // meter_readings, scoped to readings whose sub_meter_id actually resolved to a real SubMeter
+  // during ingestion (see ingestion.service.ts: subMeter is set only when the hierarchy resolver
+  // found a match, null otherwise). This deliberately counts DISTINCT resolved meters, not raw CSV
+  // rows (that's the pre-existing metersReceived field, left untouched) and not raw meter_id
+  // strings (which could include values that never resolved to anything real). MeterReading's own
+  // unique index on (sub_meter_id, reading_date) means at most one row per meter per day anyway, so
+  // this is equivalent to a plain COUNT for a single date — the DISTINCT is what makes the query
+  // correct in general (e.g. if ever queried across a range) without depending on that constraint.
+  private async countDistinctMetersReporting(date: string): Promise<number> {
+    const result = await this.meterReadings
+      .createQueryBuilder('r')
+      .select('COUNT(DISTINCT r.sub_meter_id)', 'count')
+      .where('r.reading_date = :date', { date })
+      .andWhere('r.sub_meter_id IS NOT NULL')
+      .getRawOne<{ count: string }>();
+    return Number(result?.count ?? 0);
   }
 
   private async countRegisteredDtus(): Promise<number> {
@@ -265,6 +298,16 @@ export class EstateSummaryService {
       .getMany();
   }
 
+  // Scoped by READING date (falling back to created_at only when no reading_date could be parsed
+  // from the filename) — the OPPOSITE of generateSummaryForDate/aggregateRows above, which scopes
+  // files.failed strictly by UPLOAD/PROCESSING date. This is deliberate, not an oversight left over
+  // from the same incident that fixed the summary-count path: this method answers "which failed
+  // files represent THIS reading period," a genuinely different, also-real question from "what
+  // failed during processing on THIS calendar day." The two can disagree for the same row (a file
+  // uploaded today whose filename encodes a reading date from weeks ago) — confirmed, and the
+  // frontend labels each section with its own scoping explicitly for exactly this reason. Never
+  // change this method's scoping to match aggregateRows' without first confirming the "Failed Files"
+  // detail table is meant to answer the same question the stat card above it does — today it is not.
   async getFailedLogsForDate(date: string): Promise<SftpIngestionLog[]> {
     return this.ingestionLogs
       .createQueryBuilder('log')

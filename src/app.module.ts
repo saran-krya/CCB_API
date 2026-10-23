@@ -40,6 +40,7 @@ import { BillingManagementModule } from './modules/billing-management/billing-ma
 import { BillRunModule } from './modules/bill-run/bill-run.module';
 import { FieldInspectionModule } from './modules/field-inspection/field-inspection.module';
 import { WorkflowModule } from './modules/workflow/workflow.module';
+import { IamModule } from './modules/iam/iam.module';
 
 @Module({
   imports: [
@@ -83,6 +84,7 @@ import { WorkflowModule } from './modules/workflow/workflow.module';
     BillRunModule,
     FieldInspectionModule,
     WorkflowModule,
+    IamModule,
   ],
 })
 export class AppModule {}

@@ -137,7 +137,7 @@ export class RegistrationRequestController {
   }
 
   @Post(':id/request-deposit')
-  @Permission('EDIT_REGISTRATION_REQUEST', 'REGISTRATION_APPROVAL_APPROVE')
+  @Permission('EDIT_REGISTRATION_REQUEST', 'REGISTRATION_APPROVAL_DEPOSIT_MANAGE')
   @ApiOperation({ summary: 'Manually re-raise the deposit demand for an already-approved request (approve() already does this automatically the moment the Customer is created)' })
   @ApiParam({ name: 'id', type: Number })
   requestDeposit(
@@ -149,7 +149,7 @@ export class RegistrationRequestController {
   }
 
   @Post(':id/record-deposit-payment')
-  @Permission('EDIT_REGISTRATION_REQUEST', 'CREATE_REGISTRATION_REQUEST', 'REGISTRATION_APPROVAL_APPROVE')
+  @Permission('EDIT_REGISTRATION_REQUEST', 'CREATE_REGISTRATION_REQUEST', 'REGISTRATION_APPROVAL_DEPOSIT_MANAGE')
   @ApiOperation({ summary: 'Record the deposit payment (and receipt) — post-approval only' })
   @ApiParam({ name: 'id', type: Number })
   recordDepositPayment(
@@ -161,7 +161,7 @@ export class RegistrationRequestController {
   }
 
   @Post(':id/verify-deposit')
-  @Permission('EDIT_REGISTRATION_REQUEST', 'REGISTRATION_APPROVAL_APPROVE')
+  @Permission('EDIT_REGISTRATION_REQUEST', 'REGISTRATION_APPROVAL_DEPOSIT_MANAGE')
   @ApiOperation({ summary: 'CS Supervisor verifies the recorded deposit payment, activating the (already-approved) account' })
   @ApiParam({ name: 'id', type: Number })
   verifyDeposit(
@@ -173,7 +173,7 @@ export class RegistrationRequestController {
   }
 
   @Post(':id/return-receipt')
-  @Permission('EDIT_REGISTRATION_REQUEST', 'REGISTRATION_APPROVAL_APPROVE')
+  @Permission('EDIT_REGISTRATION_REQUEST', 'REGISTRATION_APPROVAL_DEPOSIT_MANAGE')
   @ApiOperation({ summary: 'Return an unsatisfactory payment receipt to the resident for correction' })
   @ApiParam({ name: 'id', type: Number })
   returnReceiptForCorrection(

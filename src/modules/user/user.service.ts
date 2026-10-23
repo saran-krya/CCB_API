@@ -118,7 +118,7 @@ export class UserService {
 
     // user_roles is the only place a user's role is recorded — see UserRole entity's own doc
     // comment.
-    await this.userRoles.setPrimaryRole(saved.id, role.id);
+    await this.userRoles.setPrimaryRole(saved.id, role.id, undefined, actorId);
 
     await this.audit.record({
       moduleName: "users",
@@ -465,7 +465,7 @@ export class UserService {
     const saved = await this.users.save(user);
 
     if (dto.roleId) {
-      await this.userRoles.setPrimaryRole(saved.id, dto.roleId);
+      await this.userRoles.setPrimaryRole(saved.id, dto.roleId, undefined, actorId);
     }
 
     await this.audit.record({ moduleName: 'users', entityId: id, action: 'UPDATE', oldValue, newValue: saved, performedBy: actorId });

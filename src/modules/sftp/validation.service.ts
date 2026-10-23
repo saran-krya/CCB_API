@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { stat } from 'fs/promises';
 import { extname } from 'path';
+import { ACCEPTED_READING_FILE_EXTENSIONS } from './sftp.service';
 
 const REQUIRED_HEADERS = ['meter_id', 'reading_date', 'reading_value', 'unit'] as const;
 
@@ -45,8 +46,9 @@ export class ValidationService {
   async validateFile(localFilePath: string, rows: Record<string, string>[]): Promise<FileValidationResult> {
     const errors: string[] = [];
 
-    if (extname(localFilePath).toLowerCase() !== '.csv') {
-      errors.push(`File "${localFilePath}" does not have a .csv extension`);
+    const ext = extname(localFilePath).toLowerCase();
+    if (!ACCEPTED_READING_FILE_EXTENSIONS.includes(ext as (typeof ACCEPTED_READING_FILE_EXTENSIONS)[number])) {
+      errors.push(`File "${localFilePath}" must be one of: ${ACCEPTED_READING_FILE_EXTENSIONS.join(', ')}`);
     }
 
     let isEmpty = false;

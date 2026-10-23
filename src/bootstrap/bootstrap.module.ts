@@ -8,6 +8,7 @@ import { ActionsModule } from '../modules/actions/actions.module'
 import { RolePermissionsModule } from '../modules/role-permissions/role-permissions.module'
 import { RegistrationDocumentRuleModule } from '../modules/registration-document-rule/registration-document-rule.module'
 import { UserRoleModule } from '../modules/user-role/user-role.module'
+import { IamModule } from '../modules/iam/iam.module'
 import { BootstrapService } from './bootstrap.service'
 
 @Module({
@@ -21,6 +22,7 @@ import { BootstrapService } from './bootstrap.service'
     RolePermissionsModule,
     RegistrationDocumentRuleModule,
     UserRoleModule,
+    IamModule,
   ],
   providers: [BootstrapService],
 })

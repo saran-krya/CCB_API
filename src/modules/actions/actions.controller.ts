@@ -15,6 +15,8 @@ import {
 } from '@nestjs/swagger';
 import { ROLES } from '@app/common/constants/global';
 import { Roles } from '../../common/decorators/roles.decorator';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { AuthenticatedUser } from '../../auth/interfaces/authenticated-user.interface';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 import { ActionsService } from './actions.service';
 
@@ -38,8 +40,9 @@ export class ActionsController {
   @Post()
   create(
     @Body() dto: CreateActionDto,
+    @CurrentUser() user?: AuthenticatedUser,
   ) {
-    return this.actionsService.create(dto);
+    return this.actionsService.create(dto, user?.sub);
   }
 
   @Get()
@@ -59,17 +62,20 @@ export class ActionsController {
   update(
     @Param('id') id: number,
     @Body() dto: UpdateActionDto,
+    @CurrentUser() user?: AuthenticatedUser,
   ) {
     return this.actionsService.update(
       id,
       dto,
+      user?.sub,
     );
   }
 
   @Delete(':id')
   remove(
     @Param('id') id: number,
+    @CurrentUser() user?: AuthenticatedUser,
   ) {
-    return this.actionsService.remove(id);
+    return this.actionsService.remove(id, user?.sub);
   }
 }

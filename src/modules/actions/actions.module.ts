@@ -4,9 +4,11 @@ import { ActionsController } from './actions.controller';
 import { ActionsService } from './actions.service';
 import { Action } from './entities/action.entity';
 import { Screen } from '../screens/entities/screen.entity';
+import { AuditModule } from '../../audit/audit.module';
 
 @Module({
   imports: [
+    AuditModule,
     TypeOrmModule.forFeature([
       Action,
       Screen,]),

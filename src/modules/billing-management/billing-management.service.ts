@@ -165,14 +165,35 @@ export class BillingManagementService {
       return { generated: [], failed: [], alreadyBilled: alreadyBilled.length };
     }
 
-    const tariffByUnitId = await this.tariffService.resolveForUnits(pendingUnits.map((u) => u.id));
+    // billRun.tariffResolutionDate is NULL for every routine BillRun (unaffected — falls straight to
+    // the routine resolver below, byte-for-byte as before this field existed). It is set ONLY by
+    // Missed Reading Recovery's submission path (BillRunService.submitWithinTransaction), to the
+    // resolved period's own start date — in which case tariff resolution uses the AS-OF-DATE
+    // resolver instead, so a recovered period bills at whatever rate actually applied then, never
+    // today's. This is exactly the "explicit signal scoped to that one call" this comment used to
+    // call for before the field existed: a live check previously confirmed the routine resolver and
+    // resolveForUnitsAsOf CAN genuinely diverge even for an ordinary just-closed cycle (property 50,
+    // periodStart 2026-10-01: a newer tariff had already gone ACTIVE by generation time with an
+    // effectiveFrom after that cycle's own start) — so this branch is deliberately gated on the
+    // explicit per-row field, never a date-comparison heuristic that could misfire for a routine run.
+    const pendingUnitIds = pendingUnits.map((u) => u.id);
+    const tariffByUnitId: Map<number, TariffVersion | null | 'ambiguous'> = billRun.tariffResolutionDate
+      ? await this.tariffService.resolveForUnitsAsOf(pendingUnitIds, billRun.tariffResolutionDate)
+      : await this.tariffService.resolveForUnits(pendingUnitIds);
 
     const generated: Bill[] = [];
     const failed: { unitId: number; reason: string }[] = [];
 
     for (const unit of pendingUnits) {
       try {
-        const bill = await this.generateOneBill(billRun, unit, tariffByUnitId.get(unit.id) ?? null, actorId);
+        const tariffResult = tariffByUnitId.get(unit.id) ?? null;
+        // 'ambiguous' (only possible via resolveForUnitsAsOf, the recovery path) must never be
+        // silently treated as "no tariff" vs "pick one" — it is its own distinct failure, with its
+        // own message, never passed through to generateOneBill as if it were a resolved version.
+        if (tariffResult === 'ambiguous') {
+          throw new BadRequestException(`Tariff as of ${billRun.tariffResolutionDate} is ambiguous for unit ${unit.id} — more than one overlapping tariff version matches and cannot be resolved automatically`);
+        }
+        const bill = await this.generateOneBill(billRun, unit, tariffResult, actorId);
         generated.push(bill);
       } catch (err) {
         const reason = err instanceof Error ? err.message : 'Unknown error';

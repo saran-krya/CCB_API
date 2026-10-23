@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { EntityManager, Repository } from 'typeorm';
 import { UserRole } from './entities/user-role.entity';
 import { Role } from '../role/entities/role.entity';
+import { AuditService } from '../../audit/audit.service';
 
 /**
  * The SINGLE source of truth for "what role does this user have" — `users.role_id` no longer
@@ -23,6 +24,8 @@ export class UserRoleService {
   constructor(
     @InjectRepository(UserRole)
     private readonly userRoles: Repository<UserRole>,
+
+    private readonly audit: AuditService,
   ) {}
 
   async getPrimaryRoleId(userId: number): Promise<number | null> {
@@ -114,10 +117,30 @@ export class UserRoleService {
    *  shape (`CreateUserDto.roleId: number`, a single-select dropdown), not a multi-role grant API.
    *  Accepts an optional transaction manager so UserService.create/update can keep this write in
    *  the same atomic unit of work as the Customer row (same convention as this codebase's other
-   *  manager-threaded writes — see CustomerService.createWithManager). */
-  async setPrimaryRole(userId: number, roleId: number, manager?: EntityManager): Promise<void> {
+   *  manager-threaded writes — see CustomerService.createWithManager). The audit insert uses the
+   *  SAME manager when one is passed, so it commits/rolls back atomically with the role-assignment
+   *  write and the caller's own User row — never a misleading audit entry for a change that didn't
+   *  actually persist. `actorId` is optional and omitted by boot-time seeding call sites
+   *  (BootstrapService's Super Admin seed) — those still produce an audit row (performedBy: null),
+   *  consistent with every other service in this codebase (see AuditService.record's own
+   *  `performedBy: dto.performedBy ?? null` fallback), rather than being special-cased out. */
+  async setPrimaryRole(userId: number, roleId: number, manager?: EntityManager, actorId?: number): Promise<void> {
     const repo = manager ? manager.getRepository(UserRole) : this.userRoles;
+    const previousRoleId = (await repo.findOne({ where: { userId }, order: { id: 'ASC' } }))?.roleId ?? null;
+
     await repo.delete({ userId });
     await repo.save(repo.create({ userId, roleId }));
+
+    await this.audit.record(
+      {
+        moduleName: 'user_roles',
+        entityId: userId,
+        action: 'ASSIGN_ROLE',
+        oldValue: { roleId: previousRoleId },
+        newValue: { roleId },
+        performedBy: actorId,
+      },
+      manager,
+    );
   }
 }

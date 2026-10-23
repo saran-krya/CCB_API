@@ -1,9 +1,10 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, In, Repository } from 'typeorm';
 import * as ExcelJS from 'exceljs';
 import { AttributeService } from '../attribute/attribute.service';
 import { CustomerService } from '../customer/customer.service';
+import { RolePermissionsService } from '../role-permissions/role-permissions.service';
 import { UnitCustomerSummaryDto } from '../customer/dto/customer-response.dto';
 import { AuditService } from '../../audit/audit.service';
 import { paginate } from '../../common/utils/pagination.util';
@@ -12,7 +13,7 @@ import { Community } from '../community/entities/community.entity';
 import { Property } from '../property/entities/property.entity';
 import { Unit } from '../unit/entities/unit.entity';
 import { User } from '../user/entities/user.entity';
-import { MeterReading, ReadingValidationStatus } from '../sftp/entities/meter-reading.entity';
+import { MeterReading, ReadingApprovalStatus, ReadingValidationStatus } from '../sftp/entities/meter-reading.entity';
 import {
   CreateMasterMeterDto,
   CreateSubMeterDto,
@@ -22,6 +23,7 @@ import {
   MeterUnitsOverviewQueryDto,
   MeterQueryDto,
   SetMeterStatusDto,
+  SetReadingApprovalDto,
   UpdateMasterMeterDto,
   UpdateSubMeterDto,
 } from './dto/meter.dto';
@@ -107,6 +109,7 @@ export class MeterService {
     private readonly auditService: AuditService,
     private readonly customerService: CustomerService,
     private readonly dataSource: DataSource,
+    private readonly rolePermissions: RolePermissionsService,
   ) {}
 
 
@@ -566,10 +569,29 @@ export class MeterService {
     return this.findOneSubMeter(saved.id);
   }
 
-  async updateSubMeter(id: number, dto: UpdateSubMeterDto, actorId?: number) {
+  async updateSubMeter(id: number, dto: UpdateSubMeterDto, actorId?: number, actorRoleId?: number) {
     const meter = await this.subMeters.findOne({ where: { id }, relations: ['unit', 'masterMeter'] });
     if (!meter) throw new NotFoundException('Sub meter not found');
     const oldValue = { ...meter };
+
+    // METER_MAPPING's own seeded description scopes it to "map, unmap, or change which unit a sub
+    // meter is mapped to" only — it is NOT a general sub-meter edit permission. This route's
+    // @Permission('METER_INVENTORY_EDIT', 'METER_MAPPING') OR-grant previously let a role holding
+    // ONLY METER_MAPPING push a change to any of the other 7 inventory fields too (RBAC
+    // security-assessment finding), since PermissionGuard only confirms SOME listed code matched,
+    // never which one, and the handler applied every field unconditionally regardless. Mirrors
+    // AttributeService.update's own precedent for the same class of problem: do the field-level
+    // check in the service (the one place that actually knows both the caller's real grants and
+    // which fields the request would change), not the route decorator (which can only express "any
+    // of these codes may call this handler at all").
+    const nonMappingFieldsRequested = (['serialNumber', 'mBusAddress', 'floor', 'meterMake', 'meterModel', 'installationDate', 'customerAccountNumber'] as const)
+      .some((field) => dto[field] !== undefined);
+    if (nonMappingFieldsRequested) {
+      const hasFullEdit = !!actorRoleId && (await this.rolePermissions.roleHasAction(actorRoleId, 'METER_INVENTORY_EDIT'));
+      if (!hasFullEdit) {
+        throw new ForbiddenException('METER_MAPPING only allows changing which unit this sub meter is mapped to — METER_INVENTORY_EDIT is required to change other sub meter details');
+      }
+    }
 
     if (dto.unitId !== undefined) {
       if (dto.unitId === null) {
@@ -1405,11 +1427,27 @@ export class MeterService {
     meterId: 'r.meterId',
     readingValue: 'r.readingValue',
     unit: 'propertyUnit.unitNumber',
+    // closingReading IS the real reading_value column under the frontend's own naming for this
+    // column (ReadingsListTab's sort key is literally 'closingReading', not 'readingValue') — a
+    // real SQL ORDER BY reaches it directly, same cheap path as the 4 columns above, unlike its 4
+    // genuinely-computed siblings below.
+    closingReading: 'r.readingValue',
   };
   // Real unit numbers are zero-padded (AZC-T01-01 .. AZC-T01-25), so a plain lexicographic sort on
   // unitNumber already yields correct ascending numeric order — no natural-sort logic needed.
   private static readonly DAILY_READINGS_DEFAULT_SORT_BY = 'unit';
   private static readonly DAILY_READINGS_DEFAULT_SORT_ORDER = 'ASC' as const;
+
+  // These 4 are COMPUTED fields (opening, consumption, 30-day average, deviation %) derived per-row
+  // from a separate reading-history lookup — they are not real columns on MeterReading at all, so no
+  // SQL `ORDER BY` can ever reach them directly; a request to sort by one of these can only be
+  // satisfied by fetching every matching row (not just one page), mapping all of them, sorting the
+  // mapped array, THEN paginating in memory — see the branch below. Explicit allowlist, not a
+  // pass-through of whatever string the caller sends: only a key in this exact Set ever reaches the
+  // in-memory sort comparator as an object-property lookup, never a raw user-supplied SQL identifier.
+  private static readonly DAILY_READINGS_COMPUTED_SORTABLE = new Set([
+    'openingReading', 'consumption', 'thirtyDayAvg', 'deviationPercent',
+  ]);
 
   async getDailyMeterReadings(query: DailyMeterReadingQueryDto) {
     // Range mode (e.g. a billing-cycle reading period) requires BOTH bounds — a lone startDate or
@@ -1432,7 +1470,11 @@ export class MeterService {
     // explicitly selected, so the default/unfiltered view silently excluded every missing unit
     // (e.g. Crest Tower A showed only its 1 real reading, never the other 24 missing ones). Clean/
     // Anomaly stay scoped to real rows only — missing items have no meaningful clean/anomaly state.
-    const includeMissing = !query.validationStatus;
+    // A sourceFileId request is scoped to one ingested file's own readings — a closed, known set of
+    // real rows with no "missing" concept to union in (a reading with no source file can never match
+    // this filter, by definition), so it always takes the real-rows-only path below regardless of
+    // validationStatus.
+    const includeMissing = !query.validationStatus && !query.sourceFileId;
 
     const qb = this.meterReadings
       .createQueryBuilder('r')
@@ -1442,7 +1484,12 @@ export class MeterService {
       .leftJoinAndSelect('r.property', 'property')
       .leftJoinAndSelect('r.community', 'community');
 
-    if (hasRange) {
+    // Scoping by the file itself (via the real source_file_id FK) is strictly more precise than
+    // requiring the caller to also know and pass the exact reading_date the file was ingested for —
+    // so a sourceFileId request replaces the date gate entirely rather than requiring both.
+    if (query.sourceFileId) {
+      qb.where('r.source_file_id = :sourceFileId', { sourceFileId: query.sourceFileId });
+    } else if (hasRange) {
       qb.where('r.readingDate BETWEEN :startDate AND :endDate', { startDate: query.startDate, endDate: query.endDate });
     } else {
       qb.where('r.readingDate = :date', { date });
@@ -1471,8 +1518,66 @@ export class MeterService {
     const effectiveSortOrder = query.sortBy
       ? (query.sortOrder === 'ASC' ? 'ASC' : 'DESC')
       : (query.sortOrder ?? MeterService.DAILY_READINGS_DEFAULT_SORT_ORDER);
-    const orderCol = MeterService.DAILY_READINGS_SORTABLE[effectiveSortBy] ?? 'propertyUnit.unitNumber';
-    qb.orderBy(orderCol, effectiveSortOrder);
+    const isComputedSort = MeterService.DAILY_READINGS_COMPUTED_SORTABLE.has(effectiveSortBy);
+    // A computed-field sort has no real column to ORDER BY, so skip the SQL-level ordering entirely
+    // for that case (the in-memory sort below is the only thing that decides row order) — ordering
+    // by an arbitrary fallback column here would be pure waste, not a correctness issue, but there's
+    // no reason to ask the DB to do work this request throws away.
+    if (!isComputedSort) {
+      const orderCol = MeterService.DAILY_READINGS_SORTABLE[effectiveSortBy] ?? 'propertyUnit.unitNumber';
+      qb.orderBy(orderCol, effectiveSortOrder);
+    }
+
+    if (!includeMissing && isComputedSort) {
+      // Sorting by a COMPUTED field (opening/consumption/30-day avg/deviation %) requires every
+      // matching row's full history-derived value before any row can be correctly ordered — there is
+      // no SQL ORDER BY that can reach these, so this fetches the FULL matching set (not just one
+      // page), maps all of them, sorts the mapped array by the requested field, THEN paginates in
+      // memory. This is the only way sorting by these columns is genuinely global across the whole
+      // filtered result set rather than just the current page — same strategy the union-with-missing
+      // path below already uses, just triggered by sort-key choice here instead of by missing-items
+      // being in play. Deliberately scoped to ONLY the computed-sort case: the common sort keys
+      // (unit/meterId/readingDate/readingValue/closingReading) keep using the cheap SQL-paginated
+      // path above unchanged, so ordinary usage pays no extra cost for this fix.
+      const allReadings = await qb.getMany();
+      if (allReadings.length === 0) {
+        return { items: [], pagination: { page, limit, total: 0, totalPages: 1 } };
+      }
+
+      const unitIds = allReadings.map((r) => r.propertyUnit?.id).filter((id): id is number => id != null);
+      const [history, customersByUnit] = await Promise.all([
+        this.getReadingHistoryByMeterId(allReadings.map((r) => r.meterId), asOfDate),
+        this.customerService.findByUnitIds(unitIds),
+      ]);
+      const allItems = allReadings.map((r) =>
+        this.mapDailyReadingToItem(
+          r,
+          history.get(r.meterId) ?? [],
+          r.propertyUnit?.id != null ? customersByUnit.get(r.propertyUnit.id) ?? [] : [],
+        ),
+      );
+
+      const sortDir = effectiveSortOrder === 'ASC' ? 1 : -1;
+      const sortKey = effectiveSortBy as 'openingReading' | 'consumption' | 'thirtyDayAvg' | 'deviationPercent';
+      allItems.sort((a, b) => {
+        // Nulls (e.g. a brand-new meter with no prior reading to compute consumption/deviation
+        // from) always sort last regardless of direction — a real negative-infinity sentinel would
+        // make "no data yet" look like "the most negative real value", which is wrong either way.
+        const av = a[sortKey];
+        const bv = b[sortKey];
+        if (av === null && bv === null) return 0;
+        if (av === null) return 1;
+        if (bv === null) return -1;
+        return (av - bv) * sortDir;
+      });
+
+      const total = allItems.length;
+      const pageItems = allItems.slice((page - 1) * limit, (page - 1) * limit + limit);
+      return {
+        items: pageItems,
+        pagination: { page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)) },
+      };
+    }
 
     if (!includeMissing) {
       const [readings, total] = await qb.skip((page - 1) * limit).take(limit).getManyAndCount();
@@ -1529,20 +1634,40 @@ export class MeterService {
     // Mirrors DAILY_READINGS_SORTABLE's column choices, but against the mapped item's own fields —
     // the two source queries can't share one SQL ORDER BY, so this re-sort is what actually decides
     // the union's final row order (readingDate is still the tiebreak for unit/meterId sorts, and
-    // meterId the tiebreak for readingDate, so ties never look arbitrarily shuffled).
+    // meterId the tiebreak for readingDate, so ties never look arbitrarily shuffled). A missing item
+    // has every computed field hardcoded null (findMissingReadingItems — there's nothing to compute
+    // from), so for a computed-sort key those rows always collate to the end regardless of
+    // direction, same null-last convention as the computed-sort branch above.
+    const numericNullLastSortKeys = ['closingReading', 'openingReading', 'consumption', 'thirtyDayAvg', 'deviationPercent'] as const;
     combined.sort((a, b) => {
+      const tieBreak = () => (a.readingDate ?? '').localeCompare(b.readingDate ?? '') || (a.meterId ?? '').localeCompare(b.meterId ?? '');
+
+      // readingValue (the real SQL column name) and closingReading (the frontend's own name for
+      // the same value) are the same field — both land here, same as DAILY_READINGS_SORTABLE's own
+      // closingReading -> r.readingValue alias in the non-union path above. For these and the 4
+      // genuinely-computed keys, nulls (missing items, or a meter with no prior reading to compute
+      // from) always collate to the end regardless of direction — a sentinel like -Infinity would
+      // make "no data" look like "the most negative real value" in descending order, which is wrong
+      // either way, so null placement is handled explicitly rather than folded into the generic
+      // numeric subtraction.
+      const numericKey = effectiveSortBy === 'readingValue' ? 'closingReading' : effectiveSortBy;
+      if ((numericNullLastSortKeys as readonly string[]).includes(numericKey)) {
+        const key = numericKey as typeof numericNullLastSortKeys[number];
+        const av = a[key];
+        const bv = b[key];
+        const primary = av === null && bv === null ? 0 : av === null ? 1 : bv === null ? -1 : (av - bv) * sortDir;
+        return primary !== 0 ? primary : tieBreak();
+      }
+
       let primary = 0;
       if (effectiveSortBy === 'unit') {
         primary = (a.unitNumber ?? '').localeCompare(b.unitNumber ?? '');
       } else if (effectiveSortBy === 'meterId') {
         primary = (a.meterId ?? '').localeCompare(b.meterId ?? '');
-      } else if (effectiveSortBy === 'readingValue') {
-        primary = (a.closingReading ?? -Infinity) - (b.closingReading ?? -Infinity);
       } else {
         primary = (a.readingDate ?? '').localeCompare(b.readingDate ?? '');
       }
-      if (primary !== 0) return primary * sortDir;
-      return (a.readingDate ?? '').localeCompare(b.readingDate ?? '') || (a.meterId ?? '').localeCompare(b.meterId ?? '');
+      return primary !== 0 ? primary * sortDir : tieBreak();
     });
 
     const total = combined.length;
@@ -1551,6 +1676,58 @@ export class MeterService {
       items: pageItems,
       pagination: { page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)) },
     };
+  }
+
+  /** Approve or revoke one or more Daily Meter Readings — the ONLY place in the backend that writes
+   *  MeterReading.approvalStatus for a human review action (ingestion's own auto-approve-on-clean
+   *  logic is the only other writer, and it never touches an already-persisted row). Confirmed
+   *  real, previously-missing capability: the Daily Meter Readings screen's Approve/Revoke buttons
+   *  only ever mutated client-side React state before this — approvalStatus in the database never
+   *  changed, so Billing Readiness/Field Inspection (which both query this real column directly)
+   *  kept seeing every "approved" anomaly as still pending, and the UI's own "Approved" badge
+   *  silently reverted on refresh since nothing was ever actually persisted.
+   *
+   *  `approve: true` sets APPROVED (approvedAt/approvedBy stamped with the real actor); `approve:
+   *  false` (Revoke) sets back to PENDING (approvedAt/approvedBy cleared — the enum has no separate
+   *  "revoked" value, so reverting to the one other real state IS the revoke). A missing id is
+   *  silently skipped (not an error) — bulk "Approve Selected" against a mixed/stale selection
+   *  should apply to whichever rows still exist, not fail the whole batch for one that doesn't.
+   *  `actorName` is a free-text label for approvedBy (varchar, matching ingestion's own 'SYSTEM'
+   *  convention) — resolved from the real acting User's name/email, never guessed. */
+  async setReadingApproval(dto: SetReadingApprovalDto, approve: boolean, actorId?: number): Promise<{ updated: number; skipped: number }> {
+    if (dto.readingIds.length === 0) return { updated: 0, skipped: 0 };
+
+    const actor = actorId ? await this.users.findOne({ where: { id: actorId }, select: ['id', 'firstName', 'lastName', 'email'] }) : null;
+    const actorName = actor ? (`${actor.firstName ?? ''} ${actor.lastName ?? ''}`.trim() || actor.email) : null;
+
+    return this.dataSource.transaction(async (manager) => {
+      const readings = await manager.find(MeterReading, { where: { id: In(dto.readingIds) } });
+      const foundIds = new Set(readings.map((r) => r.id));
+      const skipped = dto.readingIds.filter((id) => !foundIds.has(id)).length;
+      if (readings.length === 0) return { updated: 0, skipped };
+
+      const now = new Date();
+      for (const reading of readings) {
+        const oldValue = { id: reading.id, approvalStatus: reading.approvalStatus, approvedAt: reading.approvedAt, approvedBy: reading.approvedBy };
+        reading.approvalStatus = approve ? ReadingApprovalStatus.APPROVED : ReadingApprovalStatus.PENDING;
+        reading.approvedAt = approve ? now : null;
+        reading.approvedBy = approve ? actorName : null;
+        await manager.save(MeterReading, reading);
+        await this.auditService.record(
+          {
+            moduleName: 'MeterReading',
+            entityId: reading.id,
+            action: approve ? 'APPROVE' : 'REVOKE',
+            oldValue,
+            newValue: { id: reading.id, approvalStatus: reading.approvalStatus, approvedAt: reading.approvedAt, approvedBy: reading.approvedBy },
+            performedBy: actorId ?? null,
+          },
+          manager,
+        );
+      }
+
+      return { updated: readings.length, skipped };
+    });
   }
 
   async getDailyMeterReadingsFilterMetadata() {
@@ -1621,10 +1798,22 @@ export class MeterService {
     const anomaliesPending = Object.values(severityBreakdown).reduce((a, b) => a + b, 0);
 
     const metersMissing = Math.max(0, metersExpected - metersReceived);
+    // `dataQualityPct` here has always meant received/expected — coverage, not a measure of the
+    // CONTENT quality of readings that did arrive. That's a different, already-named concept on the
+    // sibling getPropertyReadingSummary response (`dataQualityPct` there = valid/received). Two
+    // response types using the identical field name for two different denominators is a confirmed,
+    // real naming collision — a consumer reading both would reasonably assume comparability and get
+    // wrong numbers. Fixed additively rather than by renaming/repurposing the existing field: grep
+    // confirms zero current frontend consumers read `summary.dataQualityPct` by name today, but
+    // renaming it outright would still be a breaking change for any OTHER caller of this public
+    // response shape that isn't visible from this repo. `coveragePct` is the new, unambiguously-named
+    // field the Reading Coverage % dashboard card should read instead — same calculation,
+    // unambiguous name, old field left fully intact.
     const dataQualityPct = metersExpected > 0 ? Number(((metersReceived / metersExpected) * 100).toFixed(2)) : 0;
+    const coveragePct = dataQualityPct;
 
     return {
-      date, metersExpected, metersReceived, metersMissing, dataQualityPct,
+      date, metersExpected, metersReceived, metersMissing, dataQualityPct, coveragePct,
       validReadings, anomaliesPending, anomaliesBySeverity: severityBreakdown,
     };
   }
@@ -1640,50 +1829,53 @@ export class MeterService {
       .addSelect('community.name', 'community')
       .addSelect('m.dtu_id', 'dtuId');
     if (communityId) expectedQb.andWhere('community.id = :communityId', { communityId });
-    const properties = await expectedQb.getRawMany<{ propertyId: number; property: string; community: string; dtuId: string | null }>();
 
-    const expectedCountRows = await this.subMeters
-      .createQueryBuilder('s')
-      .innerJoin('s.property', 'property')
-      .select('property.id', 'propertyId')
-      .addSelect('COUNT(*)', 'count')
-      .where('s.business_code IS NOT NULL')
-      .groupBy('property.id')
-      .getRawMany<{ propertyId: number; count: string }>();
+    // All 5 queries below are independent, read-only SELECTs against the same tables/date — none
+    // reads a value the others compute, so running them concurrently (rather than one-by-one,
+    // sequentially blocking on each `await`) changes nothing about correctness or result shape, only
+    // wall-clock time. No transaction/write is involved anywhere in this method.
+    const [properties, expectedCountRows, receivedRows, validRows, anomalyRows] = await Promise.all([
+      expectedQb.getRawMany<{ propertyId: number; property: string; community: string; dtuId: string | null }>(),
+      this.subMeters
+        .createQueryBuilder('s')
+        .innerJoin('s.property', 'property')
+        .select('property.id', 'propertyId')
+        .addSelect('COUNT(*)', 'count')
+        .where('s.business_code IS NOT NULL')
+        .groupBy('property.id')
+        .getRawMany<{ propertyId: number; count: string }>(),
+      this.meterReadings
+        .createQueryBuilder('r')
+        .innerJoin('r.property', 'property')
+        .select('property.id', 'propertyId')
+        .addSelect('COUNT(*)', 'count')
+        .where('r.reading_date = :date', { date })
+        .groupBy('property.id')
+        .getRawMany<{ propertyId: number; count: string }>(),
+      this.meterReadings
+        .createQueryBuilder('r')
+        .innerJoin('r.property', 'property')
+        .select('property.id', 'propertyId')
+        .addSelect('COUNT(*)', 'count')
+        .where('r.reading_date = :date', { date })
+        .andWhere("r.validation_status = 'clean'")
+        .groupBy('property.id')
+        .getRawMany<{ propertyId: number; count: string }>(),
+      this.meterReadings
+        .createQueryBuilder('r')
+        .innerJoin('r.property', 'property')
+        .select('property.id', 'propertyId')
+        .addSelect('r.anomaly_severity', 'severity')
+        .addSelect('COUNT(*)', 'count')
+        .where('r.reading_date = :date', { date })
+        .andWhere("r.validation_status = 'anomaly'")
+        .groupBy('property.id')
+        .addGroupBy('r.anomaly_severity')
+        .getRawMany<{ propertyId: number; severity: string; count: string }>(),
+    ]);
     const expectedByProperty = new Map(expectedCountRows.map((r) => [r.propertyId, Number(r.count)]));
-
-    const receivedRows = await this.meterReadings
-      .createQueryBuilder('r')
-      .innerJoin('r.property', 'property')
-      .select('property.id', 'propertyId')
-      .addSelect('COUNT(*)', 'count')
-      .where('r.reading_date = :date', { date })
-      .groupBy('property.id')
-      .getRawMany<{ propertyId: number; count: string }>();
     const receivedByProperty = new Map(receivedRows.map((r) => [r.propertyId, Number(r.count)]));
-
-    const validRows = await this.meterReadings
-      .createQueryBuilder('r')
-      .innerJoin('r.property', 'property')
-      .select('property.id', 'propertyId')
-      .addSelect('COUNT(*)', 'count')
-      .where('r.reading_date = :date', { date })
-      .andWhere("r.validation_status = 'clean'")
-      .groupBy('property.id')
-      .getRawMany<{ propertyId: number; count: string }>();
     const validByProperty = new Map(validRows.map((r) => [r.propertyId, Number(r.count)]));
-
-    const anomalyRows = await this.meterReadings
-      .createQueryBuilder('r')
-      .innerJoin('r.property', 'property')
-      .select('property.id', 'propertyId')
-      .addSelect('r.anomaly_severity', 'severity')
-      .addSelect('COUNT(*)', 'count')
-      .where('r.reading_date = :date', { date })
-      .andWhere("r.validation_status = 'anomaly'")
-      .groupBy('property.id')
-      .addGroupBy('r.anomaly_severity')
-      .getRawMany<{ propertyId: number; severity: string; count: string }>();
     const anomaliesByProperty = new Map<number, { critical: number; high: number; medium: number }>();
     for (const row of anomalyRows) {
       const entry = anomaliesByProperty.get(row.propertyId) ?? { critical: 0, high: 0, medium: 0 };
@@ -1741,6 +1933,153 @@ export class MeterService {
       community: c.name,
       ...(countsByCommunity.get(c.id) ?? { critical: 0, high: 0, medium: 0, low: 0 }),
     }));
+  }
+
+  /** Valid/anomaly/missing reading counts rolled up to community level, for one calendar date —
+   *  powers the SFTP Monitor "Reading Status by Community" chart (previously hardcoded to an empty
+   *  array; see SftpMonitorShell.tsx).
+   *
+   *  `expected`/`valid`/`anomaly` use the exact same definitions as getPropertyReadingSummary above
+   *  (expected = sub-meters with a business code; valid/anomaly = meter_readings rows for the date
+   *  with that validation_status), grouped one level higher. `missing` is derived from a DIRECT
+   *  `received` count (every meter_readings row for the date, regardless of validation_status) —
+   *  the same `received` getPropertyReadingSummary and getDailyMeterReadingsSummary both already use
+   *  — as `max(0, expected - received)`, matching getDailyMeterReadingsSummary's own `metersMissing`
+   *  formula exactly. This previously derived missing as `expected - valid - anomaly`, which silently
+   *  assumed every real row's validation_status is exactly 'clean' or 'anomaly' with no third state,
+   *  no duplicate, and no other value ever landing in the column — an assumption this method never
+   *  verified and the sibling methods never relied on. Deriving from a direct `received` count instead
+   *  removes that assumption entirely: if a future row-level status is ever introduced, `received`
+   *  still counts it correctly, `missing` stays accurate, and this method's definition of "missing"
+   *  can never drift from getDailyMeterReadingsSummary's. */
+  async getReadingStatusByCommunity(date: string) {
+    // 5 independent, read-only SELECTs — none depends on another's result, no transaction/write
+    // involved — so running them concurrently only changes wall-clock time, never correctness or
+    // result shape. Same reasoning as getPropertyReadingSummary's own parallelization above.
+    const [communities, expectedRows, receivedRows, validRows, anomalyRows] = await Promise.all([
+      this.communities.find({ select: ['id', 'name'], order: { name: 'ASC' } }),
+      this.subMeters
+        .createQueryBuilder('s')
+        .innerJoin('s.property', 'property')
+        .innerJoin('property.community', 'community')
+        .select('community.id', 'communityId')
+        .addSelect('COUNT(*)', 'count')
+        .where('s.business_code IS NOT NULL')
+        .groupBy('community.id')
+        .getRawMany<{ communityId: number; count: string }>(),
+      this.meterReadings
+        .createQueryBuilder('r')
+        .innerJoin('r.community', 'community')
+        .select('community.id', 'communityId')
+        .addSelect('COUNT(*)', 'count')
+        .where('r.reading_date = :date', { date })
+        .groupBy('community.id')
+        .getRawMany<{ communityId: number; count: string }>(),
+      this.meterReadings
+        .createQueryBuilder('r')
+        .innerJoin('r.community', 'community')
+        .select('community.id', 'communityId')
+        .addSelect('COUNT(*)', 'count')
+        .where('r.reading_date = :date', { date })
+        .andWhere("r.validation_status = 'clean'")
+        .groupBy('community.id')
+        .getRawMany<{ communityId: number; count: string }>(),
+      this.meterReadings
+        .createQueryBuilder('r')
+        .innerJoin('r.community', 'community')
+        .select('community.id', 'communityId')
+        .addSelect('COUNT(*)', 'count')
+        .where('r.reading_date = :date', { date })
+        .andWhere("r.validation_status = 'anomaly'")
+        .groupBy('community.id')
+        .getRawMany<{ communityId: number; count: string }>(),
+    ]);
+    const expectedByCommunity = new Map(expectedRows.map((r) => [r.communityId, Number(r.count)]));
+    const receivedByCommunity = new Map(receivedRows.map((r) => [r.communityId, Number(r.count)]));
+    const validByCommunity = new Map(validRows.map((r) => [r.communityId, Number(r.count)]));
+    const anomalyByCommunity = new Map(anomalyRows.map((r) => [r.communityId, Number(r.count)]));
+
+    return communities.map((c) => {
+      const expected = expectedByCommunity.get(c.id) ?? 0;
+      const received = receivedByCommunity.get(c.id) ?? 0;
+      const valid = validByCommunity.get(c.id) ?? 0;
+      const anomaly = anomalyByCommunity.get(c.id) ?? 0;
+      const missing = Math.max(0, expected - received);
+      return { communityId: c.id, community: c.name, valid, anomaly, missing };
+    });
+  }
+
+  /** Received-vs-missing reading counts, one point per calendar day in [startDate, endDate] —
+   *  powers the Daily Meter Reading Dashboard's new trend chart. `expected`/`received`/`missing`
+   *  use the EXACT same definitions as the other daily-reading summary methods in this class
+   *  (expected = sub-meters with a business code; received = meter_readings rows for that date,
+   *  any validation_status; missing = max(0, expected - received)) — this is a new TIME AXIS over
+   *  an existing, already-consistent calculation, not a new business rule.
+   *
+   *  `expected` is the one live, current count (same convention getDailyMeterReadingsSummary/
+   *  getPropertyReadingSummary/getReadingStatusByCommunity already use) applied uniformly to every
+   *  day in the range — NOT a historically-exact "how many meters were registered as of that past
+   *  date" count. A sub-meter's own `created_at` would make that technically available, but every
+   *  sibling endpoint already treats "expected" as the live registry snapshot with no such
+   *  historical awareness; diverging only for this one new endpoint would make trend numbers
+   *  internally inconsistent with the Dashboard's own current-day stat cards it sits beside.
+   *
+   *  Every calendar day in the range is included explicitly (generated in code, not just the days
+   *  that happen to have rows) — a day with zero readings is real signal (100% missing that day),
+   *  not an absence to silently skip, since `expected` is always known. No value here is fabricated
+   *  or interpolated: a day with zero real rows reports received=0, missing=expected, exactly what
+   *  the data says. */
+  async getDailyReadingsTrend(
+    startDate: string,
+    endDate: string,
+    communityId?: number,
+    propertyId?: number,
+  ): Promise<{ date: string; expected: number; received: number; missing: number }[]> {
+    const expectedQb = this.subMeters
+      .createQueryBuilder('s')
+      .innerJoin('s.property', 'property')
+      .innerJoin('property.community', 'community')
+      .where('s.business_code IS NOT NULL');
+    if (communityId) expectedQb.andWhere('community.id = :communityId', { communityId });
+    if (propertyId) expectedQb.andWhere('property.id = :propertyId', { propertyId });
+
+    const receivedQb = this.meterReadings
+      .createQueryBuilder('r')
+      .innerJoin('r.property', 'property')
+      .innerJoin('r.community', 'community')
+      .select('r.reading_date', 'readingDate')
+      .addSelect('COUNT(*)', 'count')
+      .where('r.reading_date BETWEEN :startDate AND :endDate', { startDate, endDate })
+      .groupBy('r.reading_date');
+    if (communityId) receivedQb.andWhere('community.id = :communityId', { communityId });
+    if (propertyId) receivedQb.andWhere('property.id = :propertyId', { propertyId });
+
+    // Independent, read-only SELECTs — same reasoning as the Promise.all above in this class.
+    const [expected, receivedRows] = await Promise.all([
+      expectedQb.getCount(),
+      receivedQb.getRawMany<{ readingDate: string | Date; count: string }>(),
+    ]);
+    const receivedByDate = new Map(
+      receivedRows.map((r) => {
+        const d = r.readingDate instanceof Date ? r.readingDate : new Date(r.readingDate);
+        // Local date parts, not toISOString() — the same off-by-one risk already documented
+        // elsewhere in this codebase for date-typed DB columns read back as JS Date objects (UTC
+        // conversion can shift the calendar day backward for a timezone ahead of UTC).
+        const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        return [key, Number(r.count)];
+      }),
+    );
+
+    const points: { date: string; expected: number; received: number; missing: number }[] = [];
+    const cursor = new Date(`${startDate}T00:00:00`);
+    const end = new Date(`${endDate}T00:00:00`);
+    while (cursor <= end) {
+      const dateKey = `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}-${String(cursor.getDate()).padStart(2, '0')}`;
+      const received = receivedByDate.get(dateKey) ?? 0;
+      points.push({ date: dateKey, expected, received, missing: Math.max(0, expected - received) });
+      cursor.setDate(cursor.getDate() + 1);
+    }
+    return points;
   }
 
   async getMeterReadingHistory(meterId: string, upToDate?: string): Promise<{ date: string; consumption: number }[]> {
