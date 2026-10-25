@@ -13,6 +13,12 @@ export class RenameBillingReadinessActions1790158765594 implements MigrationInte
     name = 'RenameBillingReadinessActions1790158765594'
 
     public async up(queryRunner: QueryRunner): Promise<void> {
+        // Fresh install: `actions` doesn't exist at all yet (migrations run before
+        // `synchronize: true` does — see 1788342228029's own comment for the confirmed cold-start
+        // evidence), which would fail the UPDATEs below outright. Safe to skip: bootstrap's own
+        // seed-data.ts already seeds these actions with their final, renamed display names.
+        if (!(await queryRunner.hasTable('actions'))) return;
+
         await queryRunner.query(`UPDATE actions SET name = 'View' WHERE code = 'BILLING_READINESS_VIEW'`);
         await queryRunner.query(`UPDATE actions SET name = 'View Property Details' WHERE code = 'BILLING_READINESS_PROPERTY_VIEW'`);
     }

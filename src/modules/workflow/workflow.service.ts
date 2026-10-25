@@ -22,16 +22,18 @@ const DEPARTMENTS = Object.values(WorkflowDepartment);
 //   BILL_RUN       -> Billing Management -> Bill Run Register
 //   BILLING_CYCLE  -> existing Billing Cycle Finance approval screen
 //
-// Tariff and Billing Cycle each have TWO action codes gating the same approve mutation via OR
-// semantics (PermissionGuard — a role needs either one): the Business-Admin-screen code and a
-// separate Finance-facing code, so Finance never has to depend on Business Admin access.
-// setApprovers() below treats them as ONE logical permission — granting/revoking both together for
-// a role — matching how the real endpoint already treats them. Bill Run has no such split;
+// Tariff and Billing Cycle each USED TO have two action codes gating the same approve mutation via
+// OR semantics (the Business-Admin-screen code and a separate Finance-facing code) — these were
+// confirmed to be literal duplicates for the same capability and consolidated onto one surviving
+// code each by 1792800000000-ConsolidateDuplicateActionCodes.ts (see resource-catalog.ts's own doc
+// comment for the full before/after map). setApprovers() grants/revokes whatever this array holds
+// for a role; it was already written to treat multiple codes as one logical permission, so
+// shrinking to a single code per type needed no logic change here. Bill Run was never split;
 // BILL_RUN_APPROVE alone gates its approve/reject/return.
 export const APPROVE_ACTION_CODES: Record<WorkflowType, string[]> = {
-  [WorkflowType.TARIFF]: ['TARIFF_APPROVE', 'TARIFF_APPROVAL_APPROVE'],
+  [WorkflowType.TARIFF]: ['TARIFF_APPROVE'],
   [WorkflowType.BILL_RUN]: ['BILL_RUN_APPROVE'],
-  [WorkflowType.BILLING_CYCLE]: ['BILLING_CYCLE_APPROVE', 'BILLING_CYCLE_APPROVAL_APPROVE'],
+  [WorkflowType.BILLING_CYCLE]: ['BILLING_CYCLE_APPROVE'],
 };
 
 // Centralizes "which real domain action code(s) let a user see a workflowType's RUNTIME state"
@@ -40,13 +42,13 @@ export const APPROVE_ACTION_CODES: Record<WorkflowType, string[]> = {
 // questions: "can you define how approval works" vs "can you see where THIS record's approval
 // currently stands." Each list is that domain's real view code(s) plus its approve code(s) —
 // approve already OR-implies view everywhere else in this codebase (e.g. TariffController's own
-// findOne is gated on TARIFF_VIEW/TARIFF_APPROVAL_VIEW; nothing here invents a new permission or
-// grants more than a user already effectively has via their real domain access). See
+// findOne is gated on TARIFF_VIEW alone, post-consolidation; nothing here invents a new permission
+// or grants more than a user already effectively has via their real domain access). See
 // WorkflowOrchestrationService.assertCanViewRuntime for the actual check this map feeds.
 export const RUNTIME_VIEW_ACTION_CODES: Record<WorkflowType, string[]> = {
-  [WorkflowType.TARIFF]: ['TARIFF_VIEW', 'TARIFF_APPROVAL_VIEW', ...APPROVE_ACTION_CODES[WorkflowType.TARIFF]],
+  [WorkflowType.TARIFF]: ['TARIFF_VIEW', ...APPROVE_ACTION_CODES[WorkflowType.TARIFF]],
   [WorkflowType.BILL_RUN]: ['BILL_RUN_VIEW', ...APPROVE_ACTION_CODES[WorkflowType.BILL_RUN]],
-  [WorkflowType.BILLING_CYCLE]: ['VIEW_BILLING_CYCLE', 'BILLING_CYCLE_APPROVAL_VIEW', ...APPROVE_ACTION_CODES[WorkflowType.BILLING_CYCLE]],
+  [WorkflowType.BILLING_CYCLE]: ['VIEW_BILLING_CYCLE', ...APPROVE_ACTION_CODES[WorkflowType.BILLING_CYCLE]],
 };
 
 @Injectable()

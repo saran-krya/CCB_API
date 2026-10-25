@@ -71,7 +71,13 @@ export class AddIamPolicyTables1792500000000 implements MigrationInterface {
             `);
         }
 
-        if (!(await tableExists('role_policies'))) {
+        // Fresh install: `roles` doesn't exist yet (migrations run before `synchronize: true` does —
+        // see 1788342228029's own comment for the confirmed cold-start evidence), which would fail
+        // role_policies' own inline FK (REFERENCES roles(id)) outright, even though `resources`/
+        // `policies`/`policy_statements` above have no such dependency and are always safe to
+        // create. Safe to skip only this one table here: `synchronize` creates `role_policies` (FK
+        // included) directly from the current RolePolicy entity definition right after migrations finish.
+        if (!(await tableExists('role_policies')) && (await tableExists('roles'))) {
             await queryRunner.query(`
                 CREATE TABLE role_policies (
                     id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,

@@ -23,6 +23,12 @@ export class RemoveCompanyKycVerificationAction1790750942000 implements Migratio
     name = 'RemoveCompanyKycVerificationAction1790750942000'
 
     public async up(queryRunner: QueryRunner): Promise<void> {
+        // Fresh install: `actions` doesn't exist at all yet (migrations run before
+        // `synchronize: true` does — see 1788342228029's own comment for the confirmed cold-start
+        // evidence), which would fail the SELECT below outright rather than just return no rows.
+        // Safe to skip: bootstrap's own seed-data.ts never seeds either retired code at all.
+        if (!(await queryRunner.hasTable('actions'))) return;
+
         const actions = await queryRunner.query(
             `SELECT id FROM actions WHERE code IN ('VERIFY_COMPANY_KYC', 'REGISTRATION_APPROVAL_VERIFY_COMPANY_KYC') AND deleted_at IS NULL`,
         );

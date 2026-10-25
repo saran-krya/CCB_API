@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
 import { Resource } from './entities/resource.entity';
@@ -10,6 +10,7 @@ import { Action } from '../actions/entities/action.entity';
 import { RESOURCES } from './resource-catalog';
 import { CreatePolicyDto, UpdatePolicyDto } from './dto/policy.dto';
 import { AuditService } from '../../audit/audit.service';
+import { ROLES } from '@app/common/constants/global';
 
 @Injectable()
 export class IamService {
@@ -37,12 +38,16 @@ export class IamService {
     for (const seed of RESOURCES) {
       let existing = await this.resources.findOne({ where: { code: seed.code } });
       if (existing) {
-        const needsUpdate = existing.name !== seed.name || existing.displayOrder !== seed.displayOrder;
+        const needsUpdate =
+          existing.name !== seed.name ||
+          existing.displayOrder !== seed.displayOrder ||
+          (existing.description ?? undefined) !== seed.description;
         if (needsUpdate) {
           existing.name = seed.name;
           existing.displayOrder = seed.displayOrder;
+          existing.description = seed.description;
           existing = await this.resources.save(existing);
-          this.logger.debug(`Corrected resource "${seed.code}" (name/displayOrder)`);
+          this.logger.debug(`Corrected resource "${seed.code}" (name/displayOrder/description)`);
         }
       } else {
         existing = await this.resources.save(
@@ -310,6 +315,17 @@ export class IamService {
     const existing = await this.rolePolicies.findOne({ where: { roleId, policyId } });
     if (!existing) return; // already detached — idempotent, not an error
 
+    // SUPER_ADMIN must keep every active, supported permission auto-granted at all times
+    // (ensureAdminPolicyGrants reconciles this on every boot, but only ever ADDS missing grants —
+    // it never re-attaches a Policy someone manually detached in between restarts). Detaching
+    // anything from this one role, by this exact name, is never a safe/supported action.
+    const role = await this.roles.findOne({ where: { id: roleId } });
+    if (role?.roleName === ROLES.SUPER_ADMIN) {
+      throw new ForbiddenException(
+        'Cannot detach a policy from SUPER_ADMIN — it must always retain full access.',
+      );
+    }
+
     await this.rolePolicies.remove(existing);
     await this.audit.record({
       moduleName: 'role_policies',
@@ -341,5 +357,155 @@ export class IamService {
   async roleHasActionViaPolicy(roleId: number, actionCode: string): Promise<boolean> {
     const codes = await this.getActionCodesGrantedByPolicies(roleId);
     return codes.has(actionCode);
+  }
+
+  /** The Policy-model counterpart to RolePermissionsService.ensureAdminGrants — keeps SUPER_ADMIN's
+   *  (and ADMIN's, if a distinct role exists) attached Policy in sync with every active,
+   *  Resource-mapped Action code. Necessary because real authorization now resolves exclusively
+   *  through Policies (roleHasActionViaPolicy) — without this, an Action added to seed-data.ts after
+   *  the one-time IAM backfill migration is auto-"granted" in the legacy tree by ensureAdminGrants
+   *  but never reaches SUPER_ADMIN/ADMIN's real, enforced Policy, silently leaving the admin role
+   *  unable to use its own endpoints.
+   *
+   *  SUPER_ADMIN is the application's root/owner account and gets EVERY active action, full stop —
+   *  `excludedActionCodesForAdmin` is never applied to it. It still applies to ADMIN (if a distinct
+   *  role exists): per explicit instruction, SUPER_ADMIN's own full-access requirement must never
+   *  silently broaden what ADMIN gets handed automatically — Finance/approval/workflow-approver-
+   *  management capabilities for ADMIN still require an explicit grant via its own Policy. This is
+   *  scoped to the Policy model only (not RolePermissionsService.ensureAdminGrants' legacy-tree
+   *  equivalent) since the legacy tree is no longer consulted for any real authorization decision —
+   *  only Policies are.
+   *
+   *  Creates the role's own system-managed Policy (named "<RoleName> Policy", matching
+   *  AddIamPolicyBackfill's own naming convention) and attaches it if one doesn't exist yet — this is
+   *  the ONLY case that happens on a genuinely fresh install: that migration only backfills a Policy
+   *  for a role that already had legacy role_permissions rows at the time it ran, and on a brand-new
+   *  database migrations run (via `migrationsRun: true`) BEFORE bootstrap's seed() has created any
+   *  Role/RolePermission rows at all — so without this, SUPER_ADMIN would boot with zero Policy
+   *  grants on a fresh install, and the frontend's Policy-based sidebar/action gating would show
+   *  nothing for it. On every other boot (the Policy already exists, from either this method's own
+   *  prior run or a successful backfill-migration run) this only FILLS GAPS — adds a missing action
+   *  to a resource's existing statement, or a new statement for a resource not yet covered — never
+   *  removes a grant, so a manual revocation via the Policy editor is never silently undone.
+   *  Idempotent and safe to run on every boot, same as ensureResourceCatalog. */
+  async ensureAdminPolicyGrants(excludedActionCodesForAdmin: string[] = []): Promise<void> {
+    const adminRoles = await this.roles.find({ where: [{ roleName: 'SUPER_ADMIN' }, { roleName: 'ADMIN' }] });
+    if (adminRoles.length === 0) return;
+
+    const [activeActions, allResources] = await Promise.all([
+      this.actions.find({ where: { isActive: true } }),
+      this.resources.find(),
+    ]);
+    const activeCodeSet = new Set(activeActions.map((a) => a.code));
+    const resourceRowByCode = new Map(allResources.map((r) => [r.code, r]));
+
+    // resourceCode -> every currently-active action code it has, BEFORE any role-specific exclusion
+    // is applied below (per role, inside the loop — SUPER_ADMIN excludes nothing; ADMIN still
+    // excludes excludedActionCodesForAdmin).
+    const activeByResourceCode = new Map<string, Set<string>>();
+    for (const resource of RESOURCES) {
+      const active = resource.actionCodes.filter((code) => activeCodeSet.has(code));
+      if (active.length > 0) activeByResourceCode.set(resource.code, new Set(active));
+    }
+
+    for (const role of adminRoles) {
+      const excluded = role.roleName === 'SUPER_ADMIN' ? new Set<string>() : new Set(excludedActionCodesForAdmin);
+      const grantableByResourceCode = new Map<string, Set<string>>();
+      for (const [resourceCode, activeCodes] of activeByResourceCode) {
+        const grantable = [...activeCodes].filter((code) => !excluded.has(code));
+        if (grantable.length > 0) grantableByResourceCode.set(resourceCode, new Set(grantable));
+      }
+
+      let rolePolicyRows = await this.rolePolicies.find({
+        where: { roleId: role.id },
+        relations: { policy: { statements: true } },
+      });
+
+      if (rolePolicyRows.length === 0) {
+        const policyName = `${role.roleName} Policy`;
+        // Defensive: reuse a Policy already named this (e.g. a prior partial run, or one the
+        // backfill migration created for a different role entirely before this role existed) rather
+        // than failing on the unique-name constraint.
+        let policy = await this.policies.findOne({ where: { name: policyName } });
+        if (!policy) {
+          policy = await this.policies.save(
+            this.policies.create({
+              name: policyName,
+              description:
+                `System-managed Policy granting "${role.roleName}" every active, supported resource/action — ` +
+                'kept in sync automatically on every boot (IamService.ensureAdminPolicyGrants). Edit freely: ' +
+                'this only ever adds a missing grant, never removes one you revoke here.',
+            }),
+          );
+        }
+        await this.rolePolicies.save(this.rolePolicies.create({ roleId: role.id, policyId: policy.id }));
+        this.logger.log(
+          `ensureAdminPolicyGrants: created "${policyName}" and attached it to "${role.roleName}" — no Policy ` +
+            'existed yet (expected on a fresh install, before the role has any legacy grants for the one-time ' +
+            'backfill migration to carry forward)',
+        );
+        rolePolicyRows = await this.rolePolicies.find({
+          where: { roleId: role.id },
+          relations: { policy: { statements: true } },
+        });
+      }
+
+      const primaryPolicy = rolePolicyRows[0].policy!;
+
+      // The union of what's ALREADY granted across EVERY Policy attached to this role — not just the
+      // primary one (a role can have more than one Policy attached; see AttachPolicyDto) — so a code
+      // some other attached Policy already covers is never redundantly re-granted into the primary
+      // Policy's own statements too. Writes themselves still land only in the primary Policy.
+      const alreadyGranted = new Set<string>();
+      for (const row of rolePolicyRows) {
+        for (const statement of row.policy?.statements ?? []) {
+          if (statement.effect !== 'Allow') continue;
+          for (const code of statement.actions) alreadyGranted.add(code);
+        }
+      }
+
+      const statementByResourceId = new Map((primaryPolicy.statements ?? []).map((s) => [s.resourceId, s]));
+      let changed = false;
+
+      for (const [resourceCode, grantableCodes] of grantableByResourceCode) {
+        const resourceRow = resourceRowByCode.get(resourceCode);
+        if (!resourceRow) continue;
+
+        const missing = [...grantableCodes].filter((c) => !alreadyGranted.has(c));
+        if (missing.length === 0) continue;
+
+        const existingStatement = statementByResourceId.get(resourceRow.id);
+        if (existingStatement) {
+          existingStatement.actions = [...existingStatement.actions, ...missing];
+          await this.statements.save(existingStatement);
+          changed = true;
+        } else {
+          const created = this.statements.create({
+            policyId: primaryPolicy.id,
+            resourceId: resourceRow.id,
+            effect: 'Allow',
+            actions: missing,
+          });
+          await this.statements.save(created);
+          changed = true;
+        }
+      }
+
+      if (!changed) continue;
+
+      // Re-read and self-verify, matching this codebase's own established migration pattern — throw
+      // (and let the caller's try/catch log it, same as every other boot-time ensure* call) rather
+      // than silently leave a partially-synced admin Policy.
+      const refreshed = await this.getActionCodesGrantedByPolicies(role.id);
+      const stillMissing = [...grantableByResourceCode.values()]
+        .flatMap((codes) => [...codes])
+        .filter((code) => !refreshed.has(code));
+      if (stillMissing.length > 0) {
+        throw new Error(
+          `ensureAdminPolicyGrants self-check failed for role "${role.roleName}": still missing ${stillMissing.join(', ')}`,
+        );
+      }
+      this.logger.log(`ensureAdminPolicyGrants: synced "${role.roleName}"'s Policy with the active Resource/Action catalog`);
+    }
   }
 }

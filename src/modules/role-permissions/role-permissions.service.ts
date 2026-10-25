@@ -18,6 +18,7 @@ import { PModule } from '../pmodules/entities/pmodule.entity';
 import { Screen } from '../screens/entities/screen.entity';
 import { SaveRoleWithPermissionsDto } from './dto/save-role-with-permissions.dto';
 import { AuditService } from '../../audit/audit.service';
+import { ROLES } from '@app/common/constants/global';
 import { IamService } from '../iam/iam.service';
 
 @Injectable()
@@ -374,6 +375,16 @@ export class RolePermissionsService {
     return this.iamService.roleHasActionViaPolicy(roleId, actionCode);
   }
 
+  /** The full set of Action codes a role actually holds via its attached Policies — same resolution
+   *  path as roleHasAction/PermissionGuard (IamService.getActionCodesGrantedByPolicies), just
+   *  returning every granted code at once instead of checking one. Used by `GET /auth/me/actions` so
+   *  the frontend can drive Policy-based sidebar visibility from the exact same source of truth the
+   *  backend's own authorization guard uses — never the legacy role_permissions tree. */
+  async getMyActionCodes(roleId: number): Promise<string[]> {
+    const codes = await this.iamService.getActionCodesGrantedByPolicies(roleId);
+    return [...codes];
+  }
+
   async ensureAdminGrants(excludedActionCodes: string[] = []): Promise<void> {
     const adminRoles = await this.roleRepository.find({
       where: [{ roleName: 'SUPER_ADMIN' }, { roleName: 'ADMIN' }],
@@ -628,6 +639,16 @@ export class RolePermissionsService {
     if (!role) {
       throw new NotFoundException(
         "Role not found",
+      );
+    }
+
+    // RolesGuard's SUPER_ADMIN bypass and ensureAdminPolicyGrants/ensureAdminGrants's reconciliation
+    // both key off this literal string (see common/guards/roles.guard.ts and iam.service.ts) — an
+    // edit that renamed it away would silently strand the system with no role either mechanism
+    // recognizes as root, on this role's very next grant-reconciliation pass or guard check.
+    if (role.roleName === ROLES.SUPER_ADMIN && dto.roleName !== ROLES.SUPER_ADMIN) {
+      throw new ConflictException(
+        "SUPER_ADMIN's role name is relied on throughout the system and cannot be changed.",
       );
     }
 

@@ -3,9 +3,9 @@ import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { AuthenticatedUser } from '../../auth/interfaces/authenticated-user.interface';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Permission } from '../../common/decorators/permission.decorator';
-import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 import { CreateUserDto, UpdateUserDto } from './dto/create-user.dto';
 import { UpdatePreferencesDto } from './dto/update-preferences.dto';
+import { UserQueryDto } from './dto/user-query.dto';
 import { UserService } from './user.service';
 
 @ApiBearerAuth()
@@ -22,8 +22,8 @@ export class UserController {
   }
 
   @Get()
-  @Permission('USER_OVERVIEW')
-  findAll(@Query() query: PaginationQueryDto) {
+  @Permission('VIEW_USER')
+  findAll(@Query() query: UserQueryDto) {
     return this.users.findAll(query);
   }
 
@@ -34,7 +34,12 @@ export class UserController {
     return this.users.getProfile(user.sub);
   }
 
+  // Populates the "Reporting Manager" picker in User create/edit (UserForm.tsx) — real staff data
+  // (names, employee codes, roles), same reasoning as field-inspectors below, gated on whichever of
+  // User create/edit the picker is reachable from. Previously had no guard at all (any authenticated
+  // staff member, any role, could list it) — found during the Policy-based authorization audit.
   @Get("reporting-managers")
+  @Permission('CREATE_USER', 'EDIT_USER')
   getReportingManagers() {
     return this.users.getReportingManagers();
   }
@@ -56,15 +61,8 @@ export class UserController {
     return this.users.updateOwnPreferences(user.sub, dto);
   }
 
-  @Get("dashboard-summary")
-  @Permission('USER_OVERVIEW')
-  getDashboardSummary() {
-    return this.users.getDashboard();
-  }
-
-
   @Get(":id")
-  @Permission('USER_OVERVIEW')
+  @Permission('VIEW_USER')
   findOne(@Param("id") id: number) {
     return this.users.findOne(id);
   }

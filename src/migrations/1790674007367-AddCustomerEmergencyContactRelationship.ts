@@ -15,6 +15,13 @@ export class AddCustomerEmergencyContactRelationship1790674007367 implements Mig
     name = 'AddCustomerEmergencyContactRelationship1790674007367'
 
     public async up(queryRunner: QueryRunner): Promise<void> {
+        // Fresh install: `customers` doesn't exist yet (migrations run before `synchronize: true`
+        // does — see 1788342228029's own comment for the confirmed cold-start evidence), and
+        // `queryRunner.hasColumn` throws outright on a missing table rather than returning false.
+        // Safe to skip: `synchronize` creates `customers` immediately after migrations finish, with
+        // this column already on it from the current Customer entity definition.
+        if (!(await queryRunner.hasTable('customers'))) return;
+
         const hasColumn = await queryRunner.hasColumn('customers', 'emergency_contact_relationship');
         if (!hasColumn) {
             await queryRunner.query(`ALTER TABLE \`customers\` ADD \`emergency_contact_relationship\` varchar(40) NULL`);

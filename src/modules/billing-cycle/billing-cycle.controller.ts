@@ -46,14 +46,14 @@ export class BillingCycleController {
   }
 
   @Get('metaFilters')
-  @Permission('VIEW_BILLING_CYCLE', 'BILLING_CYCLE_APPROVAL_VIEW')
+  @Permission('VIEW_BILLING_CYCLE')
   @ApiOperation({ summary: 'Get filter metadata for the billing cycle list UI' })
   getFilterMetadata() {
     return this.billingCycles.getFilterMetadata();
   }
 
   @Get()
-  @Permission('VIEW_BILLING_CYCLE', 'BILLING_CYCLE_APPROVAL_VIEW')
+  @Permission('VIEW_BILLING_CYCLE')
   @ApiOperation({ summary: 'List billing cycles with pagination and filters' })
   findAll(@Query() query: BillingCycleQueryDto) {
     return this.billingCycles.findAll(query);
@@ -71,7 +71,7 @@ export class BillingCycleController {
   }
 
   @Get(':id')
-  @Permission('VIEW_BILLING_CYCLE', 'BILLING_CYCLE_APPROVAL_VIEW')
+  @Permission('VIEW_BILLING_CYCLE')
   @ApiOperation({ summary: 'Get billing cycle by ID' })
   @ApiParam({ name: 'id', type: Number })
   findOne(@Param('id', ParseIntPipe) id: number) {
@@ -108,7 +108,7 @@ export class BillingCycleController {
   }
 
   @Patch(':id/approve')
-  @Permission('BILLING_CYCLE_APPROVE', 'BILLING_CYCLE_APPROVAL_APPROVE')
+  @Permission('BILLING_CYCLE_APPROVE')
   @ApiOperation({ summary: 'Approve a pending billing cycle version (Business Admin or Finance grant)' })
   @ApiParam({ name: 'id', type: Number })
   approve(@Param('id', ParseIntPipe) id: number, @CurrentUser() user?: AuthenticatedUser) {
@@ -116,7 +116,7 @@ export class BillingCycleController {
   }
 
   @Patch(':id/reject')
-  @Permission('BILLING_CYCLE_REJECT', 'BILLING_CYCLE_APPROVAL_REJECT')
+  @Permission('BILLING_CYCLE_REJECT')
   @ApiOperation({ summary: 'Reject a pending billing cycle version (Business Admin or Finance grant)' })
   @ApiParam({ name: 'id', type: Number })
   reject(

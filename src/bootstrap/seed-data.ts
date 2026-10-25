@@ -497,6 +497,21 @@ export const SCREENS: SeedScreen[] = [
     url: '/meters',
     displayOrder: 1,
   },
+  // Added because METER_READING_APPROVE's own seed entry below references this exact screenCode
+  // ("Deliberately on the DAILY_METER_READINGS screen, not METER_LIST") but no Screen row with this
+  // code ever existed — confirmed via the Policy editor/sidebar mismatch audit: ensureCriticalDefaults
+  // silently skips an Action whose screenCode doesn't resolve ("Screen ... not found"), so
+  // METER_READING_APPROVE was never actually created in the actions table despite being a real,
+  // backend-enforced @Permission code on the Daily Meter Readings approve/revoke routes. This also
+  // explains why SUPER_ADMIN never held it: ensureAdminPolicyGrants only grants codes present in the
+  // (isActive) actions table.
+  {
+    subModuleCode: 'DAILY_METER_READINGS',
+    name: 'Daily Meter Readings',
+    code: 'DAILY_METER_READINGS',
+    url: '/meters/daily-meter-readings',
+    displayOrder: 1,
+  },
   {
     subModuleCode: 'IMPORT_CENTER',
     name: 'Import Center',
@@ -571,17 +586,16 @@ export const SCREENS: SeedScreen[] = [
 
 
 export const ACTIONS: SeedAction[] = [
+  // USER_OVERVIEW retired — it was the live code (VIEW_USER was dead at the time), but its own name
+  // was itself tab-specific ("Overview" names a screen, not the Users resource's View capability).
+  // 1792900000000-RenameUserOverviewToViewUser.ts swapped the two rows' isActive flags instead, so
+  // VIEW_USER (restored below, name unchanged — "View Users", already matching every other
+  // resource's own View-action naming) is now the one, correctly-named survivor. Not re-added here.
   {
     screenCode: 'USER_LIST',
     name: 'View Users',
     code: 'VIEW_USER',
-    description: 'View the user list',
-  },
-  {
-    screenCode: 'USER_LIST',
-    name: 'View User Overview',
-    code: 'USER_OVERVIEW',
-    description: 'Navigate to the user overview / detail page',
+    description: 'View the user list and user detail pages',
   },
   {
     screenCode: 'USER_LIST',
@@ -671,22 +685,13 @@ export const ACTIONS: SeedAction[] = [
   },
   {
     screenCode: 'ATTRIBUTES',
-    name: 'Create Attribute',
-    code: 'CREATE_ATTRIBUTE',
-    description: 'Add a new custom attribute',
-  },
-  {
-    screenCode: 'ATTRIBUTES',
     name: 'Edit Attribute',
     code: 'EDIT_ATTRIBUTE',
     description: 'Change an attribute value',
   },
-  {
-    screenCode: 'ATTRIBUTES',
-    name: 'Delete Attribute',
-    code: 'DELETE_ATTRIBUTE',
-    description: 'Remove a custom (non-system-defined) attribute',
-  },
+  // CREATE_ATTRIBUTE/DELETE_ATTRIBUTE retired — attribute.controller.ts only ever exposed
+  // GET/PATCH (no create/delete route or service method ever existed on either side); see
+  // 1793100000000-RetireDeadActionCodes.ts.
 
   {
     screenCode: 'TARIFF_CONFIG',
@@ -757,20 +762,17 @@ export const ACTIONS: SeedAction[] = [
     parentActionCode: 'WORKFLOW_VIEW',
     displayOrder: 2,
   },
+  // TARIFF_APPROVAL_QUEUE/_VIEW/_APPROVE/_REJECT retired — confirmed (via @Permission(...)
+  // co-occurrence across tariff.controller.ts, and this file's own pre-existing descriptions below)
+  // to be the Finance "Tariff Approval" screen's duplicate codes for the exact same View/Approve/
+  // Reject capability TARIFF_VIEW/TARIFF_APPROVE/TARIFF_REJECT already provide. Folded onto those
+  // three by 1792800000000-ConsolidateDuplicateActionCodes.ts, not re-added here.
   {
     screenCode: 'TARIFF_CONFIG',
     name: 'View Tariff Detail',
     code: 'TARIFF_VIEW',
-    description: 'View a tariff version detail page',
+    description: 'View a tariff version detail page, or the pending-approval queue',
     displayOrder: 3,
-  },
-  {
-    screenCode: 'TARIFF_CONFIG',
-    name: 'Tariff Approval Queue',
-    code: 'TARIFF_APPROVAL_QUEUE',
-    description: 'Access the tariff pending-approval queue',
-    parentActionCode: 'TARIFF_VIEW',
-    displayOrder: 1,
   },
   {
     screenCode: 'TARIFF_CONFIG',
@@ -786,29 +788,6 @@ export const ACTIONS: SeedAction[] = [
     code: 'TARIFF_REJECT',
     description: 'Reject a pending tariff — Finance only, service-enforced regardless of this grant',
     parentActionCode: 'TARIFF_VIEW',
-    displayOrder: 3,
-  },
-  {
-    screenCode: 'TARIFF_APPROVAL',
-    name: 'View Tariff Approval Queue',
-    code: 'TARIFF_APPROVAL_VIEW',
-    description: 'Access the Finance Tariff Approval screen',
-    displayOrder: 1,
-  },
-  {
-    screenCode: 'TARIFF_APPROVAL',
-    name: 'Approve Tariff (Finance)',
-    code: 'TARIFF_APPROVAL_APPROVE',
-    description: 'Approve a pending tariff from the Finance Tariff Approval screen — accepted as an alternate to TARIFF_APPROVE so Finance never depends on Business Admin access',
-    parentActionCode: 'TARIFF_APPROVAL_VIEW',
-    displayOrder: 2,
-  },
-  {
-    screenCode: 'TARIFF_APPROVAL',
-    name: 'Reject Tariff (Finance)',
-    code: 'TARIFF_APPROVAL_REJECT',
-    description: 'Reject a pending tariff from the Finance Tariff Approval screen — accepted as an alternate to TARIFF_REJECT so Finance never depends on Business Admin access',
-    parentActionCode: 'TARIFF_APPROVAL_VIEW',
     displayOrder: 3,
   },
 
@@ -845,7 +824,7 @@ export const ACTIONS: SeedAction[] = [
     screenCode: 'BILLING_CYCLE',
     name: 'View Billing Cycle',
     code: 'VIEW_BILLING_CYCLE',
-    description: 'View billing cycle list and detail pages',
+    description: 'View billing cycle list and detail pages, or the pending-approval queue',
     displayOrder: 4,
   },
   {
@@ -864,36 +843,15 @@ export const ACTIONS: SeedAction[] = [
     parentActionCode: 'VIEW_BILLING_CYCLE',
     displayOrder: 2,
   },
-  {
-    screenCode: 'BILLING_CYCLE',
-    name: 'Export Billing Cycles',
-    code: 'EXPORT_BILLING_CYCLE',
-    description: 'Export the billing cycle list',
-    displayOrder: 5,
-  },
-  {
-    screenCode: 'BILLING_CYCLE_APPROVAL',
-    name: 'View Billing Cycle Approval Queue',
-    code: 'BILLING_CYCLE_APPROVAL_VIEW',
-    description: 'Access the Finance Billing Cycle Approval screen',
-    displayOrder: 1,
-  },
-  {
-    screenCode: 'BILLING_CYCLE_APPROVAL',
-    name: 'Approve Billing Cycle (Finance)',
-    code: 'BILLING_CYCLE_APPROVAL_APPROVE',
-    description: 'Approve a pending billing cycle version from the Finance Billing Cycle Approval screen — accepted as an alternate to BILLING_CYCLE_APPROVE so Finance never depends on Business Admin access',
-    parentActionCode: 'BILLING_CYCLE_APPROVAL_VIEW',
-    displayOrder: 2,
-  },
-  {
-    screenCode: 'BILLING_CYCLE_APPROVAL',
-    name: 'Reject Billing Cycle (Finance)',
-    code: 'BILLING_CYCLE_APPROVAL_REJECT',
-    description: 'Reject a pending billing cycle version from the Finance Billing Cycle Approval screen — accepted as an alternate to BILLING_CYCLE_REJECT so Finance never depends on Business Admin access',
-    parentActionCode: 'BILLING_CYCLE_APPROVAL_VIEW',
-    displayOrder: 3,
-  },
+  // EXPORT_BILLING_CYCLE retired — billing-cycle.controller.ts never had an export route or
+  // service method; no frontend caller ever existed either. See
+  // 1793100000000-RetireDeadActionCodes.ts.
+
+  // BILLING_CYCLE_APPROVAL_VIEW/APPROVE/REJECT retired — confirmed (via @Permission(...)
+  // co-occurrence, and this file's own pre-existing descriptions above) to be the Finance "Billing
+  // Cycle Approval" screen's duplicate codes for the exact same View/Approve/Reject capability
+  // VIEW_BILLING_CYCLE/BILLING_CYCLE_APPROVE/BILLING_CYCLE_REJECT already provide. Folded onto those
+  // three by 1792800000000-ConsolidateDuplicateActionCodes.ts, not re-added here.
 
   // BILL_RUN_VIEW/APPROVE live on BILLING_READINESS_BILL_RUN (nested under Billing Management's
   // BILL_RUN_REGISTER sub-module) — Finance's review/approve UI. BILL_RUN_SUBMIT ("Submit Bill
@@ -1049,7 +1007,7 @@ export const ACTIONS: SeedAction[] = [
     screenCode: 'REGISTRATION_REQUESTS',
     name: 'View Registration Requests',
     code: 'VIEW_REGISTRATION_REQUESTS',
-    description: 'View customer registration requests',
+    description: 'View customer registration requests, or the pending-approval queue',
   },
   {
     screenCode: 'REGISTRATION_REQUESTS',
@@ -1083,35 +1041,20 @@ export const ACTIONS: SeedAction[] = [
     description: 'View customer service requests and support tickets',
   },
 
-  {
-    screenCode: 'REGISTRATION_APPROVAL',
-    name: 'View Registration Approval Queue',
-    code: 'REGISTRATION_APPROVAL_VIEW',
-    description: 'Access the Registration Approval queue — every submitted registration request awaiting review',
-    displayOrder: 1,
-  },
-  {
-    screenCode: 'REGISTRATION_APPROVAL',
-    name: 'Approve Registration Request (Registration Approval)',
-    code: 'REGISTRATION_APPROVAL_APPROVE',
-    description: 'Approve a registration request from the Registration Approval screen — accepted as an alternate to APPROVE_REGISTRATION_REQUEST, the same underlying approve action. Scoped to the /approve route ONLY — this code no longer gates the deposit-handling routes (request-deposit/record-deposit-payment/verify-deposit/return-receipt), see REGISTRATION_APPROVAL_DEPOSIT_MANAGE for those (RBAC security-assessment finding, now fully remediated: a role holding only this code used to also silently get deposit-handling capability its name/description never signaled).',
-    parentActionCode: 'REGISTRATION_APPROVAL_VIEW',
-    displayOrder: 2,
-  },
-  {
-    screenCode: 'REGISTRATION_APPROVAL',
-    name: 'Reject Registration Request (Registration Approval)',
-    code: 'REGISTRATION_APPROVAL_REJECT',
-    description: 'Reject a registration request from the Registration Approval screen — accepted as an alternate to REJECT_REGISTRATION_REQUEST, the same underlying reject action',
-    parentActionCode: 'REGISTRATION_APPROVAL_VIEW',
-    displayOrder: 3,
-  },
+  // REGISTRATION_APPROVAL_VIEW/APPROVE/REJECT retired — confirmed (via @Permission(...)
+  // co-occurrence, and this file's own pre-existing descriptions above) to be the "Registration
+  // Approval" screen's duplicate codes for the exact same View/Approve/Reject capability
+  // VIEW_REGISTRATION_REQUESTS/APPROVE_REGISTRATION_REQUEST/REJECT_REGISTRATION_REQUEST already
+  // provide. Folded onto those three by 1792800000000-ConsolidateDuplicateActionCodes.ts, not
+  // re-added here. REGISTRATION_APPROVAL_DEPOSIT_MANAGE is NOT a duplicate (it's the genuinely
+  // distinct deposit-handling capability carved out of the old APPROVE code, see its own description
+  // below) — kept, with its parent repointed to the new consolidated VIEW_REGISTRATION_REQUESTS.
   {
     screenCode: 'REGISTRATION_APPROVAL',
     name: 'Manage Registration Deposit',
     code: 'REGISTRATION_APPROVAL_DEPOSIT_MANAGE',
-    description: 'Request a security deposit, record a deposit payment, verify a paid deposit, or return a payment receipt for correction — split out from REGISTRATION_APPROVAL_APPROVE (RBAC security-assessment remediation) so holding the approve code no longer silently also grants deposit-handling capability. This is now the sole deposit-route code besides EDIT_REGISTRATION_REQUEST — REGISTRATION_APPROVAL_APPROVE was removed from these 4 routes once every role needing deposit access was confirmed to hold this one instead.',
-    parentActionCode: 'REGISTRATION_APPROVAL_VIEW',
+    description: 'Request a security deposit, record a deposit payment, verify a paid deposit, or return a payment receipt for correction — split out from the old REGISTRATION_APPROVAL_APPROVE (RBAC security-assessment remediation) so holding approve rights no longer silently also grants deposit-handling capability. This is now the sole deposit-route code besides EDIT_REGISTRATION_REQUEST.',
+    parentActionCode: 'VIEW_REGISTRATION_REQUESTS',
     displayOrder: 4,
   },
 
@@ -1331,8 +1274,6 @@ export const ADMIN_GRANT_EXCLUDED_ACTION_CODES = [
   'TARIFF_REJECT',
   'BILLING_CYCLE_APPROVE',
   'BILLING_CYCLE_REJECT',
-  'BILLING_CYCLE_APPROVAL_APPROVE',
-  'BILLING_CYCLE_APPROVAL_REJECT',
   // Gates Approve/Reject/Return together (unlike Tariff/Billing Cycle's separate _APPROVE/_REJECT
   // codes) — excluded from the SUPER_ADMIN auto-grant for the same segregation-of-duties reason:
   // Finance review should require an explicit grant, not come bundled with full system access.

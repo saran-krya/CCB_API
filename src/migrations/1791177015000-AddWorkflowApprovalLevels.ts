@@ -20,6 +20,13 @@ export class AddWorkflowApprovalLevels1791177015000 implements MigrationInterfac
     name = 'AddWorkflowApprovalLevels1791177015000'
 
     public async up(queryRunner: QueryRunner): Promise<void> {
+        // Fresh install: `roles` doesn't exist yet (migrations run before `synchronize: true` does
+        // — see 1788342228029's own comment for the confirmed cold-start evidence), which would
+        // fail the FK added below outright. Safe to skip entirely: `synchronize` creates both
+        // `roles` and `workflow_approval_levels` (FK included) directly from their current entity
+        // definitions right after migrations finish.
+        if (!(await queryRunner.hasTable('roles'))) return;
+
         if (!(await queryRunner.hasTable('workflow_approval_levels'))) {
             await queryRunner.query(
                 `CREATE TABLE \`workflow_approval_levels\` (` +

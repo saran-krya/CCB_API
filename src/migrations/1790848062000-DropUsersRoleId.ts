@@ -26,6 +26,13 @@ export class DropUsersRoleId1790848062000 implements MigrationInterface {
     name = 'DropUsersRoleId1790848062000'
 
     public async up(queryRunner: QueryRunner): Promise<void> {
+        // Fresh install: `users` doesn't exist yet (migrations run before `synchronize: true` does
+        // — see 1788342228029's own comment for the confirmed cold-start evidence), and
+        // `queryRunner.hasColumn` throws outright on a missing table rather than returning false.
+        // Safe to skip: `synchronize` creates `users` immediately after migrations finish, already
+        // without `role_id` (removed from the current User entity definition) — there is nothing to drop.
+        if (!(await queryRunner.hasTable('users'))) return;
+
         const hasColumn = await queryRunner.hasColumn('users', 'role_id');
         if (!hasColumn) return;
 

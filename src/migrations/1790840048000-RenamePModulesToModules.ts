@@ -24,6 +24,14 @@ export class RenamePModulesToModules1790840048000 implements MigrationInterface 
         const hasNewTable = await queryRunner.hasTable('modules');
         if (hasOldTable && !hasNewTable) {
             await queryRunner.query(`RENAME TABLE \`pmodules\` TO \`modules\``);
+        } else if (hasOldTable && hasNewTable) {
+            // synchronize: true (dev-only) can create an EMPTY `modules` table from the entity
+            // before this migration runs — the real rows are still in `pmodules`. Move the empty
+            // table aside (not dropped) and complete the rename; leave a non-empty `modules` alone.
+            const [{ n }] = await queryRunner.query(`SELECT COUNT(*) AS n FROM \`modules\``);
+            if (Number(n) === 0) {
+                await queryRunner.query(`RENAME TABLE \`modules\` TO \`modules_empty_backup\`, \`pmodules\` TO \`modules\``);
+            }
         }
     }
 

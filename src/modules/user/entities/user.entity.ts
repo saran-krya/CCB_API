@@ -101,6 +101,17 @@ export class User extends BaseEntity {
   })
   passwordHash?: string | null;
 
+  // Set at creation time by the Create User wizard's "Users must create a new password at next
+  // sign-in" checkbox — checked once by AuthService.login's staff branch (included in the login
+  // response so the frontend can redirect to a mandatory change-password screen before letting them
+  // into the app) and cleared by AuthService.changePassword once they actually change it.
+  @Column({
+    name: "must_change_password",
+    type: "boolean",
+    default: false,
+  })
+  mustChangePassword!: boolean;
+
   @Column({
     name: "sso_provider",
     type: "varchar",

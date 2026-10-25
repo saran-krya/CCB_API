@@ -15,4 +15,11 @@ export class TokenResponseDto {
 
   @ApiProperty({ example: '7d', description: 'Refresh token lifetime' })
   refreshTokenExpiresIn!: string;
+
+  @ApiProperty({
+    required: false,
+    description: 'Staff login only — true if this account must set a new password before continuing. ' +
+      'Absent/false for every other case (customer login, token refresh).',
+  })
+  mustChangePassword?: boolean;
 }

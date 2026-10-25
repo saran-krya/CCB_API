@@ -59,6 +59,17 @@ export class SplitCompanyFromCustomerAndRegistrationDetails1789100000000 impleme
             return Number(rows[0].cnt) > 0;
         };
 
+        // Fresh install: same exact issue as its precedent 1788342228029 (see that file's own
+        // comment on the confirmed cold-start evidence) — step 6 below unconditionally FKs
+        // registration_company_details to registration_requests and company to customers. On a
+        // genuinely empty database neither parent table exists yet (migrations run before
+        // `synchronize: true` does), so skip here; `synchronize` creates both new tables, plus
+        // registration_requests and customers, directly from their current entity definitions right
+        // after migrations finish — the correct final shape this migration exists to produce.
+        if (!(await hasTable('registration_requests')) || !(await hasTable('customers'))) {
+            return;
+        }
+
         // ── 1. Create the two new tables (skip if already present) ──────────────────────────────
         if (!(await hasTable('registration_company_details'))) {
             await queryRunner.query(`CREATE TABLE \`registration_company_details\` (\`id\` int NOT NULL AUTO_INCREMENT, \`created_at\` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6), \`updated_at\` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6), \`deleted_at\` datetime(6) NULL, \`legal_structure\` enum ('LLC', 'Free Zone Company', 'Sole Establishment', 'Branch of Foreign Company') NULL, \`company_registration_date\` date NULL, \`company_registration_number\` varchar(60) NULL, \`trade_license_number\` varchar(60) NULL, \`license_expiry_date\` date NULL, \`manager_name\` varchar(160) NULL, \`trade_license_verified\` tinyint NULL, \`trn\` varchar(20) NULL, \`trn_expiry_date\` date NULL, \`taxable_entity_name\` varchar(160) NULL, \`effective_registration_date\` date NULL, \`issuing_authority\` varchar(120) NULL, \`trn_verified\` tinyint NULL, \`registration_request_id\` int NOT NULL, UNIQUE INDEX \`REL_reg_company_detail_request\` (\`registration_request_id\`), PRIMARY KEY (\`id\`)) ENGINE=InnoDB`);

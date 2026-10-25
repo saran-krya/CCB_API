@@ -93,11 +93,16 @@ export class AuthService {
       await this.insertLoginHistory('staff', user.id, deviceCtx);
       this.logger.log(`Staff login succeeded for ${maskEmail(dto.email)} (userId=${user.id})`);
 
-      return this.issueTokenPair(
+      const tokens = await this.issueTokenPair(
         { sub: user.id, email: user.email, roleId: primaryRole.roleId, roleName: primaryRole.roleName, type: 'staff' },
         undefined,
         deviceCtx,
       );
+
+      // A real, usable session either way — this flag only tells the frontend to route the user
+      // through the mandatory change-password screen before the normal app shell, it never narrows
+      // what the access token itself can do server-side (every other endpoint stays unaffected).
+      return user.mustChangePassword ? { ...tokens, mustChangePassword: true } : tokens;
     }
 
     const customer = await this.customers.findByEmailForLogin(dto.email);

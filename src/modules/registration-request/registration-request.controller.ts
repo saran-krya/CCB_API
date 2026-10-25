@@ -44,7 +44,7 @@ export class RegistrationRequestController {
   // Registration Requests queue as a feature. Does NOT grant approve/reject/edit — those stay on
   // their own action endpoints, untouched.
   @Get()
-  @Permission('VIEW_REGISTRATION_REQUESTS', 'REGISTRATION_APPROVAL_VIEW', 'VIEW_CUSTOMER')
+  @Permission('VIEW_REGISTRATION_REQUESTS', 'VIEW_CUSTOMER')
   @ApiOperation({ summary: 'List registration requests' })
   findAll(@Query() query: RegistrationRequestQueryDto) {
     return this.requests.findAll(query);
@@ -53,7 +53,7 @@ export class RegistrationRequestController {
   // Also VIEW_CUSTOMER: same reasoning as findAll above — the by-id fetch that follows resolving
   // the request id from the list call.
   @Get(':id')
-  @Permission('VIEW_REGISTRATION_REQUESTS', 'REGISTRATION_APPROVAL_VIEW', 'VIEW_CUSTOMER')
+  @Permission('VIEW_REGISTRATION_REQUESTS', 'VIEW_CUSTOMER')
   @ApiOperation({ summary: 'Get registration request detail' })
   @ApiParam({ name: 'id', type: Number })
   findOne(@Param('id', ParseIntPipe) id: number) {
@@ -61,7 +61,7 @@ export class RegistrationRequestController {
   }
 
   @Get(':id/deposit-preview')
-  @Permission('VIEW_REGISTRATION_REQUESTS', 'REGISTRATION_APPROVAL_VIEW')
+  @Permission('VIEW_REGISTRATION_REQUESTS')
   @ApiOperation({ summary: 'Preview the per-unit deposit/activation-fee components without raising a demand' })
   @ApiParam({ name: 'id', type: Number })
   previewDeposit(@Param('id', ParseIntPipe) id: number) {
@@ -185,8 +185,8 @@ export class RegistrationRequestController {
   }
 
   @Post(':id/approve')
-  @Permission('APPROVE_REGISTRATION_REQUEST', 'REGISTRATION_APPROVAL_APPROVE')
-  @ApiOperation({ summary: 'Approve the registration request, creating the Customer record (requires APPROVE_REGISTRATION_REQUEST or REGISTRATION_APPROVAL_APPROVE)' })
+  @Permission('APPROVE_REGISTRATION_REQUEST')
+  @ApiOperation({ summary: 'Approve the registration request, creating the Customer record' })
   @ApiParam({ name: 'id', type: Number })
   approve(
     @Param('id', ParseIntPipe) id: number,
@@ -197,8 +197,8 @@ export class RegistrationRequestController {
   }
 
   @Post(':id/reject')
-  @Permission('REJECT_REGISTRATION_REQUEST', 'REGISTRATION_APPROVAL_REJECT')
-  @ApiOperation({ summary: 'Reject the registration request (requires REJECT_REGISTRATION_REQUEST or REGISTRATION_APPROVAL_REJECT)' })
+  @Permission('REJECT_REGISTRATION_REQUEST')
+  @ApiOperation({ summary: 'Reject the registration request' })
   @ApiParam({ name: 'id', type: Number })
   reject(
     @Param('id', ParseIntPipe) id: number,

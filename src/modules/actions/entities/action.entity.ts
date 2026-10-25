@@ -63,8 +63,14 @@ export class Action extends BaseEntity {
   })
   code!: string;
 
+  // 500, matching Policy/Resource's own description column width — the default bare VARCHAR(255)
+  // was too narrow for REGISTRATION_APPROVAL_DEPOSIT_MANAGE's seeded description (374 chars),
+  // confirmed by a genuine fresh-install test (synchronize:true creates this column from this
+  // decorator alone, since migrations run before synchronize does — see
+  // 1788342228029-RefactorRegistrationRequestSchema's own comment for the cold-start evidence).
   @Column({
     nullable: true,
+    length: 500,
   })
   description?: string;
 

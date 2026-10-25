@@ -170,5 +170,27 @@ describe('RolePermissionsService audit trail', () => {
 
       expect(auditService.record).not.toHaveBeenCalled();
     });
+
+    it("refuses to rename SUPER_ADMIN to anything else, before any write or audit", async () => {
+      roleRepo.findOne.mockResolvedValue({ id: 1, roleName: 'SUPER_ADMIN', roleDescription: '', userCategoryId: 1 } as Role);
+
+      await expect(
+        service.updateRolePermissions(1, { roleName: 'Root', screenPermissionList: [] } as any, 9),
+      ).rejects.toThrow(ConflictException);
+
+      expect(roleRepo.save).not.toHaveBeenCalled();
+      expect(auditService.record).not.toHaveBeenCalled();
+    });
+
+    it('allows saving SUPER_ADMIN when roleName is resubmitted unchanged', async () => {
+      roleRepo.findOne.mockResolvedValue({ id: 1, roleName: 'SUPER_ADMIN', roleDescription: '', userCategoryId: 1 } as Role);
+      roleRepo.save.mockResolvedValue({ id: 1, roleName: 'SUPER_ADMIN' });
+
+      await expect(
+        service.updateRolePermissions(1, { roleName: 'SUPER_ADMIN', roleDescription: 'Updated', screenPermissionList: [] } as any, 9),
+      ).resolves.toBeDefined();
+
+      expect(roleRepo.save).toHaveBeenCalled();
+    });
   });
 });

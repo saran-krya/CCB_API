@@ -10,10 +10,10 @@ import { PolicyStatement } from './policy-statement.entity';
  */
 @Entity('policies')
 export class Policy extends BaseEntity {
-  @Column({ unique: true })
+  @Column({ unique: true, length: 150 })
   name!: string;
 
-  @Column({ nullable: true })
+  @Column({ nullable: true, length: 500 })
   description?: string;
 
   @OneToMany(() => PolicyStatement, (statement) => statement.policy, { cascade: true })

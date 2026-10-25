@@ -1,25 +1,7 @@
-import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsOptional, IsString } from 'class-validator';
 import { BasePaginationDto } from './base-pagination.dto';
 
-export class PaginationQueryDto extends BasePaginationDto {
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsString()
-  ['search.fullName']?: string;
-
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsString()
-  ['search.email']?: string;
-
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsString()
-  ['search.mobile']?: string;
-
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsString()
-  ['search.role']?: string;
-}
+// The search.fullName/search.email/search.mobile/search.role fields previously declared here were
+// only ever read by UserService.findAll, which now has its own dedicated UserQueryDto (the Users
+// list page moved to one combined search box instead of four independent filters) — removed as
+// confirmed-dead (grepped: no other controller/service ever read any of the four).
+export class PaginationQueryDto extends BasePaginationDto {}

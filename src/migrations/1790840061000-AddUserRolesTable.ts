@@ -22,6 +22,14 @@ export class AddUserRolesTable1790840061000 implements MigrationInterface {
     name = 'AddUserRolesTable1790840061000'
 
     public async up(queryRunner: QueryRunner): Promise<void> {
+        // Fresh install: `users`/`roles` don't exist yet (migrations run before `synchronize: true`
+        // does — see 1788342228029's own comment for the confirmed cold-start evidence), which
+        // would fail the FKs added below outright. Safe to skip entirely: `synchronize` creates
+        // `user_roles` itself (from the current UserRole entity definition, FKs included) right
+        // after migrations finish — there are no pre-existing `users.role_id` values to backfill on
+        // a database that doesn't have a `users` table yet.
+        if (!(await queryRunner.hasTable('users')) || !(await queryRunner.hasTable('roles'))) return;
+
         if (!(await queryRunner.hasTable('user_roles'))) {
             await queryRunner.query(
                 `CREATE TABLE \`user_roles\` (` +
@@ -50,7 +58,10 @@ export class AddUserRolesTable1790840061000 implements MigrationInterface {
         await addFkIfMissing('role_id', 'roles');
 
         // Backfill — one row per existing users.role_id, skipping any user already backfilled
-        // (idempotent) and any user with a NULL role_id (none expected, handled anyway).
+        // (idempotent) and any user with a NULL role_id (none expected, handled anyway). Skipped
+        // when users.role_id is already gone — synchronize: true (dev-only) can drop it before this
+        // runs, same column-already-gone tolerance as DropUsersRoleId1790848062000.
+        if (!(await queryRunner.hasColumn('users', 'role_id'))) return;
         await queryRunner.query(
             `INSERT INTO \`user_roles\` (\`user_id\`, \`role_id\`, \`created_at\`, \`updated_at\`)
              SELECT u.id, u.role_id, NOW(), NOW()

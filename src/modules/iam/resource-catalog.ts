@@ -1,13 +1,76 @@
 /**
- * The reviewed, final Resource-to-Action mapping covering all 96 existing Action codes (confirmed
- * exhaustive — every code in `bootstrap/seed-data.ts`'s ACTIONS array maps to exactly one Resource
- * below; verified by direct enumeration, not sampling). No action is ambiguous or left unmapped —
- * the mapping follows each action's existing `screenCode` directly, collapsing the handful of
- * confirmed duplicate-code screen pairs (Meter Information/Inventory, Tariff Config/Approval,
- * Billing Cycle/Approval, Registration Requests/Approval) onto one Resource each, since those pairs
- * were already established (via the RBAC security assessment) to be two OR'd codes for the exact
- * same underlying capability — the IAM model's single-Resource, multi-action-code statement is a
- * more faithful representation of that than two parallel codes ever was.
+ * The reviewed, final Resource-to-Action mapping — every code in `bootstrap/seed-data.ts`'s ACTIONS
+ * array maps to exactly one Resource below, EXCEPT five deliberately nav-visibility-only codes
+ * (VIEW_POLICY, CREATE_POLICY, EDIT_POLICY, DELETE_POLICY, VIEW_RESOURCE — see their own comment in
+ * seed-data.ts) which intentionally have no Resource mapping: Policy/Resource administration is gated
+ * by the unchanged `@Roles(SUPER_ADMIN)` check, independent of whether a role holds these codes. Every
+ * other action is unambiguous and mapped — the mapping follows each action's existing `screenCode`
+ * directly, collapsing the handful of confirmed duplicate-code screen
+ * pairs (Meter Information/Inventory, Tariff Config/Approval, Billing Cycle/Approval, Registration
+ * Requests/Approval) onto one Resource each, since those pairs were already established (via the
+ * RBAC security assessment) to be two OR'd codes for the exact same underlying capability — the IAM
+ * model's single-Resource, multi-action-code statement is a more faithful representation of that
+ * than two parallel codes ever was.
+ *
+ * PERMISSION CONSOLIDATION (post-96-code count): within that same "two codes, one real capability"
+ * pattern, 11 further codes were confirmed — via @Permission(...) decorator co-occurrence across
+ * every controller, plus seed-data.ts's own descriptions explicitly calling them "an alternate to
+ * X, the same underlying action" — to be the Tariff Config/Approval, Billing Cycle/Approval and
+ * Registration Requests/Approval screen pairs' OWN View/Approve/Reject duplicates, never
+ * independently meaningful. They were folded onto one surviving code each (see
+ * 1792800000000-ConsolidateDuplicateActionCodes.ts for the exact before/after map, the data
+ * migration, and the `isActive: false` retirement) — originally VIEW_USER → USER_OVERVIEW, LATER
+ * corrected the other way (see 1792900000000-RenameUserOverviewToViewUser.ts): USER_OVERVIEW →
+ * VIEW_USER, since USER_OVERVIEW was itself a tab-named survivor ("Overview" names a screen, not
+ * the Users resource's View capability) — the two rows were swapped rather than renamed in place
+ * (actions.code has the same unique index as actions.name), so the net, current state is VIEW_USER
+ * active / USER_OVERVIEW retired, with every policy_statements reference migrated accordingly;
+ * TARIFF_APPROVAL_VIEW and TARIFF_APPROVAL_QUEUE → TARIFF_VIEW; TARIFF_APPROVAL_APPROVE → TARIFF_APPROVE;
+ * TARIFF_APPROVAL_REJECT → TARIFF_REJECT; BILLING_CYCLE_APPROVAL_VIEW → VIEW_BILLING_CYCLE;
+ * BILLING_CYCLE_APPROVAL_APPROVE → BILLING_CYCLE_APPROVE; BILLING_CYCLE_APPROVAL_REJECT →
+ * BILLING_CYCLE_REJECT; REGISTRATION_APPROVAL_VIEW → VIEW_REGISTRATION_REQUESTS;
+ * REGISTRATION_APPROVAL_APPROVE → APPROVE_REGISTRATION_REQUEST; REGISTRATION_APPROVAL_REJECT →
+ * REJECT_REGISTRATION_REQUEST. Retired codes are REMOVED from the arrays below (not merely marked
+ * inactive here) so a fresh install never creates them and no new/edited Policy can ever select them
+ * again. Each surviving code's stored Action.name is UNCHANGED (still its original, fully-descriptive
+ * value, e.g. "View Tariff Detail") — `actions.name` has a DB-level unique index, confirmed the hard
+ * way when an earlier draft of this migration tried renaming every survivor to a shared bare
+ * "View"/"Approve"/"Reject" and failed outright. The simplified bare-verb labels the Policy editor
+ * actually displays live purely in CCB_WEB (components/role/actionDisplayLabels.ts), a presentation
+ * lookup keyed by these same 13 codes, never written back to the database.
+ *
+ * BROADER AUDIT (confirming the model is resource-based, not tab-based, beyond just these 11):
+ * every OTHER action in every OTHER Resource below was checked — via the same @Permission(...)
+ * decorator inspection, plus this codebase's own extensive PRIOR history of tab-consolidation work
+ * for Billing Readiness/Bill Run (6 separate past migrations: CollapseBillingReadinessTabScreens,
+ * RemoveBillingReadinessPropertyView, MoveRunBillingToBillingReadiness, and others — BILLING_READINESS_VIEW
+ * is already "the single permission for the entire sub-module," merged from several prior
+ * screen-level codes; BILL_RUN_VIEW stays separate because Bill Run Register and Billing Readiness
+ * are genuinely different screens/capabilities, not a tab split of the same one) — and found no
+ * further same-capability duplicates. Status-change actions (COMMUNITY_STATUS, PROPERTY_STATUS,
+ * UNIT_OCCUPANCY) each gate exactly one real endpoint, separately from their resource's EDIT action,
+ * by design — a sensitive capability kept apart from ordinary field edits, same pattern as
+ * Approve/Reject being kept apart from View. METER_MAPPING is a deliberately narrower permission
+ * carved out of METER_INVENTORY_EDIT (service-enforced: holding only METER_MAPPING can change which
+ * unit a sub meter is mapped to, nothing else) — a real, enforced field-level boundary, not a UI
+ * artifact. Genuinely distinct business permissions on the SAME resource (e.g. TARIFF_SUBMIT/
+ * DEACTIVATE/REACTIVATE/DEPRECATE/NEW_VERSION, BILLING_CYCLE_RESUBMIT/EXPORT,
+ * REGISTRATION_APPROVAL_DEPOSIT_MANAGE, LOV_MODULE_ASSIGN) were left untouched — none were ever
+ * OR'd with anything as an "alternate code," each is its own capability, and must stay individually
+ * grantable/revocable.
+ *
+ * DEAD CODE RETIREMENT (RBAC cleanup audit, 1793100000000-RetireDeadActionCodes.ts): a further,
+ * separate check — not for same-capability duplicates but for codes with NO real capability behind
+ * them at all — found CREATE_ATTRIBUTE/DELETE_ATTRIBUTE (attribute.controller.ts never had a
+ * create/delete route or service method on either side) and EXPORT_BILLING_CYCLE (billing-cycle.
+ * controller.ts never had an export route either, correcting this comment's own earlier "left
+ * untouched as a distinct capability" claim above — it was never actually wired to anything).
+ * Retired the same way as the 11 consolidated codes above (isActive: false, removed from these
+ * arrays, stripped from any policy_statements that held them) since there is no survivor to fold
+ * onto. Separately, METER_EXPORT (METER resource, below) was found to be a live, seeded, policy-
+ * attachable code that gates NOTHING — meters/master-meters/export and /sub-meters/export only ever
+ * checked METER_VIEW/METER_INVENTORY_EXPORT — so it was wired into both routes instead of retired
+ * (a real capability with a missing guard, not dead weight).
  *
  * Resources are seeded idempotently via `ensureResourceCatalog` (IamService), the same pattern
  * ActionsService.ensureCriticalDefaults already uses for Actions — safe to re-run on every boot,
@@ -33,7 +96,11 @@ export const RESOURCES: SeedResource[] = [
     name: 'Users',
     description: 'Staff user accounts',
     displayOrder: 1,
-    actionCodes: ['VIEW_USER', 'USER_OVERVIEW', 'CREATE_USER', 'EDIT_USER', 'DELETE_USER'],
+    // VIEW_USER is the live "View" capability (confirmed via 1792900000000-RenameUserOverviewToViewUser.ts —
+    // USER_OVERVIEW, which had been the surviving code since it was the one actually wired to real
+    // routes, was itself a tab-named code ("Overview" names a screen, not a capability); the two rows
+    // were swapped so the Resource's common View permission is properly named after what it does).
+    actionCodes: ['VIEW_USER', 'CREATE_USER', 'EDIT_USER', 'DELETE_USER'],
   },
   {
     code: 'ROLE',
@@ -47,18 +114,20 @@ export const RESOURCES: SeedResource[] = [
     name: 'System Attributes',
     description: 'Global and scoped configuration attributes',
     displayOrder: 3,
-    actionCodes: ['VIEW_ATTRIBUTE', 'CREATE_ATTRIBUTE', 'EDIT_ATTRIBUTE', 'DELETE_ATTRIBUTE'],
+    // CREATE_ATTRIBUTE/DELETE_ATTRIBUTE retired — no create/delete route or service method ever
+    // existed (RBAC cleanup audit); see 1793100000000-RetireDeadActionCodes.ts.
+    actionCodes: ['VIEW_ATTRIBUTE', 'EDIT_ATTRIBUTE'],
   },
   {
     code: 'TARIFF',
     name: 'Tariffs',
     description: 'Tariff configuration and Finance approval',
     displayOrder: 4,
+    // TARIFF_APPROVAL_VIEW/QUEUE folded into TARIFF_VIEW; TARIFF_APPROVAL_APPROVE into TARIFF_APPROVE;
+    // TARIFF_APPROVAL_REJECT into TARIFF_REJECT (confirmed OR'd duplicates of the same capability).
     actionCodes: [
       'TARIFF_CREATE', 'TARIFF_SUBMIT', 'TARIFF_EDIT', 'TARIFF_DEACTIVATE', 'TARIFF_REACTIVATE',
-      'TARIFF_DEPRECATE', 'TARIFF_NEW_VERSION', 'TARIFF_VIEW', 'TARIFF_APPROVAL_QUEUE',
-      'TARIFF_APPROVE', 'TARIFF_REJECT', 'TARIFF_APPROVAL_VIEW', 'TARIFF_APPROVAL_APPROVE',
-      'TARIFF_APPROVAL_REJECT',
+      'TARIFF_DEPRECATE', 'TARIFF_NEW_VERSION', 'TARIFF_VIEW', 'TARIFF_APPROVE', 'TARIFF_REJECT',
     ],
   },
   {
@@ -73,17 +142,26 @@ export const RESOURCES: SeedResource[] = [
     name: 'Billing Cycles',
     description: 'Billing cycle configuration and Finance approval',
     displayOrder: 6,
+    // BILLING_CYCLE_APPROVAL_VIEW/APPROVE/REJECT folded into VIEW_BILLING_CYCLE/BILLING_CYCLE_APPROVE/
+    // BILLING_CYCLE_REJECT respectively (confirmed OR'd duplicates of the same capability).
+    // EXPORT_BILLING_CYCLE retired — no export route or service method ever existed (RBAC cleanup
+    // audit); see 1793100000000-RetireDeadActionCodes.ts.
     actionCodes: [
       'CREATE_BILLING_CYCLE', 'BILLING_CYCLE_RESUBMIT', 'BILLING_CYCLE_NEW_VERSION',
       'BILLING_CYCLE_DEPRECATE', 'VIEW_BILLING_CYCLE', 'BILLING_CYCLE_APPROVE',
-      'BILLING_CYCLE_REJECT', 'EXPORT_BILLING_CYCLE', 'BILLING_CYCLE_APPROVAL_VIEW',
-      'BILLING_CYCLE_APPROVAL_APPROVE', 'BILLING_CYCLE_APPROVAL_REJECT',
+      'BILLING_CYCLE_REJECT',
     ],
   },
   {
     code: 'BILL_RUN',
-    name: 'Bill Runs',
-    description: 'Bill run submission, review, and approval',
+    // Confirmed via the Policy editor/sidebar mismatch audit: this ONE resource backs TWO distinct
+    // sidebar screens under two different modules — Billing Management's "Bill Run Register"
+    // (BILL_RUN_VIEW/SUBMIT/APPROVE) and Meter Management's "Billing Readiness"
+    // (BILLING_READINESS_VIEW) — so "Bill Runs" alone left admins unable to find the resource that
+    // actually grants the Billing Readiness screen. Renamed to name both; the underlying code/
+    // actionCodes are unchanged, each individually still gated by its own existing action.
+    name: 'Bill Runs & Billing Readiness',
+    description: 'Bill run submission, review, and approval — also covers the Billing Readiness screen\'s own view action (BILLING_READINESS_VIEW)',
     displayOrder: 7,
     actionCodes: [
       'BILL_RUN_VIEW', 'BILL_RUN_APPROVE', 'BILL_RUN_SUBMIT', 'BILLING_READINESS_VIEW',
@@ -130,10 +208,13 @@ export const RESOURCES: SeedResource[] = [
     name: 'Registration Requests',
     description: 'Registration request lifecycle and approval, including deposit management',
     displayOrder: 12,
+    // REGISTRATION_APPROVAL_VIEW/APPROVE/REJECT folded into VIEW_REGISTRATION_REQUESTS/
+    // APPROVE_REGISTRATION_REQUEST/REJECT_REGISTRATION_REQUEST (confirmed OR'd duplicates of the
+    // same capability). REGISTRATION_APPROVAL_DEPOSIT_MANAGE is NOT a duplicate — it's a distinct,
+    // narrower capability already OR'd *alongside* (not instead of) EDIT_REGISTRATION_REQUEST, kept.
     actionCodes: [
       'VIEW_REGISTRATION_REQUESTS', 'CREATE_REGISTRATION_REQUEST', 'EDIT_REGISTRATION_REQUEST',
-      'APPROVE_REGISTRATION_REQUEST', 'REJECT_REGISTRATION_REQUEST', 'REGISTRATION_APPROVAL_VIEW',
-      'REGISTRATION_APPROVAL_APPROVE', 'REGISTRATION_APPROVAL_REJECT',
+      'APPROVE_REGISTRATION_REQUEST', 'REJECT_REGISTRATION_REQUEST',
       'REGISTRATION_APPROVAL_DEPOSIT_MANAGE',
     ],
   },
@@ -158,8 +239,13 @@ export const RESOURCES: SeedResource[] = [
   },
   {
     code: 'METER',
-    name: 'Meters',
-    description: 'Meter Information and Meter Inventory (collapsed from two duplicate-code screens)',
+    // Matches the sidebar's own "Meter Information" label exactly (was "Meters" — confirmed via the
+    // Policy editor/sidebar mismatch audit as a genuine display-label mismatch: admins looking for
+    // the resource backing the Meter Information screen couldn't find it under that name). Also
+    // backs Daily Meter Readings' own view (METER_VIEW, reused across both screens) and Import
+    // Center's import flow (METER_IMPORT) — see METER_VIEW's own seed-data.ts comment.
+    name: 'Meter Information',
+    description: 'Meter Information and Daily Meter Readings viewing, plus meter import/export/mapping (collapsed from several duplicate-code screens)',
     displayOrder: 16,
     actionCodes: ['METER_VIEW', 'METER_EXPORT', 'METER_MAPPING', 'METER_CREATE', 'METER_IMPORT'],
   },
@@ -175,7 +261,12 @@ export const RESOURCES: SeedResource[] = [
   },
   {
     code: 'METER_READING',
-    name: 'Meter Readings',
+    // Deliberately NOT "Meter Readings" (confirmed via the Policy editor/sidebar mismatch audit as a
+    // confusing near-duplicate of "Meter Information," which is what actually grants VIEWING the
+    // Daily Meter Readings screen via METER_VIEW) — this resource's one action only lets a role
+    // approve/revoke individual readings, never view them on its own.
+    name: 'Meter Reading Approvals',
+    description: 'Approve or revoke approval of individual/bulk meter readings on the Daily Meter Readings screen — granting this alone does not grant viewing that screen; see Meter Information\'s METER_VIEW action for that',
     displayOrder: 18,
     actionCodes: ['METER_READING_APPROVE'],
   },

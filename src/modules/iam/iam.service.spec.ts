@@ -10,6 +10,8 @@ import { RolePolicy } from './entities/role-policy.entity';
 import { Role } from '../role/entities/role.entity';
 import { Action } from '../actions/entities/action.entity';
 import { AuditService } from '../../audit/audit.service';
+import { RESOURCES } from './resource-catalog';
+import { ACTIONS, ADMIN_GRANT_EXCLUDED_ACTION_CODES } from '../../bootstrap/seed-data';
 
 // Isolated tests for IamService — Policy CRUD, statement validation against the real Resource/Action
 // catalogs (requirement: "validate every policy statement against existing Resource and Action
@@ -21,7 +23,7 @@ describe('IamService', () => {
   let policiesRepo: { findOne: jest.Mock; save: jest.Mock; create: jest.Mock; softRemove: jest.Mock; count: jest.Mock };
   let statementsRepo: { find: jest.Mock; delete: jest.Mock; save: jest.Mock; create: jest.Mock };
   let rolePoliciesRepo: { findOne: jest.Mock; save: jest.Mock; create: jest.Mock; remove: jest.Mock; count: jest.Mock; find: jest.Mock };
-  let rolesRepo: { findOne: jest.Mock };
+  let rolesRepo: { findOne: jest.Mock; find: jest.Mock };
   let actionsRepo: { find: jest.Mock };
   let auditService: { record: jest.Mock };
   let manager: {
@@ -57,7 +59,7 @@ describe('IamService', () => {
       count: jest.fn(),
       find: jest.fn(),
     };
-    rolesRepo = { findOne: jest.fn() };
+    rolesRepo = { findOne: jest.fn(), find: jest.fn().mockResolvedValue([]) };
     actionsRepo = { find: jest.fn().mockResolvedValue([VIEW_CUSTOMER_ACTION, EDIT_CUSTOMER_ACTION]) };
     auditService = { record: jest.fn().mockResolvedValue(undefined) };
 
@@ -136,6 +138,18 @@ describe('IamService', () => {
       await expect(
         service.createPolicy({ name: 'Test Policy', statements: [{ resourceCode: 'CUSTOMER', actionCodes: ['VIEW_CUSTOMER'] }] }, 7),
       ).rejects.toThrow(ConflictException);
+    });
+
+    it('rejects a retired action code — proves a consolidated/revoked code can never be granted again, even though it once existed (validateStatements only ever sees the isActive:true-filtered Action list)', async () => {
+      policiesRepo.findOne.mockResolvedValue(null);
+      // Simulates a code one of the permission-consolidation migrations marked isActive:false (e.g.
+      // USER_OVERVIEW, folded into VIEW_USER) — the real actions repo query filters
+      // `where: { isActive: true }`, so a retired code is simply never in this list, exactly as it
+      // wouldn't be in production after 1792800000000-ConsolidateDuplicateActionCodes.ts or
+      // 1792900000000-RenameUserOverviewToViewUser.ts runs.
+      await expect(
+        service.createPolicy({ name: 'Bad Policy', statements: [{ resourceCode: 'CUSTOMER', actionCodes: ['RETIRED_ACTION_CODE'] }] }, 7),
+      ).rejects.toThrow(BadRequestException);
     });
 
     it('rejects the same resource appearing in two separate statements', async () => {
@@ -224,6 +238,24 @@ describe('IamService', () => {
 
       expect(rolePoliciesRepo.remove).not.toHaveBeenCalled();
     });
+
+    it('refuses to detach any policy from the role named SUPER_ADMIN', async () => {
+      rolePoliciesRepo.findOne.mockResolvedValue({ id: 1, roleId: 1, policyId: 100 });
+      rolesRepo.findOne.mockResolvedValue({ id: 1, roleName: 'SUPER_ADMIN' });
+
+      await expect(service.detachPolicyFromRole(1, 100, 7)).rejects.toThrow(/must always retain full access/);
+      expect(rolePoliciesRepo.remove).not.toHaveBeenCalled();
+      expect(auditService.record).not.toHaveBeenCalled();
+    });
+
+    it('still allows detaching from a role that is not SUPER_ADMIN', async () => {
+      rolePoliciesRepo.findOne.mockResolvedValue({ id: 1, roleId: 5, policyId: 100 });
+      rolesRepo.findOne.mockResolvedValue({ id: 5, roleName: 'OPERATIONS' });
+
+      await service.detachPolicyFromRole(5, 100, 7);
+
+      expect(rolePoliciesRepo.remove).toHaveBeenCalled();
+    });
   });
 
   describe('getActionCodesGrantedByPolicies / roleHasActionViaPolicy', () => {
@@ -244,6 +276,334 @@ describe('IamService', () => {
 
       expect(await service.roleHasActionViaPolicy(5, 'VIEW_CUSTOMER')).toBe(true);
       expect(await service.roleHasActionViaPolicy(5, 'DELETE_CUSTOMER')).toBe(false);
+    });
+  });
+
+  // Confirms the SUPER_ADMIN/ADMIN Policy-sync fix found during the RBAC naming audit: real
+  // authorization resolves exclusively through Policies (roleHasActionViaPolicy above), so an admin
+  // role's Policy must be kept in sync with the active Resource/Action catalog the same way
+  // RolePermissionsService.ensureAdminGrants keeps the legacy tree in sync — otherwise an action
+  // added after the one-time IAM backfill migration is silently unusable by the admin role.
+  describe('ensureAdminPolicyGrants', () => {
+    const USER_RESOURCE = { id: 20, code: 'USER' };
+    const VIEW_USER_ACTION = { id: 30, code: 'VIEW_USER', isActive: true };
+    const CREATE_USER_ACTION = { id: 31, code: 'CREATE_USER', isActive: true };
+    const EDIT_USER_ACTION = { id: 32, code: 'EDIT_USER', isActive: true };
+    const DELETE_USER_ACTION = { id: 33, code: 'DELETE_USER', isActive: true };
+
+    it('does nothing when no SUPER_ADMIN/ADMIN role exists', async () => {
+      rolesRepo.find.mockResolvedValue([]);
+
+      await service.ensureAdminPolicyGrants([]);
+
+      expect(rolePoliciesRepo.find).not.toHaveBeenCalled();
+    });
+
+    // The fresh-install path: migrations (AddIamPolicyBackfill) run before bootstrap's seed() has
+    // created any Role/RolePermission rows, so that migration finds nothing to back-fill and
+    // SUPER_ADMIN reaches this method with zero attached Policies. It must not be left ungranted.
+    it('creates the role\'s own Policy and attaches it when none exists yet, then grants every active, non-excluded action (fresh-install path)', async () => {
+      rolesRepo.find.mockResolvedValue([{ id: 2, roleName: 'SUPER_ADMIN' }]);
+      resourcesRepo.find.mockResolvedValue([USER_RESOURCE]);
+      actionsRepo.find.mockResolvedValue([VIEW_USER_ACTION, CREATE_USER_ACTION]);
+      policiesRepo.findOne.mockResolvedValue(null);
+
+      // First read: zero attached Policies. Every read after the create+attach below returns this
+      // SAME object, mutated in place as statements get saved — same established pattern as the
+      // "creates a brand-new statement" test above, so the self-check's own re-read reflects it too.
+      const createdPolicy: { id: number; statements: { resourceId: number; effect: string; actions: string[] }[] } = {
+        id: 100,
+        statements: [],
+      };
+      rolePoliciesRepo.find.mockResolvedValueOnce([]).mockResolvedValue([{ policy: createdPolicy }]);
+
+      statementsRepo.create.mockImplementation((data: any) => data);
+      statementsRepo.save.mockImplementation((s: any) => {
+        createdPolicy.statements.push({ ...s, effect: 'Allow' });
+        return Promise.resolve(s);
+      });
+
+      await service.ensureAdminPolicyGrants([]);
+
+      expect(policiesRepo.save).toHaveBeenCalledWith(expect.objectContaining({ name: 'SUPER_ADMIN Policy' }));
+      expect(rolePoliciesRepo.save).toHaveBeenCalledWith(expect.objectContaining({ roleId: 2, policyId: 100 }));
+      expect(createdPolicy.statements).toEqual([
+        expect.objectContaining({
+          resourceId: USER_RESOURCE.id,
+          actions: expect.arrayContaining(['VIEW_USER', 'CREATE_USER']),
+        }),
+      ]);
+    });
+
+    it('reuses an existing Policy by the expected name instead of failing on the unique-name constraint, if one is already there but unattached', async () => {
+      rolesRepo.find.mockResolvedValue([{ id: 2, roleName: 'SUPER_ADMIN' }]);
+      resourcesRepo.find.mockResolvedValue([USER_RESOURCE]);
+      actionsRepo.find.mockResolvedValue([VIEW_USER_ACTION]);
+
+      const preExistingPolicy: { id: number; statements: { resourceId: number; effect: string; actions: string[] }[] } = {
+        id: 77,
+        statements: [],
+      };
+      policiesRepo.findOne.mockResolvedValue(preExistingPolicy);
+      rolePoliciesRepo.find.mockResolvedValueOnce([]).mockResolvedValue([{ policy: preExistingPolicy }]);
+      statementsRepo.create.mockImplementation((data: any) => data);
+      statementsRepo.save.mockImplementation((s: any) => {
+        preExistingPolicy.statements.push({ ...s, effect: 'Allow' });
+        return Promise.resolve(s);
+      });
+
+      await service.ensureAdminPolicyGrants([]);
+
+      expect(policiesRepo.save).not.toHaveBeenCalled();
+      expect(rolePoliciesRepo.save).toHaveBeenCalledWith(expect.objectContaining({ roleId: 2, policyId: 77 }));
+    });
+
+    it("adds every missing active, non-excluded action to the role's existing statement for that resource", async () => {
+      rolesRepo.find.mockResolvedValue([{ id: 2, roleName: 'SUPER_ADMIN' }]);
+      resourcesRepo.find.mockResolvedValue([USER_RESOURCE]);
+      actionsRepo.find.mockResolvedValue([VIEW_USER_ACTION, CREATE_USER_ACTION, EDIT_USER_ACTION, DELETE_USER_ACTION]);
+
+      const sharedStatement = { resourceId: USER_RESOURCE.id, effect: 'Allow', actions: ['VIEW_USER'] };
+      rolePoliciesRepo.find.mockResolvedValue([{ policy: { id: 2, statements: [sharedStatement] } }]);
+      statementsRepo.save.mockImplementation((s: any) => Promise.resolve(s));
+
+      await service.ensureAdminPolicyGrants([]);
+
+      expect(statementsRepo.save).toHaveBeenCalledTimes(1);
+      expect([...sharedStatement.actions].sort()).toEqual(['CREATE_USER', 'DELETE_USER', 'EDIT_USER', 'VIEW_USER']);
+    });
+
+    it('creates a brand-new statement for a resource the policy has no statement for at all', async () => {
+      rolesRepo.find.mockResolvedValue([{ id: 2, roleName: 'SUPER_ADMIN' }]);
+      resourcesRepo.find.mockResolvedValue([USER_RESOURCE]);
+      actionsRepo.find.mockResolvedValue([VIEW_USER_ACTION]);
+
+      const sharedPolicy: { id: number; statements: { resourceId: number; actions: string[] }[] } = { id: 2, statements: [] };
+      rolePoliciesRepo.find.mockResolvedValue([{ policy: sharedPolicy }]);
+      statementsRepo.create.mockImplementation((data: any) => data);
+      statementsRepo.save.mockImplementation((s: any) => {
+        sharedPolicy.statements.push(s);
+        return Promise.resolve(s);
+      });
+
+      await service.ensureAdminPolicyGrants([]);
+
+      expect(statementsRepo.create).toHaveBeenCalledWith(
+        expect.objectContaining({ policyId: 2, resourceId: USER_RESOURCE.id, effect: 'Allow', actions: ['VIEW_USER'] }),
+      );
+    });
+
+    // A role can have more than one Policy attached (AttachPolicyDto allows it). If a SECOND attached
+    // Policy already grants an action for a resource, the primary (first) Policy must not get a
+    // redundant grant of its own for that same code — otherwise every boot would keep adding the same
+    // already-covered action into the primary Policy's statement, growing it forever and scattering
+    // the same grant across multiple Policies.
+    it('does not redundantly re-grant an action into the primary Policy when a SECOND attached Policy already covers it', async () => {
+      rolesRepo.find.mockResolvedValue([{ id: 2, roleName: 'SUPER_ADMIN' }]);
+      resourcesRepo.find.mockResolvedValue([USER_RESOURCE]);
+      actionsRepo.find.mockResolvedValue([VIEW_USER_ACTION, CREATE_USER_ACTION]);
+
+      const primaryStatement = { resourceId: USER_RESOURCE.id, effect: 'Allow', actions: ['VIEW_USER'] };
+      const secondaryStatement = { resourceId: USER_RESOURCE.id, effect: 'Allow', actions: ['CREATE_USER'] };
+      rolePoliciesRepo.find.mockResolvedValue([
+        { policy: { id: 2, statements: [primaryStatement] } },
+        { policy: { id: 9, statements: [secondaryStatement] } },
+      ]);
+
+      await service.ensureAdminPolicyGrants([]);
+
+      expect(statementsRepo.save).not.toHaveBeenCalled();
+      expect(primaryStatement.actions).toEqual(['VIEW_USER']);
+      expect(secondaryStatement.actions).toEqual(['CREATE_USER']);
+    });
+
+    // SUPER_ADMIN is the application's root/owner account per explicit business requirement: it is
+    // NEVER subject to excludedActionCodesForAdmin, full stop. Only a distinct ADMIN role still has
+    // it applied — this is the "remove the exclusion from SUPER_ADMIN, keep it for ADMIN" business
+    // decision (not a guess), proven directly rather than merely asserted.
+    it('SUPER_ADMIN is never subject to excludedActionCodesForAdmin — it gets every active action regardless', async () => {
+      rolesRepo.find.mockResolvedValue([{ id: 2, roleName: 'SUPER_ADMIN' }]);
+      resourcesRepo.find.mockResolvedValue([USER_RESOURCE]);
+      actionsRepo.find.mockResolvedValue([VIEW_USER_ACTION, DELETE_USER_ACTION]);
+
+      const sharedStatement = { resourceId: USER_RESOURCE.id, effect: 'Allow', actions: ['VIEW_USER'] };
+      rolePoliciesRepo.find.mockResolvedValue([{ policy: { id: 2, statements: [sharedStatement] } }]);
+      statementsRepo.save.mockImplementation((s: any) => Promise.resolve(s));
+
+      await service.ensureAdminPolicyGrants(['DELETE_USER']);
+
+      expect(sharedStatement.actions).toEqual(expect.arrayContaining(['VIEW_USER', 'DELETE_USER']));
+    });
+
+    it('ADMIN (a distinct role from SUPER_ADMIN) still has excludedActionCodesForAdmin applied — never auto-granted an excluded code', async () => {
+      rolesRepo.find.mockResolvedValue([{ id: 9, roleName: 'ADMIN' }]);
+      resourcesRepo.find.mockResolvedValue([USER_RESOURCE]);
+      actionsRepo.find.mockResolvedValue([VIEW_USER_ACTION, DELETE_USER_ACTION]);
+
+      const sharedStatement = { resourceId: USER_RESOURCE.id, effect: 'Allow', actions: ['VIEW_USER'] };
+      rolePoliciesRepo.find.mockResolvedValue([{ policy: { id: 2, statements: [sharedStatement] } }]);
+      statementsRepo.save.mockImplementation((s: any) => Promise.resolve(s));
+
+      await service.ensureAdminPolicyGrants(['DELETE_USER']);
+
+      expect(sharedStatement.actions).toEqual(['VIEW_USER']);
+      expect(statementsRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('a manually-granted excluded code already on ADMIN\'s Policy is preserved (never auto-revoked), while new auto-grants of it stay withheld', async () => {
+      rolesRepo.find.mockResolvedValue([{ id: 9, roleName: 'ADMIN' }]);
+      resourcesRepo.find.mockResolvedValue([USER_RESOURCE]);
+      actionsRepo.find.mockResolvedValue([VIEW_USER_ACTION, CREATE_USER_ACTION, DELETE_USER_ACTION]);
+
+      // ADMIN already holds DELETE_USER (excluded) via a manual grant, plus VIEW_USER — CREATE_USER
+      // is still missing and should be added normally.
+      const sharedStatement = { resourceId: USER_RESOURCE.id, effect: 'Allow', actions: ['VIEW_USER', 'DELETE_USER'] };
+      rolePoliciesRepo.find.mockResolvedValue([{ policy: { id: 2, statements: [sharedStatement] } }]);
+      statementsRepo.save.mockImplementation((s: any) => Promise.resolve(s));
+
+      await service.ensureAdminPolicyGrants(['DELETE_USER']);
+
+      expect(sharedStatement.actions).toEqual(expect.arrayContaining(['VIEW_USER', 'DELETE_USER', 'CREATE_USER']));
+    });
+
+    it('throws if the post-write self-check still finds a missing code, instead of reporting false success', async () => {
+      rolesRepo.find.mockResolvedValue([{ id: 2, roleName: 'SUPER_ADMIN' }]);
+      resourcesRepo.find.mockResolvedValue([USER_RESOURCE]);
+      actionsRepo.find.mockResolvedValue([VIEW_USER_ACTION, CREATE_USER_ACTION]);
+      statementsRepo.save.mockResolvedValue(undefined);
+
+      // Two independent object literals (not shared references) — the self-check's own re-read must
+      // reflect what a FRESH query would return, not the in-memory mutation this method already made
+      // to the first object, so a save that silently failed to persist is still caught.
+      rolePoliciesRepo.find
+        .mockResolvedValueOnce([{ policy: { id: 2, statements: [{ resourceId: USER_RESOURCE.id, effect: 'Allow', actions: ['VIEW_USER'] }] } }])
+        .mockResolvedValueOnce([{ policy: { statements: [{ resourceId: USER_RESOURCE.id, effect: 'Allow', actions: ['VIEW_USER'] }] } }]);
+
+      await expect(service.ensureAdminPolicyGrants([])).rejects.toThrow(/still missing/);
+    });
+
+    it('never grants an action that exists in the Resource catalog but is not currently active (retired)', async () => {
+      rolesRepo.find.mockResolvedValue([{ id: 2, roleName: 'SUPER_ADMIN' }]);
+      resourcesRepo.find.mockResolvedValue([USER_RESOURCE]);
+      // DELETE_USER_ACTION omitted entirely from the "active" set — simulating retirement the same
+      // way a real retired action is excluded from ActionsService.ensureCriticalDefaults' own
+      // isActive:true query, so it can never again be granted via this method either.
+      actionsRepo.find.mockResolvedValue([VIEW_USER_ACTION, CREATE_USER_ACTION, EDIT_USER_ACTION]);
+
+      const sharedStatement = { resourceId: USER_RESOURCE.id, effect: 'Allow', actions: [] as string[] };
+      rolePoliciesRepo.find.mockResolvedValue([{ policy: { id: 2, statements: [sharedStatement] } }]);
+      statementsRepo.save.mockImplementation((s: any) => Promise.resolve(s));
+
+      await service.ensureAdminPolicyGrants([]);
+
+      expect(sharedStatement.actions).toEqual(expect.arrayContaining(['VIEW_USER', 'CREATE_USER', 'EDIT_USER']));
+      expect(sharedStatement.actions).not.toContain('DELETE_USER');
+    });
+
+    it('is idempotent across repeated boots — a second run makes no further Policy/statement writes once fully synced', async () => {
+      rolesRepo.find.mockResolvedValue([{ id: 2, roleName: 'SUPER_ADMIN' }]);
+      resourcesRepo.find.mockResolvedValue([USER_RESOURCE]);
+      actionsRepo.find.mockResolvedValue([VIEW_USER_ACTION, CREATE_USER_ACTION]);
+      policiesRepo.findOne.mockResolvedValue(null);
+
+      const createdPolicy: { id: number; statements: { resourceId: number; effect: string; actions: string[] }[] } = {
+        id: 100,
+        statements: [],
+      };
+      // Consumed once (the very first read, before anything exists); every later read — within this
+      // first boot's own self-check AND the second boot entirely — returns the same, now-populated
+      // policy, exactly like a real re-read from the database would after the first boot committed.
+      rolePoliciesRepo.find.mockResolvedValueOnce([]).mockResolvedValue([{ policy: createdPolicy }]);
+      statementsRepo.create.mockImplementation((data: any) => data);
+      statementsRepo.save.mockImplementation((s: any) => {
+        const existing = createdPolicy.statements.find((st) => st.resourceId === s.resourceId);
+        if (existing) existing.actions = s.actions;
+        else createdPolicy.statements.push({ ...s, effect: 'Allow' });
+        return Promise.resolve(s);
+      });
+
+      await service.ensureAdminPolicyGrants([]);
+      expect(policiesRepo.save).toHaveBeenCalledTimes(1);
+      const statementSavesAfterFirstBoot = statementsRepo.save.mock.calls.length;
+
+      policiesRepo.save.mockClear();
+      await service.ensureAdminPolicyGrants([]);
+
+      expect(policiesRepo.save).not.toHaveBeenCalled();
+      expect(statementsRepo.save.mock.calls.length).toBe(statementSavesAfterFirstBoot);
+      expect(createdPolicy.statements).toHaveLength(1);
+      expect([...createdPolicy.statements[0].actions].sort()).toEqual(['CREATE_USER', 'VIEW_USER']);
+    });
+
+    // Not a toy subset — proves comprehensive coverage against the REAL resource-catalog.ts and
+    // seed-data.ts ACTIONS/ADMIN_GRANT_EXCLUDED_ACTION_CODES, the same data the real boot sequence
+    // uses. BILL_RUN_HISTORICAL_SUBMIT/APPROVE are deliberately excluded from `expectedGranted` — per
+    // resource-catalog.ts's own comment they are pre-provisioned-but-unimplemented codes intentionally
+    // absent from seed-data.ts's ACTIONS array (so a role with no historical grant of its own
+    // correctly never gets them from this method; a role that already holds them keeps them,
+    // untouched, since this method only ever adds, never removes).
+    //
+    // Covers both roles in one pass since they share the exact same catalog mocks and must diverge
+    // only on the exclusion list: SUPER_ADMIN gets every single active code including the ones in
+    // ADMIN_GRANT_EXCLUDED_ACTION_CODES (Finance/Billing/Tariff approvals, workflow-approver
+    // management); ADMIN still has that list withheld.
+    it('comprehensive, against the REAL catalog: SUPER_ADMIN gets every active action with NO exclusions; ADMIN still has ADMIN_GRANT_EXCLUDED_ACTION_CODES withheld', async () => {
+      const realActionCodes = new Set(ACTIONS.map((a) => a.code));
+      const excluded = new Set(ADMIN_GRANT_EXCLUDED_ACTION_CODES);
+      const allActiveActionRows = ACTIONS.map((a, i) => ({ id: i + 1, code: a.code, isActive: true }));
+      const allResourceRows = RESOURCES.map((r, i) => ({ id: i + 1, code: r.code }));
+      const expectedActiveGrantable = RESOURCES.flatMap((r) => r.actionCodes).filter((code) => realActionCodes.has(code));
+
+      // --- SUPER_ADMIN: fresh install, gets everything, excluded codes included ---
+      rolesRepo.find.mockResolvedValue([{ id: 2, roleName: 'SUPER_ADMIN' }]);
+      resourcesRepo.find.mockResolvedValue(allResourceRows);
+      actionsRepo.find.mockResolvedValue(allActiveActionRows);
+      policiesRepo.findOne.mockResolvedValue(null);
+
+      const superAdminPolicy: { id: number; statements: { resourceId: number; effect: string; actions: string[] }[] } = {
+        id: 100,
+        statements: [],
+      };
+      rolePoliciesRepo.find.mockResolvedValueOnce([]).mockResolvedValue([{ policy: superAdminPolicy }]);
+      statementsRepo.create.mockImplementation((data: any) => data);
+      statementsRepo.save.mockImplementation((s: any) => {
+        superAdminPolicy.statements.push({ ...s, effect: 'Allow' });
+        return Promise.resolve(s);
+      });
+
+      await service.ensureAdminPolicyGrants(ADMIN_GRANT_EXCLUDED_ACTION_CODES);
+
+      const superAdminGranted = new Set(superAdminPolicy.statements.flatMap((s) => s.actions));
+      for (const code of expectedActiveGrantable) {
+        expect(superAdminGranted.has(code)).toBe(true);
+      }
+      for (const code of excluded) {
+        expect(superAdminGranted.has(code)).toBe(true); // explicitly NOT withheld for SUPER_ADMIN
+      }
+
+      // --- ADMIN: same catalog, same exclusion list argument, but the list still applies ---
+      rolesRepo.find.mockResolvedValue([{ id: 9, roleName: 'ADMIN' }]);
+      const adminPolicy: { id: number; statements: { resourceId: number; effect: string; actions: string[] }[] } = {
+        id: 101,
+        statements: [],
+      };
+      rolePoliciesRepo.find.mockReset();
+      rolePoliciesRepo.find.mockResolvedValueOnce([]).mockResolvedValue([{ policy: adminPolicy }]);
+      statementsRepo.save.mockImplementation((s: any) => {
+        adminPolicy.statements.push({ ...s, effect: 'Allow' });
+        return Promise.resolve(s);
+      });
+
+      await service.ensureAdminPolicyGrants(ADMIN_GRANT_EXCLUDED_ACTION_CODES);
+
+      const adminGranted = new Set(adminPolicy.statements.flatMap((s) => s.actions));
+      const expectedForAdmin = expectedActiveGrantable.filter((code) => !excluded.has(code));
+      for (const code of expectedForAdmin) {
+        expect(adminGranted.has(code)).toBe(true);
+      }
+      for (const code of excluded) {
+        expect(adminGranted.has(code)).toBe(false);
+      }
     });
   });
 });

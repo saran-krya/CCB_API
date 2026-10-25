@@ -63,6 +63,7 @@ export class BootstrapService implements OnApplicationBootstrap {
         await this.iamService.ensureResourceCatalog()
         await this.rolePermissionsService.ensureAdminGrants(ADMIN_GRANT_EXCLUDED_ACTION_CODES)
         await this.rolePermissionsService.ensureSuperAdminGrant('WORKFLOW_MANAGE_APPROVERS')
+        await this.iamService.ensureAdminPolicyGrants(ADMIN_GRANT_EXCLUDED_ACTION_CODES)
         await this.registrationDocumentRuleService.ensureCriticalDefaults()
       } catch (err) {
         this.logger.error('Backfill of critical defaults failed — server will still start', err as Error)
@@ -78,6 +79,7 @@ export class BootstrapService implements OnApplicationBootstrap {
       await this.iamService.ensureResourceCatalog()
       await this.rolePermissionsService.ensureAdminGrants(ADMIN_GRANT_EXCLUDED_ACTION_CODES)
       await this.rolePermissionsService.ensureSuperAdminGrant('WORKFLOW_MANAGE_APPROVERS')
+      await this.iamService.ensureAdminPolicyGrants(ADMIN_GRANT_EXCLUDED_ACTION_CODES)
 
       const adminEmail = this.config.get<string>(
         'DEFAULT_ADMIN_EMAIL',

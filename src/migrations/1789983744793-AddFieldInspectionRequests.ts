@@ -17,6 +17,15 @@ export class AddFieldInspectionRequests1789983744793 implements MigrationInterfa
     name = 'AddFieldInspectionRequests1789983744793'
 
     public async up(queryRunner: QueryRunner): Promise<void> {
+        // Fresh install: `roles` doesn't exist yet (migrations run before `synchronize: true`
+        // does — see 1788342228029's own comment for the confirmed cold-start evidence), which
+        // would fail the ALTER TABLE roles below outright, and the FKs further down reference
+        // `properties`/`users`/`meter_readings`, equally absent at this point. Safe to skip
+        // entirely: `synchronize` creates `roles` (with `can_be_field_inspector` already on it from
+        // the current Role entity) and both new tables (from the current FieldInspectionRequest/
+        // FieldInspectionRequestReading entity definitions, FKs included) right after migrations finish.
+        if (!(await queryRunner.hasTable('roles'))) return;
+
         const roleColumns = await queryRunner.query(
             `SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'roles' AND COLUMN_NAME = 'can_be_field_inspector'`,
         );

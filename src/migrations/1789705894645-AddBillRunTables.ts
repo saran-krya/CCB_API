@@ -24,6 +24,20 @@ export class AddBillRunTables1789705894645 implements MigrationInterface {
     name = 'AddBillRunTables1789705894645'
 
     public async up(queryRunner: QueryRunner): Promise<void> {
+        // Fresh install: `users`/`properties`/`billing_cycle_masters`/`billing_cycle_versions` don't
+        // exist yet (migrations run before `synchronize: true` does — see 1788342228029's own
+        // comment for the confirmed cold-start evidence), which would fail the FKs added below
+        // outright. Safe to skip entirely: `synchronize` creates `bill_run_batches`/`bill_runs`
+        // (FKs included) directly from their current entity definitions right after migrations finish.
+        if (
+            !(await queryRunner.hasTable('users')) ||
+            !(await queryRunner.hasTable('properties')) ||
+            !(await queryRunner.hasTable('billing_cycle_masters')) ||
+            !(await queryRunner.hasTable('billing_cycle_versions'))
+        ) {
+            return;
+        }
+
         if (!(await queryRunner.hasTable('bill_run_batches'))) {
             await queryRunner.query(`CREATE TABLE \`bill_run_batches\` (\`id\` int NOT NULL AUTO_INCREMENT, \`created_at\` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6), \`updated_at\` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6), \`deleted_at\` datetime(6) NULL, \`business_code\` varchar(20) NULL, \`submitted_by_id\` int NULL, \`submitted_on\` datetime NOT NULL, \`notes\` text NULL, UNIQUE INDEX \`IDX_bill_run_batches_business_code\` (\`business_code\`), PRIMARY KEY (\`id\`)) ENGINE=InnoDB`);
         }

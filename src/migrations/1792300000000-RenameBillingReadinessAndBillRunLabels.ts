@@ -16,6 +16,12 @@ export class RenameBillingReadinessAndBillRunLabels1792300000000 implements Migr
     name = 'RenameBillingReadinessAndBillRunLabels1792300000000'
 
     public async up(queryRunner: QueryRunner): Promise<void> {
+        // Fresh install: `actions` doesn't exist at all yet (migrations run before
+        // `synchronize: true` does — see 1788342228029's own comment for the confirmed cold-start
+        // evidence), which would fail the UPDATEs below outright. Safe to skip: bootstrap's own
+        // seed-data.ts already seeds these actions with their final, renamed display names.
+        if (!(await queryRunner.hasTable('actions'))) return;
+
         await queryRunner.query(`UPDATE actions SET name = 'View Billing Readiness' WHERE code = 'BILLING_READINESS_VIEW'`);
         await queryRunner.query(`UPDATE actions SET name = 'Submit Bill Run' WHERE code = 'BILL_RUN_SUBMIT'`);
         await queryRunner.query(`UPDATE actions SET name = 'Approve / Reject / Return Bill Run' WHERE code = 'BILL_RUN_APPROVE'`);

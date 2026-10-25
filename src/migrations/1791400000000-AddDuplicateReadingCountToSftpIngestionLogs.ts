@@ -14,6 +14,13 @@ export class AddDuplicateReadingCountToSftpIngestionLogs1791400000000 implements
     name = 'AddDuplicateReadingCountToSftpIngestionLogs1791400000000'
 
     public async up(queryRunner: QueryRunner): Promise<void> {
+        // Fresh install: `sftp_ingestion_logs` doesn't exist yet (migrations run before
+        // `synchronize: true` does — see 1788342228029's own comment for the confirmed cold-start
+        // evidence), and `queryRunner.hasColumn` throws outright on a missing table rather than
+        // returning false. Safe to skip: `synchronize` creates `sftp_ingestion_logs` immediately
+        // after migrations finish, with this column already on it from the current entity definition.
+        if (!(await queryRunner.hasTable('sftp_ingestion_logs'))) return;
+
         const hasColumn = await queryRunner.hasColumn('sftp_ingestion_logs', 'duplicate_reading_count');
         if (!hasColumn) {
             await queryRunner.query(`ALTER TABLE \`sftp_ingestion_logs\` ADD \`duplicate_reading_count\` int unsigned NOT NULL DEFAULT 0`);

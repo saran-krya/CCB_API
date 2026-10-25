@@ -13,6 +13,14 @@ export class AddCustomerAutoPayEnabled1788430486950 implements MigrationInterfac
     name = 'AddCustomerAutoPayEnabled1788430486950'
 
     public async up(queryRunner: QueryRunner): Promise<void> {
+        // Fresh install: `customers` doesn't exist yet (migrations run before `synchronize: true`
+        // does — see 1788342228029's own comment for the confirmed cold-start evidence).
+        // `queryRunner.hasColumn` throws outright on a table that doesn't exist at all, rather than
+        // returning false, so this must be checked first. Safe to skip: `synchronize` creates
+        // `customers` immediately after migrations finish, with `auto_pay_enabled` already on it
+        // from the current Customer entity definition.
+        if (!(await queryRunner.hasTable('customers'))) return;
+
         const hasColumn = await queryRunner.hasColumn('customers', 'auto_pay_enabled');
         if (!hasColumn) {
             await queryRunner.query(`ALTER TABLE \`customers\` ADD \`auto_pay_enabled\` tinyint NOT NULL DEFAULT 0`);

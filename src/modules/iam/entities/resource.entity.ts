@@ -19,13 +19,13 @@ import { BaseEntity } from '../../../common/entities/base.entity';
  */
 @Entity('resources')
 export class Resource extends BaseEntity {
-  @Column({ unique: true })
+  @Column({ unique: true, length: 100 })
   code!: string;
 
   @Column()
   name!: string;
 
-  @Column({ nullable: true })
+  @Column({ nullable: true, length: 500 })
   description?: string;
 
   @Column({ nullable: true })

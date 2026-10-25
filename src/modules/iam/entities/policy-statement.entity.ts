@@ -38,6 +38,6 @@ export class PolicyStatement extends BaseEntity {
   @Column({ type: 'varchar', length: 10, default: 'Allow' })
   effect!: PolicyEffect;
 
-  @Column({ type: 'simple-json' })
+  @Column({ type: 'json' })
   actions!: string[];
 }

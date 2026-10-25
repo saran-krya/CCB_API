@@ -137,7 +137,10 @@ export class MeterController {
   }
 
   @Get('master-meters/export')
-  @Permission('METER_VIEW', 'METER_INVENTORY_EXPORT')
+  // METER_EXPORT added (RBAC cleanup audit) — it's a real, seeded, policy-attachable code (METER
+  // resource) that previously gated nothing here, so a policy granting it alone could never actually
+  // export; additive only, takes nothing away from existing METER_VIEW/METER_INVENTORY_EXPORT holders.
+  @Permission('METER_VIEW', 'METER_INVENTORY_EXPORT', 'METER_EXPORT')
   @ApiOperation({ summary: 'Export master meters to Excel using the configured column list' })
   async exportMasterMeters(@Query() query: MeterQueryDto, @Res() res: Response) {
     const buffer = await this.meters.exportMeters(MeterImportType.MASTER, query);
@@ -229,7 +232,8 @@ export class MeterController {
   }
 
   @Get('sub-meters/export')
-  @Permission('METER_VIEW', 'METER_INVENTORY_EXPORT')
+  // METER_EXPORT added — see master-meters/export's own comment above for why.
+  @Permission('METER_VIEW', 'METER_INVENTORY_EXPORT', 'METER_EXPORT')
   @ApiOperation({ summary: 'Export sub meters to Excel using the configured column list' })
   async exportSubMeters(@Query() query: MeterQueryDto, @Res() res: Response) {
     const buffer = await this.meters.exportMeters(MeterImportType.SUB, query);

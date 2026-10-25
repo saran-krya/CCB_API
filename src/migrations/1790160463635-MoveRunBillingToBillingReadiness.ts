@@ -34,6 +34,12 @@ export class MoveRunBillingToBillingReadiness1790160463635 implements MigrationI
     name = 'MoveRunBillingToBillingReadiness1790160463635'
 
     public async up(queryRunner: QueryRunner): Promise<void> {
+        // Fresh install: `screens` doesn't exist at all yet (migrations run before
+        // `synchronize: true` does — see 1788342228029's own comment for the confirmed cold-start
+        // evidence), which would fail the SELECT below outright rather than just return no row.
+        // Safe to skip: bootstrap's own seed-data.ts already reflects this migration's end state.
+        if (!(await queryRunner.hasTable('screens'))) return;
+
         const [billingReadinessScreen] = await queryRunner.query(
             `SELECT id FROM screens WHERE code = 'BILLING_READINESS'`,
         );

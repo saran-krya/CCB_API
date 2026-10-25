@@ -17,6 +17,26 @@ export class AddBillingManagementTables1789990282433 implements MigrationInterfa
     name = 'AddBillingManagementTables1789990282433'
 
     public async up(queryRunner: QueryRunner): Promise<void> {
+        // Fresh install: `bill_runs`/`properties`/`units`/`customers`/`billing_cycle_masters`/
+        // `billing_cycle_versions`/`tariff_versions`/`users` don't exist yet (migrations run before
+        // `synchronize: true` does — see 1788342228029's own comment for the confirmed cold-start
+        // evidence; `bill_runs` specifically is skipped by AddBillRunTables's own matching guard on
+        // a fresh install), which would fail the FKs added below outright. Safe to skip entirely:
+        // `synchronize` creates `bills`/`bill_line_items` (FKs included) directly from their current
+        // entity definitions right after migrations finish.
+        if (
+            !(await queryRunner.hasTable('bill_runs')) ||
+            !(await queryRunner.hasTable('properties')) ||
+            !(await queryRunner.hasTable('units')) ||
+            !(await queryRunner.hasTable('customers')) ||
+            !(await queryRunner.hasTable('billing_cycle_masters')) ||
+            !(await queryRunner.hasTable('billing_cycle_versions')) ||
+            !(await queryRunner.hasTable('tariff_versions')) ||
+            !(await queryRunner.hasTable('users'))
+        ) {
+            return;
+        }
+
         if (!(await queryRunner.hasTable('bills'))) {
             await queryRunner.query(`CREATE TABLE \`bills\` (\`id\` int NOT NULL AUTO_INCREMENT, \`created_at\` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6), \`updated_at\` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6), \`deleted_at\` datetime(6) NULL, \`business_code\` varchar(20) NULL, \`bill_run_id\` int NOT NULL, \`property_id\` int NOT NULL, \`unit_id\` int NOT NULL, \`customer_id\` int NOT NULL, \`billing_cycle_master_id\` int NOT NULL, \`billing_cycle_version_id\` int NOT NULL, \`billing_period_start\` date NOT NULL, \`billing_period_end\` date NOT NULL, \`bill_issue_date\` date NOT NULL, \`bill_due_date\` date NOT NULL, \`consumption_kwh\` decimal(14,4) NOT NULL, \`tariff_version_id\` int NOT NULL, \`tariff_rate_snapshot\` decimal(10,4) NOT NULL, \`billing_service_fee_snapshot\` decimal(10,2) NOT NULL, \`vat_rate_snapshot\` decimal(5,2) NOT NULL, \`subtotal\` decimal(12,2) NOT NULL, \`vat_amount\` decimal(12,2) NOT NULL, \`total_due\` decimal(12,2) NOT NULL, \`status\` enum ('pending_review', 'issued', 'cancelled') NOT NULL DEFAULT 'pending_review', \`generated_at\` datetime NOT NULL, \`generated_by_id\` int NULL, \`issued_at\` datetime NULL, \`issued_by_id\` int NULL, \`cancelled_at\` datetime NULL, \`cancelled_by_id\` int NULL, \`cancellation_reason\` text NULL, \`replaces_bill_id\` int NULL, UNIQUE INDEX \`IDX_bills_business_code\` (\`business_code\`), UNIQUE INDEX \`IDX_bills_bill_run_unit\` (\`bill_run_id\`, \`unit_id\`), INDEX \`IDX_bills_property\` (\`property_id\`), PRIMARY KEY (\`id\`)) ENGINE=InnoDB`);
         }

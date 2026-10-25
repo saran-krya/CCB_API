@@ -23,6 +23,13 @@ export class RehomeBillRunScreenToBillingManagement1790148200000 implements Migr
     name = 'RehomeBillRunScreenToBillingManagement1790148200000'
 
     public async up(queryRunner: QueryRunner): Promise<void> {
+        // Fresh install: `sub_modules`/`pmodules`/`screens` don't exist at all yet (migrations run
+        // before `synchronize: true` does — see 1788342228029's own comment for the confirmed
+        // cold-start evidence), which would fail the SELECT below outright rather than just return
+        // no row. Safe to skip: bootstrap's own seed-data.ts already seeds BILLING_READINESS_BILL_RUN
+        // directly under Bill Run Register, this migration's own end state.
+        if (!(await queryRunner.hasTable('sub_modules'))) return;
+
         let [registerSubModule] = await queryRunner.query(
             `SELECT id FROM sub_modules WHERE code = 'BILL_RUN_REGISTER'`,
         );

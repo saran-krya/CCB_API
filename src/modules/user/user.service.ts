@@ -3,11 +3,11 @@ import { InjectRepository } from '@nestjs/typeorm';
 import * as bcrypt from 'bcryptjs';
 import { In, Repository } from 'typeorm';
 import { AuditService } from '../../audit/audit.service';
-import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 import { paginate } from '../../common/utils/pagination.util';
 import { RoleService } from '../role/role.service';
 import { CreateUserDto, UpdateUserDto } from './dto/create-user.dto';
 import { UpdatePreferencesDto } from './dto/update-preferences.dto';
+import { UserQueryDto } from './dto/user-query.dto';
 import { User } from './entities/user.entity';
 import { RolePermissionsService } from '../role-permissions/role-permissions.service';
 import { AttributeService } from '../attribute/attribute.service';
@@ -113,6 +113,9 @@ export class UserService {
         )
         : null;
 
+    user.mustChangePassword =
+      dto.mustChangePassword ?? false;
+
     const saved =
       await this.users.save(user);
 
@@ -132,7 +135,7 @@ export class UserService {
   }
 
   async findAll(
-    query: PaginationQueryDto,
+    query: UserQueryDto,
   ) {
     const qb = this.users
       .createQueryBuilder("user")
@@ -148,56 +151,29 @@ export class UserService {
         "role.id = user_role.role_id",
       );
 
-
-    if (query["search.fullName"]) {
+    // One search box (matching Role Management's own single-search layout) must match a name,
+    // email, mobile number, OR role name — an OR across all four, not four independent AND'd
+    // filters (the old search.fullName/search.email/search.mobile/search.role behavior).
+    if (query["search.query"]) {
       qb.andWhere(
-        `
-      CONCAT(
-        COALESCE(user.firstName, ''),
-        ' ',
-        COALESCE(user.middleName, ''),
-        ' ',
-        COALESCE(user.lastName, '')
-      ) LIKE :fullName
-      `,
+        `(
+          CONCAT(
+            COALESCE(user.firstName, ''),
+            ' ',
+            COALESCE(user.middleName, ''),
+            ' ',
+            COALESCE(user.lastName, '')
+          ) LIKE :term
+          OR user.email LIKE :term
+          OR user.mobile LIKE :term
+          OR role.roleName LIKE :term
+        )`,
         {
-          fullName: `%${query["search.fullName"]}%`,
+          term: `%${query["search.query"]}%`,
         },
       );
     }
 
-
-    if (query["search.email"]) {
-      qb.andWhere(
-        "user.email LIKE :email",
-        {
-          email: `%${query["search.email"]}%`,
-        },
-      );
-    }
-
-
-    if (query["search.mobile"]) {
-      qb.andWhere(
-        "user.mobile LIKE :mobile",
-        {
-          mobile: `%${query["search.mobile"]}%`,
-        },
-      );
-    }
-
-
-    if (query["search.role"]) {
-      const roles =
-        query["search.role"].split(",");
-
-      qb.andWhere(
-        "role.roleName IN (:...roles)",
-        {
-          roles,
-        },
-      );
-    }
     const allowedSortColumns = {
       fullName: "user.firstName",
       email: "user.email",
@@ -390,8 +366,12 @@ export class UserService {
       .getOne();
   }
 
+  // Always clears mustChangePassword alongside the hash — whether this password change was the
+  // mandatory one (AuthService's own flow redirected them here) or a voluntary one from an already
+  // fully-logged-in user, they've just demonstrated they can set a real password, so there is never
+  // a case where the flag should survive a successful change.
   async setPasswordHash(userId: number, passwordHash: string): Promise<void> {
-    await this.users.update(userId, { passwordHash });
+    await this.users.update(userId, { passwordHash, mustChangePassword: false });
   }
 
   async updateLastLogin(
@@ -546,68 +526,5 @@ export class UserService {
   }
 
 
-  async getDashboard() {
-    const totalUsers =
-      await this.users.count();
-
-    const activeUsers =
-      await this.users.count({
-        where: {
-          active: true,
-        },
-      });
-
-    const inactiveUsers =
-      await this.users.count({
-        where: {
-          active: false,
-        },
-      });
-
-    const adminUsers =
-      await this.users
-        .createQueryBuilder("user")
-        .innerJoin("user_roles", "user_role", "user_role.user_id = user.id AND user_role.deleted_at IS NULL")
-        .innerJoin("roles", "role", "role.id = user_role.role_id")
-        .where(
-          "role.roleName IN (:...roles)",
-          {
-            roles: [
-              "SUPER_ADMIN",
-              "ADMIN",
-            ],
-          }
-        )
-        .getCount();
-
-    const roleDistribution =
-      await this.users
-        .createQueryBuilder("user")
-        .innerJoin("user_roles", "user_role", "user_role.user_id = user.id AND user_role.deleted_at IS NULL")
-        .innerJoin("roles", "role", "role.id = user_role.role_id")
-        .select(
-          "role.roleName",
-          "role"
-        )
-        .addSelect(
-          "COUNT(user.id)",
-          "count"
-        )
-        .groupBy("role.roleName")
-        .getRawMany();
-
-    return {
-      summary: {
-        totalUsers,
-        activeUsers,
-        inactiveUsers,
-        adminUsers,
-      },
-
-      analytics: {
-        roleDistribution,
-      },
-    };
-  }
 }
 

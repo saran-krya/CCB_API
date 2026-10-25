@@ -20,6 +20,12 @@ export class FixSystemAdminSubModuleDisplayOrder1792700000000 implements Migrati
     name = 'FixSystemAdminSubModuleDisplayOrder1792700000000'
 
     public async up(queryRunner: QueryRunner): Promise<void> {
+        // Fresh install: `sub_modules` doesn't exist at all yet (migrations run before
+        // `synchronize: true` does — see 1788342228029's own comment for the confirmed cold-start
+        // evidence), which would fail the UPDATEs below outright. Safe to skip: bootstrap's own
+        // seed-data.ts already seeds these sub-modules with their final display order.
+        if (!(await queryRunner.hasTable('sub_modules'))) return;
+
         await queryRunner.query(`UPDATE sub_modules SET displayOrder = 5 WHERE code = 'ATTRIBUTES'`);
         await queryRunner.query(`UPDATE sub_modules SET displayOrder = 6 WHERE code = 'LFM'`);
         await queryRunner.query(`UPDATE sub_modules SET displayOrder = 7 WHERE code = 'DOCUMENT_SET_DEFINITION'`);

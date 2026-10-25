@@ -14,6 +14,13 @@ export class AddCustomerValueToAttributes1789024545198 implements MigrationInter
     name = 'AddCustomerValueToAttributes1789024545198'
 
     public async up(queryRunner: QueryRunner): Promise<void> {
+        // Fresh install: `attributes` doesn't exist yet (migrations run before `synchronize: true`
+        // does — see 1788342228029's own comment for the confirmed cold-start evidence), and
+        // `queryRunner.hasColumn` throws outright on a missing table rather than returning false.
+        // Safe to skip: `synchronize` creates `attributes` immediately after migrations finish, with
+        // `customer_value` already on it from the current Attribute entity definition.
+        if (!(await queryRunner.hasTable('attributes'))) return;
+
         if (!(await queryRunner.hasColumn('attributes', 'customer_value'))) {
             await queryRunner.query(`ALTER TABLE \`attributes\` ADD \`customer_value\` text NULL`);
         }

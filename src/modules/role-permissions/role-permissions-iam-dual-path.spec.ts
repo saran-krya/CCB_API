@@ -21,10 +21,12 @@ import { ACTION_TO_RESOURCE_CODE, RESOURCES } from '../iam/resource-catalog';
 describe('RolePermissionsService.roleHasAction — full IAM cutover (policy-only)', () => {
   let service: RolePermissionsService;
   let roleHasActionViaPolicy: jest.Mock;
+  let getActionCodesGrantedByPolicies: jest.Mock;
   let rolePermissionRepoMock: { createQueryBuilder: jest.Mock };
 
   beforeEach(async () => {
     roleHasActionViaPolicy = jest.fn();
+    getActionCodesGrantedByPolicies = jest.fn();
     // Deliberately wired so that if roleHasAction ever regressed to touching the legacy table again,
     // this mock would throw loudly instead of silently returning a plausible-looking count.
     rolePermissionRepoMock = {
@@ -44,7 +46,7 @@ describe('RolePermissionsService.roleHasAction — full IAM cutover (policy-only
         { provide: getRepositoryToken(Screen), useValue: {} },
         { provide: DataSource, useValue: {} },
         { provide: AuditService, useValue: {} },
-        { provide: IamService, useValue: { roleHasActionViaPolicy } },
+        { provide: IamService, useValue: { roleHasActionViaPolicy, getActionCodesGrantedByPolicies } },
       ],
     }).compile();
 
@@ -87,6 +89,30 @@ describe('RolePermissionsService.roleHasAction — full IAM cutover (policy-only
     expect(result).toBe(false);
     expect(rolePermissionRepoMock.createQueryBuilder).not.toHaveBeenCalled();
   });
+
+  // Backs GET /auth/me/actions — the frontend's Policy-based sidebar-visibility feature calls this to
+  // learn exactly which Action codes the current session's Role holds, from the SAME resolution path
+  // as roleHasAction above, never the legacy tree.
+  describe('getMyActionCodes', () => {
+    it('delegates to IamService.getActionCodesGrantedByPolicies and returns it as a plain array', async () => {
+      getActionCodesGrantedByPolicies.mockResolvedValue(new Set(['VIEW_CUSTOMER', 'EDIT_CUSTOMER']));
+
+      const result = await service.getMyActionCodes(5);
+
+      expect(getActionCodesGrantedByPolicies).toHaveBeenCalledWith(5);
+      expect(result.sort()).toEqual(['EDIT_CUSTOMER', 'VIEW_CUSTOMER']);
+      expect(rolePermissionRepoMock.createQueryBuilder).not.toHaveBeenCalled();
+    });
+
+    it('a role with zero attached Policies gets an empty array, never a legacy-table fallback', async () => {
+      getActionCodesGrantedByPolicies.mockResolvedValue(new Set());
+
+      const result = await service.getMyActionCodes(20);
+
+      expect(result).toEqual([]);
+      expect(rolePermissionRepoMock.createQueryBuilder).not.toHaveBeenCalled();
+    });
+  });
 });
 
 // Nav-visibility-only Action codes for the Policy/Resource ADMIN SCREENS themselves (added when
@@ -119,11 +145,17 @@ describe('Resource-to-Action mapping — static correctness (requirement: valida
 
   it('the completed Registration Approval permission split survives the Resource model — APPROVE and DEPOSIT_MANAGE are distinct action codes on the same Resource, never merged', () => {
     const registrationResource = RESOURCES.find((r) => r.code === 'REGISTRATION_REQUEST')!;
-    expect(registrationResource.actionCodes).toContain('REGISTRATION_APPROVAL_APPROVE');
+    // Post-consolidation (1792800000000-ConsolidateDuplicateActionCodes.ts), the surviving "approve"
+    // code is APPROVE_REGISTRATION_REQUEST — REGISTRATION_APPROVAL_APPROVE (the old Registration
+    // Approval screen's duplicate of it) was retired and folded in, since it was confirmed to gate
+    // the exact same capability, never an independent one. DEPOSIT_MANAGE was a genuinely distinct
+    // capability from the start and was untouched by that consolidation.
+    expect(registrationResource.actionCodes).toContain('APPROVE_REGISTRATION_REQUEST');
     expect(registrationResource.actionCodes).toContain('REGISTRATION_APPROVAL_DEPOSIT_MANAGE');
+    expect(registrationResource.actionCodes).not.toContain('REGISTRATION_APPROVAL_APPROVE');
     // They remain separately grantable action codes within the same resource's statement — a Policy
     // author can include one without the other.
-    expect(ACTION_TO_RESOURCE_CODE['REGISTRATION_APPROVAL_APPROVE']).toBe('REGISTRATION_REQUEST');
+    expect(ACTION_TO_RESOURCE_CODE['APPROVE_REGISTRATION_REQUEST']).toBe('REGISTRATION_REQUEST');
     expect(ACTION_TO_RESOURCE_CODE['REGISTRATION_APPROVAL_DEPOSIT_MANAGE']).toBe('REGISTRATION_REQUEST');
   });
 });

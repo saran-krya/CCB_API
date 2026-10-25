@@ -25,6 +25,12 @@ export class RemoveBillingReadinessPropertyView1790159558469 implements Migratio
     name = 'RemoveBillingReadinessPropertyView1790159558469'
 
     public async up(queryRunner: QueryRunner): Promise<void> {
+        // Fresh install: `actions` doesn't exist at all yet (migrations run before
+        // `synchronize: true` does — see 1788342228029's own comment for the confirmed cold-start
+        // evidence), which would fail the SELECT below outright rather than just return no row.
+        // Safe to skip: bootstrap's own seed-data.ts never seeds the retired code at all.
+        if (!(await queryRunner.hasTable('actions'))) return;
+
         const [action] = await queryRunner.query(
             `SELECT id FROM actions WHERE code = 'BILLING_READINESS_PROPERTY_VIEW' AND deleted_at IS NULL`,
         );

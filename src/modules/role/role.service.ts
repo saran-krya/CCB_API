@@ -5,11 +5,12 @@ import {
 } from '@nestjs/common';
 
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
 
 import { AuditService } from '../../audit/audit.service';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 import { paginate } from '../../common/utils/pagination.util';
+import { ROLES } from '@app/common/constants/global';
 
 import {
   CreateRoleDto,
@@ -32,6 +33,12 @@ export class RoleService {
     private readonly audit: AuditService,
 
     private readonly userRoleService: UserRoleService,
+
+    // Raw COUNT checks only (workflow_approval_levels / workflow_definition_levels /
+    // workflow_instance_steps), in remove() below — avoids importing Workflow's entities into this
+    // module just for an existence check, and the risk of a circular module dependency that would
+    // bring (Role -> Workflow -> ... -> Role already depends on Role the other way).
+    private readonly dataSource: DataSource,
   ) { }
 
   async create(
@@ -202,6 +209,13 @@ export class RoleService {
     return roles.map((role) => ({
       id: role.id,
       name: role.roleName,
+      // Additive field — Create User's "Set permissions" step shows this short description when
+      // picking a role (AWS IAM-inspired redesign). Deliberately extending this already-reachable-
+      // by-this-page dropdown endpoint rather than adding a call to a more restrictively-guarded
+      // one (GET /roles/:id and the role-policies endpoints are effectively SUPER_ADMIN-only today —
+      // see role.controller.ts's own class-level @Roles(ADMIN) comment), so this keeps working for
+      // whichever role the page's own CREATE_USER/EDIT_USER permission is actually granted to.
+      description: role.roleDescription ?? null,
       userCategoryId: role.userCategoryId,
       userCategoryLabel: role.userCategory?.label ?? null,
       canBeReportingManager: role.canBeReportingManager,
@@ -345,6 +359,23 @@ export class RoleService {
     return saved;
   }
 
+  /**
+   * Guards against every EXTERNAL dependent before deleting — a role's own grants
+   * (role_permissions/role_policies) are NOT checked here and are expected to go away with it,
+   * same as a Policy's own statements disappear with that Policy (see IamService.removePolicy's
+   * identical "blocked only by what else depends on it" convention). What IS checked, each with
+   * its own clear error rather than a raw FK violation:
+   *   - user_roles: a user actually holding this role today.
+   *   - workflow_approval_levels / workflow_definition_levels: this role configured as an approver.
+   *   - workflow_instance_steps: an in-progress workflow step referencing this role (also the one
+   *     case the DB's own FK — RESTRICT, not CASCADE — would otherwise have caught, just as a raw,
+   *     unexplained SQL error instead of this message).
+   * Soft-deleted (softRemove), not the hard remove() this replaced — that hard delete combined with
+   * every other FK here being ON DELETE CASCADE meant deleting a role with users still assigned to
+   * it silently deleted their user_roles rows too (instant, unexplained, unrecoverable lockout) the
+   * moment it slipped past a guard. Soft delete never triggers those cascades at all, so this is a
+   * second, independent layer of safety under the explicit checks above, not a replacement for them.
+   */
   async remove(
     id: number,
     actorId?: number,
@@ -352,9 +383,61 @@ export class RoleService {
     const role =
       await this.findOne(id);
 
-    await this.roles.remove(
-      role,
+    // SUPER_ADMIN is the system's one true root role — RolesGuard bypasses every @Roles(...) check
+    // for it by this exact name (common/guards/roles.guard.ts), and ensureAdminPolicyGrants/
+    // ensureAdminGrants re-grant it every active action on every boot by this exact name too. Deleting
+    // it (even with zero assigned users, e.g. right after reassigning the bootstrap admin elsewhere)
+    // would permanently remove the one role those mechanisms depend on existing, with nothing left to
+    // reconcile into on the next restart. None of the checks below would have caught this on their own.
+    if (role.roleName === ROLES.SUPER_ADMIN) {
+      throw new ConflictException(
+        'SUPER_ADMIN is a system-managed role and cannot be deleted.',
+      );
+    }
+
+    const assignedUsers = await this.userRoleService.getUsersByRoleId(id);
+    if (assignedUsers.length > 0) {
+      throw new ConflictException(
+        `This role is assigned to ${assignedUsers.length} user${assignedUsers.length === 1 ? '' : 's'} — reassign them to a different role before deleting it.`,
+      );
+    }
+
+    const [{ count: approverCount }] = await this.dataSource.query(
+      `SELECT
+         (SELECT COUNT(*) FROM workflow_approval_levels WHERE roleId = ?) +
+         (SELECT COUNT(*) FROM workflow_definition_levels WHERE roleId = ?) AS count`,
+      [id, id],
     );
+    if (Number(approverCount) > 0) {
+      throw new ConflictException(
+        'This role is configured as an approver in one or more approval workflows — remove it from those workflows before deleting it.',
+      );
+    }
+
+    const [{ count: stepCount }] = await this.dataSource.query(
+      `SELECT COUNT(*) AS count FROM workflow_instance_steps WHERE roleId = ?`,
+      [id],
+    );
+    if (Number(stepCount) > 0) {
+      throw new ConflictException(
+        'This role is referenced by an in-progress workflow step and cannot be deleted while that workflow is active.',
+      );
+    }
+
+    // softRemove is an UPDATE (sets deleted_at), never a DELETE — so the table's own ON DELETE
+    // CASCADE foreign keys (the exact thing this method exists to avoid triggering) never fire.
+    // That also means role_policies/role_permissions rows are NOT auto-cleaned by the database, so
+    // they're explicitly removed here, in the same transaction as the soft-delete: left alone, a
+    // deleted role would keep showing up as a real, attached entity on every Policy it still held
+    // (IamService.getRolesForPolicy's LEFT JOIN has no reason to filter out a soft-deleted Role).
+    // Hard-deleted, not soft — these are pure junction/grant rows with nothing else pointing at
+    // them, the role's own config rather than a record of anything else, same as a Policy's own
+    // statements are expected to go away with it.
+    await this.dataSource.transaction(async (manager) => {
+      await manager.query(`DELETE FROM role_policies WHERE roleId = ?`, [id]);
+      await manager.query(`DELETE FROM role_permissions WHERE roleId = ?`, [id]);
+      await manager.getRepository(Role).softRemove(role);
+    });
 
     await this.audit.record({
       moduleName: 'roles',

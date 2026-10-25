@@ -34,6 +34,24 @@ export class RefactorRegistrationRequestSchema1788342228029 implements Migration
             return Number(rows[0].cnt) > 0;
         };
 
+        // Fresh install: registration_requests doesn't exist yet. This is the OLDEST migration in
+        // the project's history — it has only ever run against a database where `synchronize: true`
+        // (typeorm.config.ts) had already created the full baseline schema, including
+        // registration_requests, before this migration was authored (see this file's own top
+        // comment). There is no legacy data to split out of a table that was never created, and
+        // step 4 below unconditionally FKs the five new tables to registration_requests — on a
+        // genuinely empty database (confirmed via an isolated throwaway-DB boot: `migrationsRun:
+        // true` executes BEFORE `synchronize: true` runs, so migrations see a schema with nothing
+        // but TypeORM's own `migrations` table) that FK fails outright with "Failed to open the
+        // referenced table 'registration_requests'". Skipping here is safe, not a silently-dropped
+        // schema change: `synchronize`, which runs immediately after migrations complete, creates
+        // registration_requests AND all five split-out tables directly from their CURRENT entity
+        // definitions — the exact end-state this migration exists to produce — with correct columns
+        // and FKs in one step, making this migration's own work redundant on a fresh install only.
+        if (!(await hasTable('registration_requests'))) {
+            return;
+        }
+
         // ── 1. Create the five new tables (skip if this DB already has them — e.g. this exact dev
         //       database, where synchronize:true created them before this migration was written) ──
         if (!(await hasTable('registration_customer_details'))) {

@@ -97,6 +97,14 @@ export class CreateUserDto {
   @MaxLength(50)
   employeeCode?: string;
 
+  @ApiPropertyOptional({
+    default: false,
+    description: "Forces this user to change their password the next time they sign in.",
+  })
+  @IsBoolean()
+  @IsOptional()
+  mustChangePassword?: boolean;
+
 }
 
 export class UpdateUserDto extends PartialType(

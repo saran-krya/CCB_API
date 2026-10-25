@@ -44,6 +44,12 @@ import { RESOURCES, ACTION_TO_RESOURCE_CODE } from "../modules/iam/resource-cata
  * those roles immediately resolve through their original, untouched RolePermission rows again. No
  * data loss is possible from running this migration and then reverting it.
  */
+
+// Retired Action codes excluded by code, not only by `a.deleted_at` — some environments (e.g. local
+// dev DBs) still have METER_EDIT's `actions` row live rather than soft-deleted, with the same inert
+// SUPER_ADMIN grant. Same reasoning as the METER_EDIT anomaly above: no `@Permission` references it.
+const RETIRED_ACTION_CODES = new Set(['METER_EDIT']);
+
 export class AddIamPolicyBackfill1792600000000 implements MigrationInterface {
     name = 'AddIamPolicyBackfill1792600000000'
 
@@ -73,10 +79,22 @@ export class AddIamPolicyBackfill1792600000000 implements MigrationInterface {
             }
         }
 
-        // 2. For every real Role with at least one RolePermission row, generate a Policy.
-        const roles: { id: number; role_name: string }[] = await queryRunner.query(
-            `SELECT DISTINCT r.id, r.role_name FROM roles r INNER JOIN role_permissions rp ON rp.roleId = r.id WHERE rp.deleted_at IS NULL`,
-        );
+        // 2. For every real Role with at least one RolePermission row, generate a Policy. On a
+        //    fresh install neither `roles` nor `role_permissions` exist yet (migrations run before
+        //    `synchronize: true` does — see 1788342228029's own comment for the confirmed
+        //    cold-start evidence), which would fail this SELECT outright rather than just return
+        //    zero rows. Safe to treat as "nothing to back-fill": IamService.ensureAdminPolicyGrants
+        //    (run during bootstrap, after seed() creates SUPER_ADMIN/ADMIN) creates each admin
+        //    role's own Policy from scratch when it finds none already attached — exactly the case
+        //    this produces.
+        const hasRolesTable = await queryRunner.hasTable('roles');
+        const hasRolePermissionsTable = await queryRunner.hasTable('role_permissions');
+        const roles: { id: number; role_name: string }[] =
+            hasRolesTable && hasRolePermissionsTable
+                ? await queryRunner.query(
+                    `SELECT DISTINCT r.id, r.role_name FROM roles r INNER JOIN role_permissions rp ON rp.roleId = r.id WHERE rp.deleted_at IS NULL`,
+                  )
+                : [];
 
         for (const role of roles) {
             // Already migrated (idempotent re-run safety) — skip if this role already has a policy.
@@ -95,7 +113,7 @@ export class AddIamPolicyBackfill1792600000000 implements MigrationInterface {
                  WHERE rp.roleId = ? AND rp.deleted_at IS NULL AND rp.actionId IS NOT NULL AND a.deleted_at IS NULL`,
                 [role.id],
             );
-            const beforeCodes = new Set(beforeRows.map((r) => r.code));
+            const beforeCodes = new Set(beforeRows.map((r) => r.code).filter((code) => !RETIRED_ACTION_CODES.has(code)));
             if (beforeCodes.size === 0) continue; // module/screen-only grants, no action-level codes — nothing to migrate
 
             // Group this role's action codes by Resource.

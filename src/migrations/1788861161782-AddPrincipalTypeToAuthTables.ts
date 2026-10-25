@@ -18,6 +18,20 @@ export class AddPrincipalTypeToAuthTables1788861161782 implements MigrationInter
     name = 'AddPrincipalTypeToAuthTables1788861161782'
 
     public async up(queryRunner: QueryRunner): Promise<void> {
+        // Fresh install: none of these three tables exist yet (migrations run before
+        // `synchronize: true` does — see 1788342228029's own comment for the confirmed cold-start
+        // evidence), and `queryRunner.hasColumn` throws outright on a missing table rather than
+        // returning false. Safe to skip: `synchronize` creates all three immediately after
+        // migrations finish, each already carrying `principal_type` from its current entity
+        // definition, plus the final composite unique index this migration would otherwise add by hand.
+        if (
+            !(await queryRunner.hasTable('refresh_tokens')) ||
+            !(await queryRunner.hasTable('user_devices')) ||
+            !(await queryRunner.hasTable('user_login_history'))
+        ) {
+            return;
+        }
+
         if (!(await queryRunner.hasColumn('refresh_tokens', 'principal_type'))) {
             await queryRunner.query(`ALTER TABLE \`refresh_tokens\` ADD \`principal_type\` varchar(10) NOT NULL DEFAULT 'staff'`);
         }

@@ -1,5 +1,5 @@
-import { ApiProperty, PartialType } from '@nestjs/swagger';
-import { IsNumber, IsString } from 'class-validator';
+import { ApiProperty } from '@nestjs/swagger';
+import { IsNumber } from 'class-validator';
 
 export class CreateRolePermissionDto {
     @ApiProperty()
@@ -21,15 +21,4 @@ export class CreateRolePermissionDto {
     @ApiProperty()
     @IsNumber()
     actionId!: number;
-}
-export class UpdateRolePermissionDto extends PartialType(
-    CreateRolePermissionDto,
-) { }
-
-export class SaveRolePermissionsDto {
-    @ApiProperty()
-    roleId!: number;
-
-    @ApiProperty()
-    screenPermissionList!: any[];
 }

@@ -25,6 +25,7 @@ import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { CustomerAccessible } from '../common/decorators/customer-accessible.decorator';
 import { Public } from '../common/decorators/public.decorator';
 import { AttributeService } from '../modules/attribute/attribute.service';
+import { RolePermissionsService } from '../modules/role-permissions/role-permissions.service';
 import { AuthenticatedUser, AuthPrincipal } from './interfaces/authenticated-user.interface';
 import { DeviceContext } from './interfaces/device-context.interface';
 import { AuthService } from './auth.service';
@@ -36,6 +37,7 @@ import { UserDeviceDto } from './dto/device-response.dto';
 import { LoginHistoryDto } from './dto/login-history-response.dto';
 import { SessionConfigDto } from './dto/session-config-response.dto';
 import { BootstrapResponseDto } from './dto/bootstrap-response.dto';
+import { MyActionCodesDto } from './dto/my-action-codes-response.dto';
 
 @ApiTags('Auth')
 @Controller({ path: 'auth', version: '1' })
@@ -43,6 +45,7 @@ export class AuthController {
   constructor(
     private readonly auth: AuthService,
     private readonly attributes: AttributeService,
+    private readonly rolePermissions: RolePermissionsService,
   ) {}
 
   @Public()
@@ -179,6 +182,44 @@ export class AuthController {
   @ApiOkResponse({ type: BootstrapResponseDto })
   getContext(@CurrentUser() principal: AuthPrincipal): Promise<BootstrapResponseDto> {
     return this.auth.bootstrap(principal);
+  }
+
+  @Get('me/actions')
+  @CustomerAccessible({ allowRestricted: true })
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary:
+      "The authenticated principal's own Policy-granted Action codes — the exact same set " +
+      "PermissionGuard checks against, never the legacy permission tree. Drives frontend features " +
+      'like Policy-based sidebar visibility without duplicating authorization logic client-side. ' +
+      'Always an empty array for a customer session (Customers have no Role/Policy).',
+  })
+  @ApiOkResponse({ type: MyActionCodesDto })
+  async getMyActionCodes(@CurrentUser() principal: AuthPrincipal): Promise<MyActionCodesDto> {
+    if (principal.type === 'customer') return { actionCodes: [] };
+    const actionCodes = await this.rolePermissions.getMyActionCodes(principal.roleId);
+    return { actionCodes };
+  }
+
+  @Get('me/nav-catalog')
+  @CustomerAccessible({ allowRestricted: true })
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary:
+      'The full, static Module/SubModule/Screen navigation catalog (names, icons, URLs, hierarchy), ' +
+      "every hasAccess forced true — RolePermissionsService.getAllMenus()'s own existing unfiltered-" +
+      'structure output, now reachable by any authenticated staff session instead of only its prior ' +
+      "sole consumer, SUPER_ADMIN's Role permission-tree editor. Added because the legacy " +
+      'role_permissions tree (GET /auth/context\'s own profile.permissions) only lists a module/' +
+      'submodule for a role that already has at least one legacy grant row for it — so a role ' +
+      'configured purely through Policies (this capability\'s whole point) can have zero such rows ' +
+      'and see an empty sidebar shape despite holding real Policy grants. This route supplies ' +
+      'STRUCTURE ONLY, never an authorization decision — real visibility still comes from ' +
+      'GET /auth/me/actions. Always an empty array for a customer session.',
+  })
+  async getMyNavCatalog(@CurrentUser() principal: AuthPrincipal) {
+    if (principal.type === 'customer') return [];
+    return this.rolePermissions.getAllMenus();
   }
 
   private extractDeviceCtx(req: Request): DeviceContext {

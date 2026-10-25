@@ -33,6 +33,12 @@ export class AddRegistrationApprovalDepositManageAction1792400000000 implements 
     name = 'AddRegistrationApprovalDepositManageAction1792400000000'
 
     public async up(queryRunner: QueryRunner): Promise<void> {
+        // Fresh install: `screens` doesn't exist at all yet (migrations run before
+        // `synchronize: true` does — see 1788342228029's own comment for the confirmed cold-start
+        // evidence), which would fail the SELECT below outright rather than just return no row.
+        // Safe to skip: bootstrap's own seed-data.ts already seeds REGISTRATION_APPROVAL_DEPOSIT_MANAGE.
+        if (!(await queryRunner.hasTable('screens'))) return;
+
         const [screen] = await queryRunner.query(
             `SELECT id, subModuleId, pModuleId FROM screens WHERE code = 'REGISTRATION_APPROVAL'`,
         );

@@ -24,6 +24,12 @@ export class RemoveEditBillingCycle1790574566235 implements MigrationInterface {
     name = 'RemoveEditBillingCycle1790574566235'
 
     public async up(queryRunner: QueryRunner): Promise<void> {
+        // Fresh install: `actions` doesn't exist at all yet (migrations run before
+        // `synchronize: true` does — see 1788342228029's own comment for the confirmed cold-start
+        // evidence), which would fail the SELECT below outright rather than just return no row.
+        // Safe to skip: bootstrap's own seed-data.ts never seeds EDIT_BILLING_CYCLE at all.
+        if (!(await queryRunner.hasTable('actions'))) return;
+
         const [action] = await queryRunner.query(
             `SELECT id FROM actions WHERE code = 'EDIT_BILLING_CYCLE' AND deleted_at IS NULL`,
         );

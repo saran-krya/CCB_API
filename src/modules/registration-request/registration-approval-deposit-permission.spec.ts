@@ -14,7 +14,12 @@ import { RegistrationRequestController } from './registration-request.controller
 // REGISTRATION_APPROVAL_DEPOSIT_MANAGE additively (both codes worked); this phase removes
 // REGISTRATION_APPROVAL_APPROVE from the 4 deposit routes entirely, once a live role-impact check
 // confirmed every role needing deposit access (CUSTOMER_SERVICE_SUPERVISOR) already held the
-// narrower replacement code. This suite reads the REAL @Permission metadata off the real controller
+// narrower replacement code. A later phase (1792800000000-ConsolidateDuplicateActionCodes.ts)
+// retired REGISTRATION_APPROVAL_APPROVE itself — confirmed to be a duplicate of
+// APPROVE_REGISTRATION_REQUEST for the exact same capability, unrelated to this deposit split —
+// folding it onto that surviving code; this suite's assertions were updated to match (see the two
+// approve-route tests below testing the retired code is now rejected, not accepted). This suite
+// reads the REAL @Permission metadata off the real controller
 // methods via Reflector (never a hand-copied code list that could silently drift from the actual
 // decorators) and exercises the real PermissionGuard against a mocked role-permission lookup — no
 // real database connection.
@@ -99,7 +104,11 @@ describe('RegistrationRequestController deposit-permission split', () => {
   it('REGISTRATION_APPROVAL_DEPOSIT_MANAGE alone does NOT satisfy the real approve route', async () => {
     const approveCodes = requiredCodesFor('approve');
     expect(approveCodes).not.toContain('REGISTRATION_APPROVAL_DEPOSIT_MANAGE');
-    expect(approveCodes).toEqual(['APPROVE_REGISTRATION_REQUEST', 'REGISTRATION_APPROVAL_APPROVE']);
+    // Post-consolidation (1792800000000-ConsolidateDuplicateActionCodes.ts): REGISTRATION_APPROVAL_APPROVE
+    // was retired and folded into APPROVE_REGISTRATION_REQUEST — confirmed the same underlying
+    // capability (this file's own original comment already called it "an alternate to
+    // APPROVE_REGISTRATION_REQUEST"), so the approve route now requires only the one surviving code.
+    expect(approveCodes).toEqual(['APPROVE_REGISTRATION_REQUEST']);
 
     roleHasAction.mockImplementation((_roleId: number, code: string) =>
       Promise.resolve(code === 'REGISTRATION_APPROVAL_DEPOSIT_MANAGE'),
@@ -109,9 +118,9 @@ describe('RegistrationRequestController deposit-permission split', () => {
     expect(allowed).toBe(false);
   });
 
-  it('the reject route is untouched by the split — still only its original two codes', async () => {
+  it('the reject route is untouched by the deposit split, but simplified by the later duplicate-code consolidation to its one surviving code', async () => {
     const rejectCodes = requiredCodesFor('reject');
-    expect(rejectCodes).toEqual(['REJECT_REGISTRATION_REQUEST', 'REGISTRATION_APPROVAL_REJECT']);
+    expect(rejectCodes).toEqual(['REJECT_REGISTRATION_REQUEST']);
   });
 
   it.each(DEPOSIT_HANDLERS)(
@@ -135,13 +144,13 @@ describe('RegistrationRequestController deposit-permission split', () => {
     }
   });
 
-  it('the approve route still accepts REGISTRATION_APPROVAL_APPROVE alone, unaffected by the split', async () => {
+  it('the approve route no longer accepts the retired REGISTRATION_APPROVAL_APPROVE alone — consolidated into APPROVE_REGISTRATION_REQUEST', async () => {
     roleHasAction.mockImplementation((_roleId: number, code: string) =>
       Promise.resolve(code === 'REGISTRATION_APPROVAL_APPROVE'),
     );
 
     const allowed = await guard.canActivate(mockContext('approve'));
-    expect(allowed).toBe(true);
+    expect(allowed).toBe(false);
   });
 
   it('the approve route still accepts APPROVE_REGISTRATION_REQUEST alone, unaffected by the split', async () => {
@@ -153,12 +162,16 @@ describe('RegistrationRequestController deposit-permission split', () => {
     expect(allowed).toBe(true);
   });
 
-  // Regression test matching CUSTOMER_SERVICE_SUPERVISOR's ACTUAL real-DB grant combination
-  // (confirmed via a live, read-only query before this phase's controller change):
-  // REGISTRATION_APPROVAL_APPROVE + REGISTRATION_APPROVAL_DEPOSIT_MANAGE, no EDIT_REGISTRATION_REQUEST.
-  // Proves this role's real, unchanged effective access across every route this phase touched.
-  it("CUSTOMER_SERVICE_SUPERVISOR's real grant combination reaches approve AND all 4 deposit routes, post-split", async () => {
-    const heldCodes = new Set(['REGISTRATION_APPROVAL_APPROVE', 'REGISTRATION_APPROVAL_DEPOSIT_MANAGE']);
+  // Regression test matching CUSTOMER_SERVICE_SUPERVISOR's real grant combination, originally
+  // {REGISTRATION_APPROVAL_APPROVE, REGISTRATION_APPROVAL_DEPOSIT_MANAGE} (confirmed via a live,
+  // read-only query before the deposit-split phase's controller change). The duplicate-code
+  // consolidation migration (1792800000000-ConsolidateDuplicateActionCodes.ts) rewrites any
+  // PolicyStatement holding the retired REGISTRATION_APPROVAL_APPROVE to hold
+  // APPROVE_REGISTRATION_REQUEST instead, so this role's real, POST-migration grant combination is
+  // {APPROVE_REGISTRATION_REQUEST, REGISTRATION_APPROVAL_DEPOSIT_MANAGE} — proving its effective
+  // access across every route either phase touched is unchanged, end to end.
+  it("CUSTOMER_SERVICE_SUPERVISOR's real (post-migration) grant combination reaches approve AND all 4 deposit routes", async () => {
+    const heldCodes = new Set(['APPROVE_REGISTRATION_REQUEST', 'REGISTRATION_APPROVAL_DEPOSIT_MANAGE']);
     roleHasAction.mockImplementation((_roleId: number, code: string) => Promise.resolve(heldCodes.has(code)));
 
     expect(await guard.canActivate(mockContext('approve'))).toBe(true);

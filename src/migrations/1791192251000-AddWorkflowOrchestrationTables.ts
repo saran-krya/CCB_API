@@ -19,6 +19,13 @@ export class AddWorkflowOrchestrationTables1791192251000 implements MigrationInt
     name = 'AddWorkflowOrchestrationTables1791192251000'
 
     public async up(queryRunner: QueryRunner): Promise<void> {
+        // Fresh install: `roles`/`users` don't exist yet (migrations run before `synchronize: true`
+        // does — see 1788342228029's own comment for the confirmed cold-start evidence), which
+        // would fail the FKs added further down outright. Safe to skip entirely: `synchronize`
+        // creates all four workflow orchestration tables (FKs included) directly from their current
+        // entity definitions right after migrations finish.
+        if (!(await queryRunner.hasTable('roles')) || !(await queryRunner.hasTable('users'))) return;
+
         // ── workflow_definitions ──
         if (!(await queryRunner.hasTable('workflow_definitions'))) {
             await queryRunner.query(

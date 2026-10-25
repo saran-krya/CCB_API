@@ -41,6 +41,11 @@ export class CollapseBillingReadinessTabScreens1790156921957 implements Migratio
     name = 'CollapseBillingReadinessTabScreens1790156921957'
 
     public async up(queryRunner: QueryRunner): Promise<void> {
+        // Fresh install: `screens` doesn't exist at all yet (migrations run before
+        // `synchronize: true` does — see 1788342228029's own comment for the confirmed cold-start
+        // evidence), which would fail the SELECT below outright rather than just return no row.
+        if (!(await queryRunner.hasTable('screens'))) return;
+
         const [survivingScreen] = await queryRunner.query(
             `SELECT id FROM screens WHERE code = 'BILLING_READINESS'`,
         );

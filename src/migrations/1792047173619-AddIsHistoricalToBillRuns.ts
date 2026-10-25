@@ -14,6 +14,14 @@ export class AddIsHistoricalToBillRuns1792047173619 implements MigrationInterfac
     name = 'AddIsHistoricalToBillRuns1792047173619'
 
     public async up(queryRunner: QueryRunner): Promise<void> {
+        // Fresh install: `bill_runs` doesn't exist yet — AddBillRunTables itself skips creating it
+        // when its own FK dependencies (users/properties/billing_cycle_masters/billing_cycle_versions)
+        // aren't there yet (migrations run before `synchronize: true` does — see 1788342228029's own
+        // comment for the confirmed cold-start evidence), and `queryRunner.hasColumn` throws outright
+        // on a missing table. Safe to skip: `synchronize` creates `bill_runs` immediately after
+        // migrations finish, with `is_historical` already on it from the current BillRun entity definition.
+        if (!(await queryRunner.hasTable('bill_runs'))) return;
+
         const hasColumn = await queryRunner.hasColumn('bill_runs', 'is_historical');
         if (!hasColumn) {
             await queryRunner.query(`ALTER TABLE \`bill_runs\` ADD \`is_historical\` tinyint NOT NULL DEFAULT 0`);
