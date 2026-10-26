@@ -306,6 +306,22 @@ export class RoleService {
     const role =
       await this.findOne(id);
 
+    // Same rationale as the SUPER_ADMIN guard in remove() just above, and in
+    // RolePermissionsService.updateRolePermissions — this is a SEPARATE route (PATCH /roles/:id,
+    // reachable independently of the Edit Role screen's own save flow) that would otherwise let
+    // SUPER_ADMIN's roleName be changed with no protection at all, stranding RolesGuard's bypass and
+    // every ensureAdminPolicyGrants/ensureAdminGrants/ensureSuperAdminGrant reconciliation query —
+    // all of which match this role by this exact literal string.
+    if (
+      role.roleName === ROLES.SUPER_ADMIN &&
+      dto.roleName !== undefined &&
+      dto.roleName !== ROLES.SUPER_ADMIN
+    ) {
+      throw new ConflictException(
+        "SUPER_ADMIN's role name is relied on throughout the system and cannot be changed.",
+      );
+    }
+
     const oldValue = {
       ...role,
     };
