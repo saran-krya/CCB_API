@@ -31,8 +31,14 @@ class BootstrapProfileDto {
   @ApiProperty({ nullable: true })
   designation?: string | null;
 
-  @ApiProperty({ type: BootstrapRoleDto })
+  @ApiProperty({ type: BootstrapRoleDto, description: "The user's PRIMARY role (first by assignment order)" })
   role!: BootstrapRoleDto;
+
+  @ApiPropertyOptional({
+    type: [BootstrapRoleDto],
+    description: "ALL of the user's current roles, in assignment order — `role` above is the first of these",
+  })
+  roles?: BootstrapRoleDto[];
 
   @ApiProperty({ nullable: true })
   themeMode!: string | null;

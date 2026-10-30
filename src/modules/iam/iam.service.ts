@@ -1,16 +1,21 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, In, Repository } from 'typeorm';
 import { Resource } from './entities/resource.entity';
-import { Policy } from './entities/policy.entity';
+import { Policy, POLICY_TYPE_LABEL } from './entities/policy.entity';
 import { PolicyStatement } from './entities/policy-statement.entity';
 import { RolePolicy } from './entities/role-policy.entity';
+import { UserInlinePolicy } from './entities/user-inline-policy.entity';
+import { RoleInlinePolicy } from './entities/role-inline-policy.entity';
 import { Role } from '../role/entities/role.entity';
 import { Action } from '../actions/entities/action.entity';
 import { RESOURCES } from './resource-catalog';
 import { CreatePolicyDto, UpdatePolicyDto } from './dto/policy.dto';
 import { AuditService } from '../../audit/audit.service';
 import { ROLES } from '@app/common/constants/global';
+import { paginate } from '../../common/utils/pagination.util';
+import { ActionPresentation, describeAction } from './action-presentation';
+import { RolePoliciesQueryDto } from './dto/role-policies-query.dto';
 
 @Injectable()
 export class IamService {
@@ -25,6 +30,8 @@ export class IamService {
     @InjectRepository(Action) private readonly actions: Repository<Action>,
     private readonly dataSource: DataSource,
     private readonly audit: AuditService,
+    @InjectRepository(UserInlinePolicy) private readonly userInlinePolicies: Repository<UserInlinePolicy>,
+    @InjectRepository(RoleInlinePolicy) private readonly roleInlinePolicies: Repository<RoleInlinePolicy>,
   ) {}
 
   // ── Resource catalog bootstrap (idempotent, same pattern as ActionsService.ensureCriticalDefaults) ──
@@ -88,7 +95,7 @@ export class IamService {
    *  actions are valid for a given resource without hardcoding the mapping a second time. Does not
    *  change findAllResources's existing shape or any of its call sites. */
   async findAllResourcesWithActions(): Promise<
-    (Resource & { availableActions: { code: string; name: string }[] })[]
+    (Resource & { availableActions: ({ code: string; name: string } & ActionPresentation)[] })[]
   > {
     const [allResources, allActions] = await Promise.all([
       this.resources.find({ order: { displayOrder: 'ASC' } }),
@@ -102,7 +109,7 @@ export class IamService {
       const availableActions = codes
         .map((code) => actionByCode.get(code))
         .filter((a): a is Action => !!a)
-        .map((a) => ({ code: a.code, name: a.name }));
+        .map((a) => ({ code: a.code, name: a.name, ...describeAction(a.code, a.name) }));
       return Object.assign(resource, { availableActions });
     });
   }
@@ -113,8 +120,9 @@ export class IamService {
    *  actionCode against the real Action catalog AND confirms the action actually belongs to that
    *  resource (per resource-catalog.ts's own mapping) — rejects any invalid or incompatible
    *  combination rather than silently accepting a typo or a cross-resource mismatch. Returns the
-   *  resolved {resourceId, actionCodes} pairs ready to persist. */
-  private async validateStatements(
+   *  resolved {resourceId, actionCodes} pairs ready to persist. Public so the user inline-policy
+   *  service validates against exactly the same catalog rules as shared Policies. */
+  async validateStatements(
     dtoStatements: { resourceCode: string; actionCodes: string[] }[],
   ): Promise<{ resourceId: number; actions: string[] }[]> {
     const allResources = await this.resources.find();
@@ -183,9 +191,21 @@ export class IamService {
     });
   }
 
+  /**
+   * System-managed policies (Policy.isSystem — currently only the boot-generated SUPER_ADMIN
+   * Policy, see IamService.ensureAdminPolicyGrants) can never be edited through this API, regardless
+   * of who's calling or what name the policy currently has — checked against the persisted flag,
+   * never the policy's name/id, so a system policy that gets renamed is still protected. The
+   * automatic grant-sync in ensureAdminPolicyGrants is unaffected: it writes directly via the
+   * statements/policies repositories, never through this method.
+   */
   async updatePolicy(id: number, dto: UpdatePolicyDto, actorId?: number): Promise<Policy> {
     const policy = await this.policies.findOne({ where: { id } });
     if (!policy) throw new NotFoundException('Policy not found');
+
+    if (policy.isSystem) {
+      throw new ForbiddenException('This policy is system-managed and cannot be edited.');
+    }
 
     const nameConflict = await this.policies.findOne({ where: { name: dto.name } });
     if (nameConflict && nameConflict.id !== id) throw new ConflictException('A policy with this name already exists');
@@ -236,9 +256,18 @@ export class IamService {
     return policy;
   }
 
+  /**
+   * System-managed policies can never be deleted through this API — checked first, before the
+   * ordinary "still attached to N role(s)" guard below, so the error always names the real reason
+   * (system-managed, not "detach it first") even for a system policy that happens to be unattached.
+   */
   async removePolicy(id: number, actorId?: number): Promise<{ message: string }> {
     const policy = await this.policies.findOne({ where: { id } });
     if (!policy) throw new NotFoundException('Policy not found');
+
+    if (policy.isSystem) {
+      throw new ForbiddenException('This policy is system-managed and cannot be deleted.');
+    }
 
     const attachedCount = await this.rolePolicies.count({ where: { policyId: id } });
     if (attachedCount > 0) {
@@ -254,9 +283,71 @@ export class IamService {
 
   // ── Role <-> Policy attachment ─────────────────────────────────────────────────────────────────
 
-  async getPoliciesForRole(roleId: number): Promise<Policy[]> {
+  /** The role's attached policies, each with `attachedRoleCount` — how many roles (this one included) hold it,
+   *  from one grouped query — so the attach/remove screen can show it without a request per policy. */
+  async getPoliciesForRole(roleId: number): Promise<(Policy & { attachedRoleCount: number })[]> {
     const rows = await this.rolePolicies.find({ where: { roleId }, relations: { policy: { statements: { resource: true } } } });
-    return rows.map((r) => r.policy!).filter(Boolean);
+    const policies = rows.map((r) => r.policy!).filter(Boolean);
+    if (policies.length === 0) return [];
+    const countByPolicyId = new Map((await this.getRoleCountsByPolicy()).map((row) => [row.policyId, row.count]));
+    return policies.map((policy) => Object.assign(policy, { attachedRoleCount: countByPolicyId.get(policy.id) ?? 0 }));
+  }
+
+  /** The policies attached to ONE role as a searchable / filterable / sortable / paged list (the Role details
+   *  page's "Permissions policies" table). `isSystem` is the persisted flag — never inferred from a name — and
+   *  the Type filter's options come back in `meta`, so the client hardcodes neither. Attached-entities is a
+   *  correlated subquery exposed as an alias (no join on the many side, so a page holds one row per policy). */
+  async getPoliciesForRolePage(roleId: number, query: RolePoliciesQueryDto) {
+    if (!(await this.roles.exist({ where: { id: roleId } }))) throw new NotFoundException('Role not found');
+
+    const qb = this.policies
+      .createQueryBuilder('policy')
+      .innerJoin(RolePolicy, 'rp', 'rp.policyId = policy.id AND rp.roleId = :roleId', { roleId })
+      .addSelect(
+        `(
+          SELECT COUNT(*)
+          FROM role_policies rp_att
+          WHERE rp_att.policyId = policy.id AND rp_att.deleted_at IS NULL
+        )`,
+        'attached_entities',
+      );
+
+    const term = query['search.query']?.trim();
+    if (term) {
+      qb.andWhere('(policy.name LIKE :term OR policy.description LIKE :term)', { term: `%${term}%` });
+    }
+    if (query.type) {
+      qb.andWhere('policy.isSystem = :isSystem', { isSystem: query.type === 'system' });
+    }
+
+    const direction = query.sortOrder === 'DESC' ? 'DESC' : 'ASC';
+    const sortColumn =
+      query.sortBy === 'attachedEntities' ? 'attached_entities' : query.sortBy === 'type' ? 'policy.isSystem' : 'policy.name';
+    qb.orderBy(sortColumn, direction);
+    // Ties fall back to the name so the order never jumps between requests.
+    if (sortColumn !== 'policy.name') qb.addOrderBy('policy.name', 'ASC');
+
+    const page = await paginate(qb, query);
+    const counts = await this.getRoleCountsByPolicy();
+    const countByPolicyId = new Map(counts.map((row) => [row.policyId, row.count]));
+
+    return {
+      items: page.items.map((policy) => ({
+        id: policy.id,
+        name: policy.name,
+        description: policy.description ?? null,
+        isSystem: policy.isSystem,
+        typeLabel: policy.isSystem ? POLICY_TYPE_LABEL.system : POLICY_TYPE_LABEL.custom,
+        attachedRoleCount: countByPolicyId.get(policy.id) ?? 0,
+      })),
+      pagination: page.pagination,
+      meta: {
+        typeOptions: [
+          { value: 'system', label: POLICY_TYPE_LABEL.system },
+          { value: 'custom', label: POLICY_TYPE_LABEL.custom },
+        ],
+      },
+    };
   }
 
   /** Reverse of getPoliciesForRole — every Role this one Policy is attached to, with just enough
@@ -317,8 +408,14 @@ export class IamService {
 
     // SUPER_ADMIN must keep every active, supported permission auto-granted at all times
     // (ensureAdminPolicyGrants reconciles this on every boot, but only ever ADDS missing grants —
-    // it never re-attaches a Policy someone manually detached in between restarts). Detaching
-    // anything from this one role, by this exact name, is never a safe/supported action.
+    // it never re-attaches a Policy someone manually detached in between restarts). Detaching ANY
+    // policy from this one ROLE, regardless of which policy, is never a safe/supported action.
+    //
+    // Deliberately NOT a general "system-managed policies can never be detached from any role"
+    // rule — a system-managed Policy (Policy.isSystem) MAY be attached to, and later detached from,
+    // an ordinary (non-SUPER_ADMIN) role; isSystem only protects the Policy's own name/description/
+    // statements (see updatePolicy/removePolicy) and this one specific role's grant, never every
+    // role-attachment the policy happens to have.
     const role = await this.roles.findOne({ where: { id: roleId } });
     if (role?.roleName === ROLES.SUPER_ADMIN) {
       throw new ForbiddenException(
@@ -336,27 +433,101 @@ export class IamService {
     });
   }
 
-  // ── Authorization resolution — the method PermissionGuard's new Policy-aware path calls ─────────
+  // ── Authorization resolution — the methods PermissionGuard's Policy-aware path calls ────────────
 
-  /** Resolves every Action code a role holds via its attached Policies' statements — Allow-only, OR
-   *  across every statement in every attached Policy (no Deny, no precedence to worry about). This
-   *  is the ONLY method the dual-path guard needs from this service; it returns a plain Set for O(1)
-   *  lookup, never re-queries per action code within one request. */
-  async getActionCodesGrantedByPolicies(roleId: number): Promise<Set<string>> {
-    const rows = await this.rolePolicies.find({ where: { roleId }, relations: { policy: { statements: true } } });
+  /** Resolves every Action code a USER holds across ALL of the given (current) roles via their
+   *  attached Policies' statements AND each of those roles' own inline policies — plus, when `userId`
+   *  is given, that user's OWN inline policies too — the ONE implementation behind every authorization
+   *  read in this codebase; the single-role methods below are thin wrappers over it. Three queries at
+   *  most (`roleId IN (...)` for attached Policies, `roleId IN (...)` for role-level inline policies,
+   *  and the user's own inline policies, all run in parallel), returned as a plain Set for O(1)
+   *  lookup, never re-queried per action code within one request. An empty (or all-invalid) `roleIds`
+   *  with no valid `userId` resolves to an empty Set WITHOUT querying: a user with no roles holds
+   *  nothing.
+   *
+   *  Semantics (deliberately trivial): purely ADDITIVE, deny by default. The result is the UNION, over
+   *  every given role, of (a) the action codes of every `Allow` statement of every Policy attached to
+   *  that role, and (b) the action codes of every `Allow` statement of that role's OWN inline policies
+   *  (reached by every one of its current holders, exactly as if attached directly to them) — plus the
+   *  action codes of every `Allow` statement of the user's own inline policies — nothing else.
+   *  PolicyStatement.effect is hard-coded to 'Allow' (nothing can write another value), so conflicting
+   *  grants are impossible by construction and there is no Deny or priority machinery to evaluate. It
+   *  follows that:
+   *   - a statement whose effect is not 'Allow' contributes NOTHING — it is skipped defensively and
+   *     never read as a Deny that could subtract a grant another role makes;
+   *   - a role with no Policies/inline policies, or none granting a given code, never removes that
+   *     code from a user whose other role (or inline policy, role- or user-level) grants it;
+   *   - holding more roles, attached Policies, or inline policies (role- or user-level) can only ever
+   *     ADD codes, and only ones some statement lists explicitly (no implicit escalation).
+   *
+   *  Never cached. Callers pass the LIVE role ids JwtStrategy re-reads from user_roles on every
+   *  request (never a role claim from the JWT) and the authenticated user's id, so a role, Policy, or
+   *  (role- or user-level) inline-policy change applies on the very next request. `userId` is
+   *  deliberately optional: a question about ROLES alone (role configuration checks) never includes
+   *  any user's own inline policies — it still includes those roles' OWN inline policies, since those
+   *  are part of what the role itself grants, not something scoped to a particular user. */
+  async getActionCodesGrantedByPoliciesForRoles(roleIds: number[], userId?: number): Promise<Set<string>> {
+    // Anything that is not a real id is dropped up front, so an invalid id always means "no grants":
+    // TypeORM reads an `undefined` where-value as "no condition", so a bare `where: { roleId }` with
+    // a missing id (a principal without a role) would match EVERY role's Policies.
+    const validRoleIds = [...new Set(roleIds.filter((id) => Number.isInteger(id) && id > 0))];
+    const validUserId = typeof userId === 'number' && Number.isInteger(userId) && userId > 0 ? userId : undefined;
+    if (validRoleIds.length === 0 && validUserId === undefined) return new Set();
+
+    const [roleRows, roleInlinePolicies, userInlinePolicies] = await Promise.all([
+      validRoleIds.length > 0
+        ? this.rolePolicies.find({
+            where: { roleId: In(validRoleIds) },
+            relations: { policy: { statements: true } },
+          })
+        : Promise.resolve([] as RolePolicy[]),
+      validRoleIds.length > 0
+        ? this.roleInlinePolicies.find({ where: { roleId: In(validRoleIds) }, relations: { statements: true } })
+        : Promise.resolve([] as RoleInlinePolicy[]),
+      validUserId !== undefined
+        ? this.userInlinePolicies.find({ where: { userId: validUserId }, relations: { statements: true } })
+        : Promise.resolve([] as UserInlinePolicy[]),
+    ]);
+
     const codes = new Set<string>();
-    for (const row of rows) {
+    for (const row of roleRows) {
       for (const statement of row.policy?.statements ?? []) {
         if (statement.effect !== 'Allow') continue; // defensive — nothing ever writes a non-Allow value in this phase
+        for (const code of statement.actions) codes.add(code);
+      }
+    }
+    for (const roleInline of roleInlinePolicies) {
+      for (const statement of roleInline.statements ?? []) {
+        if (statement.effect !== 'Allow') continue;
+        for (const code of statement.actions) codes.add(code);
+      }
+    }
+    for (const inline of userInlinePolicies) {
+      for (const statement of inline.statements ?? []) {
+        if (statement.effect !== 'Allow') continue;
         for (const code of statement.actions) codes.add(code);
       }
     }
     return codes;
   }
 
-  async roleHasActionViaPolicy(roleId: number, actionCode: string): Promise<boolean> {
-    const codes = await this.getActionCodesGrantedByPolicies(roleId);
+  /** True iff ANY of the given roles (or, when `userId` is given, that user's own inline policies)
+   *  grants `actionCode` — see getActionCodesGrantedByPoliciesForRoles for the exact (additive-union)
+   *  semantics. */
+  async rolesHaveActionViaPolicy(roleIds: number[], actionCode: string, userId?: number): Promise<boolean> {
+    const codes = await this.getActionCodesGrantedByPoliciesForRoles(roleIds, userId);
     return codes.has(actionCode);
+  }
+
+  /** Single-role form of getActionCodesGrantedByPoliciesForRoles, for a question about one ROLE (e.g.
+   *  ensureAdminPolicyGrants' self-check) — never for authorizing a user's own request, which must
+   *  use the multi-role form with the user's live role set. */
+  async getActionCodesGrantedByPolicies(roleId: number): Promise<Set<string>> {
+    return this.getActionCodesGrantedByPoliciesForRoles([roleId]);
+  }
+
+  async roleHasActionViaPolicy(roleId: number, actionCode: string): Promise<boolean> {
+    return this.rolesHaveActionViaPolicy([roleId], actionCode);
   }
 
   /** The Policy-model counterpart to RolePermissionsService.ensureAdminGrants — keeps SUPER_ADMIN's
@@ -421,6 +592,12 @@ export class IamService {
         relations: { policy: { statements: true } },
       });
 
+      // ONLY the SUPER_ADMIN Policy is system-managed/protected — this loop also creates an "ADMIN
+      // Policy" for the ADMIN role, which remains an ordinary, fully editable Policy (the task this
+      // flag backs is scoped exclusively to SUPER_ADMIN's own policy; see Policy.isSystem's own doc
+      // comment). isSystem is set here and ONLY here — never via CreatePolicyDto/UpdatePolicyDto.
+      const isSuperAdminRole = role.roleName === 'SUPER_ADMIN';
+
       if (rolePolicyRows.length === 0) {
         const policyName = `${role.roleName} Policy`;
         // Defensive: reuse a Policy already named this (e.g. a prior partial run, or one the
@@ -431,12 +608,23 @@ export class IamService {
           policy = await this.policies.save(
             this.policies.create({
               name: policyName,
-              description:
-                `System-managed Policy granting "${role.roleName}" every active, supported resource/action — ` +
-                'kept in sync automatically on every boot (IamService.ensureAdminPolicyGrants). Edit freely: ' +
-                'this only ever adds a missing grant, never removes one you revoke here.',
+              description: isSuperAdminRole
+                ? `System policy granting "${role.roleName}" every active, supported resource and action. ` +
+                  'It is kept in sync automatically and is protected: it cannot be edited, deleted, or ' +
+                  'detached from any role through the API. Missing permissions are added automatically, never removed.'
+                : `Policy granting "${role.roleName}" every active, supported resource and action. ` +
+                  'It is kept in sync automatically, which only ever adds a missing permission and never ' +
+                  'removes one you revoke here. Edit freely.',
+              isSystem: isSuperAdminRole,
             }),
           );
+        } else if (isSuperAdminRole && !policy.isSystem) {
+          // Backfill safety net for an environment that somehow still has an unflagged SUPER_ADMIN
+          // Policy row at this point (the migration already backfills by name — this covers the
+          // fresh-install race where ensureAdminPolicyGrants's own "reuse a Policy already named
+          // this" branch runs before any migration-driven backfill could apply).
+          policy.isSystem = true;
+          policy = await this.policies.save(policy);
         }
         await this.rolePolicies.save(this.rolePolicies.create({ roleId: role.id, policyId: policy.id }));
         this.logger.log(
@@ -451,6 +639,15 @@ export class IamService {
       }
 
       const primaryPolicy = rolePolicyRows[0].policy!;
+
+      // Same backfill safety net as the fresh-install branch above — covers an environment where the
+      // migration's name-based backfill hasn't run yet (or this policy was renamed away from
+      // "SUPER_ADMIN Policy" after that backfill, though renaming it is itself now blocked by
+      // updatePolicy's own isSystem guard once this flag is set).
+      if (isSuperAdminRole && !primaryPolicy.isSystem) {
+        primaryPolicy.isSystem = true;
+        await this.policies.save(primaryPolicy);
+      }
 
       // The union of what's ALREADY granted across EVERY Policy attached to this role — not just the
       // primary one (a role can have more than one Policy attached; see AttachPolicyDto) — so a code

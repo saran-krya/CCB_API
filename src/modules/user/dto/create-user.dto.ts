@@ -1,24 +1,38 @@
 import {
   ApiProperty,
   ApiPropertyOptional,
+  OmitType,
   PartialType,
 } from "@nestjs/swagger";
 
 import {
+  ArrayNotEmpty,
+  ArrayUnique,
   Matches,
+  IsArray,
   IsBoolean,
   IsEmail,
+  IsInt,
   IsOptional,
   IsString,
   MaxLength,
+  Min,
   MinLength,
-  IsNumber,
 } from "class-validator";
 
 export class CreateUserDto {
-  @ApiProperty()
-  @IsNumber()
-  roleId!: number;
+  @ApiProperty({
+    type: [Number],
+    example: [2, 5],
+    description:
+      "Every role this user starts with — at least one, no duplicates. The first is the primary role.",
+  })
+  @IsArray()
+  @ArrayNotEmpty()
+  @ArrayUnique()
+  @IsInt({ each: true })
+  @Min(1, { each: true })
+  roleIds!: number[];
 
   @ApiPropertyOptional()
   @IsOptional()
@@ -107,6 +121,8 @@ export class CreateUserDto {
 
 }
 
+// No role field at all: roles are changed only through POST/DELETE /users/:id/roles, the one path
+// that enforces the self-change, last-role and last-SUPER_ADMIN rules (see UserService.update).
 export class UpdateUserDto extends PartialType(
-  CreateUserDto,
+  OmitType(CreateUserDto, ["roleIds"] as const),
 ) { }

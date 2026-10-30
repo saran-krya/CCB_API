@@ -5,6 +5,7 @@ import { In, Repository } from 'typeorm';
 import { AuditService } from '../../audit/audit.service';
 import { paginate } from '../../common/utils/pagination.util';
 import { RoleService } from '../role/role.service';
+import { Role } from '../role/entities/role.entity';
 import { CreateUserDto, UpdateUserDto } from './dto/create-user.dto';
 import { UpdatePreferencesDto } from './dto/update-preferences.dto';
 import { UserQueryDto } from './dto/user-query.dto';
@@ -15,7 +16,9 @@ import { LovService } from '../lov/lov.service';
 import { UserRoleService } from '../user-role/user-role.service';
 
 interface DynamicFieldRequirement {
-  field: keyof CreateUserDto;
+  // keyof UpdateUserDto, not CreateUserDto: both create and update are checked, and `roleIds` (the
+  // one create-only field) is never a dynamically-required one.
+  field: keyof UpdateUserDto;
   attributeKey: string;
   label: string;
 }
@@ -23,6 +26,12 @@ interface DynamicFieldRequirement {
 const DYNAMIC_FIELD_REQUIREMENTS: DynamicFieldRequirement[] = [
   { field: 'reportingManagerId', attributeKey: 'REPORTING_MANAGER_MANDATORY', label: 'Reporting Manager' },
 ];
+
+/** A User plus its current role assignment, attached at query time (never persisted — see the note on
+ *  the User entity). `roles` is every role the user holds in assignment order; `role` is the first of
+ *  them (the PRIMARY), null when there is none, kept for compatibility with callers that predate
+ *  multi-role. */
+export type UserWithRoles = User & { role: Role | null; roles: Role[] };
 
 @Injectable()
 export class UserService {
@@ -60,11 +69,8 @@ export class UserService {
     await this.validateUniqueFields(dto);
     await this.assertDynamicRequiredFields(dto);
 
-    const role =
-      await this.roles.findOne(
-        dto.roleId,
-      );
-
+    // Before anything is written, so one unknown role id can never leave a half-created user behind.
+    await this.assertRolesExist(dto.roleIds);
 
     const reportingManager =
       dto.reportingManagerId
@@ -113,47 +119,50 @@ export class UserService {
         )
         : null;
 
+    user.passwordUpdatedAt =
+      dto.password
+        ? new Date()
+        : null;
+
     user.mustChangePassword =
       dto.mustChangePassword ?? false;
 
-    const saved =
-      await this.users.save(user);
+    // One unit of work: the user, its roles (user_roles is the only place they are recorded — see
+    // UserRole entity's own doc comment) and the audit rows. A user left without a role could never
+    // sign in, and with no role field on UpdateUserDto it could only be repaired through addRoles.
+    return this.users.manager.transaction(async (manager) => {
+      const saved = await manager.getRepository(User).save(user);
 
-    // user_roles is the only place a user's role is recorded — see UserRole entity's own doc
-    // comment.
-    await this.userRoles.setPrimaryRole(saved.id, role.id, undefined, actorId);
+      await this.userRoles.addRolesToUser(saved.id, dto.roleIds, manager, actorId);
 
-    await this.audit.record({
-      moduleName: "users",
-      entityId: saved.id,
-      action: "CREATE",
-      newValue: saved,
-      performedBy: actorId,
+      await this.audit.record(
+        {
+          moduleName: "users",
+          entityId: saved.id,
+          action: "CREATE",
+          newValue: saved,
+          performedBy: actorId,
+        },
+        manager,
+      );
+
+      return saved;
     });
-
-    return saved;
   }
 
   async findAll(
     query: UserQueryDto,
   ) {
-    const qb = this.users
-      .createQueryBuilder("user")
-      .leftJoin(
-        "user_roles",
-        "user_role",
-        "user_role.user_id = user.id AND user_role.deleted_at IS NULL",
-      )
-      .leftJoinAndMapOne(
-        "user.role",
-        "roles",
-        "role",
-        "role.id = user_role.role_id",
-      );
+    // Deliberately NO join to user_roles on this query: a user holding N roles would come back as N
+    // rows, and skip/take would then page and count rows instead of users. It stays one row per user
+    // by construction, and each page's roles are attached afterwards in one batched query below.
+    const qb = this.users.createQueryBuilder("user");
 
     // One search box (matching Role Management's own single-search layout) must match a name,
-    // email, mobile number, OR role name — an OR across all four, not four independent AND'd
-    // filters (the old search.fullName/search.email/search.mobile/search.role behavior).
+    // email, mobile number, OR the name of ANY role the user holds — an OR across all four, not four
+    // independent AND'd filters (the old search.fullName/search.email/search.mobile/search.role
+    // behavior). The role leg is an EXISTS, not a join, for the reason above — and so a match on one
+    // role never hides the user's other roles from the response.
     if (query["search.query"]) {
       qb.andWhere(
         `(
@@ -166,11 +175,37 @@ export class UserService {
           ) LIKE :term
           OR user.email LIKE :term
           OR user.mobile LIKE :term
-          OR role.roleName LIKE :term
+          OR EXISTS (
+            SELECT 1
+            FROM user_roles ur
+            INNER JOIN roles r ON r.id = ur.role_id AND r.deleted_at IS NULL
+            WHERE ur.user_id = user.id
+              AND ur.deleted_at IS NULL
+              AND r.role_name LIKE :term
+          )
         )`,
         {
           term: `%${query["search.query"]}%`,
         },
+      );
+    }
+
+    if (query.status) {
+      qb.andWhere("user.active = :active", { active: query.status === "active" });
+    }
+
+    // EXISTS for the same reason as the search leg: a join would return one row per role held.
+    if (query.roleId) {
+      qb.andWhere(
+        `EXISTS (
+          SELECT 1
+          FROM user_roles ur_filter
+          INNER JOIN roles r_filter ON r_filter.id = ur_filter.role_id AND r_filter.deleted_at IS NULL
+          WHERE ur_filter.user_id = user.id
+            AND ur_filter.deleted_at IS NULL
+            AND ur_filter.role_id = :filterRoleId
+        )`,
+        { filterRoleId: query.roleId },
       );
     }
 
@@ -183,7 +218,25 @@ export class UserService {
         "user.employeeCode",
       createdAt:
         "user.createdAt",
+      // The user's PRIMARY role by name — selected below as this alias (see the addSelect).
+      roles: "primary_role_name",
     } as const;
+
+    if (query.sortBy === "roles") {
+      // A correlated subquery exposed as a selected alias, not a join, so the page still holds one row
+      // per user — and an alias (not a raw expression in ORDER BY) is what TypeORM can page safely.
+      qb.addSelect(
+        `(
+          SELECT r_sort.role_name
+          FROM user_roles ur_sort
+          INNER JOIN roles r_sort ON r_sort.id = ur_sort.role_id AND r_sort.deleted_at IS NULL
+          WHERE ur_sort.user_id = user.id AND ur_sort.deleted_at IS NULL
+          ORDER BY ur_sort.id ASC
+          LIMIT 1
+        )`,
+        "primary_role_name",
+      );
+    }
 
     const sortColumn =
       allowedSortColumns[
@@ -207,10 +260,24 @@ export class UserService {
         query,
       );
 
-    result.items =
-      result.items.map(
-        (user: User) => ({
+    // One query for the whole page, not one per row — see UserRoleService.getRolesForUsers.
+    const rolesByUserId = result.items.length
+      ? await this.userRoles.getRolesForUsers(result.items.map((user) => user.id))
+      : new Map<number, Role[]>();
+
+    return {
+      ...result,
+
+      items: result.items.map((user: User) => {
+        const roles = rolesByUserId.get(user.id) ?? [];
+
+        return {
           ...user,
+
+          // `role` is the PRIMARY (first by assignment order), kept as it always was; `roles` is
+          // every role the user holds, in that same order.
+          role: roles[0] ?? null,
+          roles: roles.map((role) => ({ id: role.id, roleName: role.roleName })),
 
           fullName: [
             user.firstName,
@@ -219,12 +286,25 @@ export class UserService {
           ]
             .filter(Boolean)
             .join(" "),
-        }),
-      );
-
-    return result;
+        };
+      }),
+    };
   }
-  async findOne(id: number) {
+
+  /** The options behind the Users list's filter dropdowns, served from the Users module itself so a viewer
+   *  who can list users (VIEW_USER) never needs access to Role Management just to filter by role. */
+  async getFilterOptions() {
+    const roles = await this.roles.getRoleFilter();
+    return {
+      roles,
+      statuses: [
+        { value: "active", label: "Active" },
+        { value: "inactive", label: "Inactive" },
+      ],
+    };
+  }
+
+  async findOne(id: number): Promise<UserWithRoles> {
     const user = await this.users.findOne({
       where: { id },
       relations: {
@@ -237,18 +317,25 @@ export class UserService {
       throw new NotFoundException("User not found");
     }
 
-    // user_roles is the only source of a user's role — see UserRole entity's own doc comment.
-    // A user has exactly one role today, so the first (and only) row is the detail-screen's `role`.
-    const [role] = await this.userRoles.getRolesForUser(id);
-    (user as User & { role: typeof role | null }).role = role ?? null;
+    // user_roles is the only source of a user's roles — see UserRole entity's own doc comment.
+    // JwtStrategy.validate reads `roles` from this on every request to build the principal, so it
+    // must stay a single live read, never cached.
+    const roles = await this.userRoles.getRolesForUser(id);
 
-    return user;
+    return Object.assign(user, { role: roles[0] ?? null, roles });
   }
 
   private async getActiveUsersByRoleCapability(capability: 'canBeReportingManager' | 'canBeFieldInspector') {
     const grants = await this.userRoles.getUsersByRoleCapability(capability);
     if (grants.length === 0) return [];
-    const roleNameByUserId = new Map(grants.map((g) => [g.userId, g.roleName]));
+
+    // A user holding several qualifying roles has several rows; `grants` is in assignment order, so
+    // keeping the first makes the displayed role name deterministic instead of whichever row the
+    // Map happened to see last. Keying by user id is also what keeps each user in the result once.
+    const roleNameByUserId = new Map<number, string>();
+    for (const grant of grants) {
+      if (!roleNameByUserId.has(grant.userId)) roleNameByUserId.set(grant.userId, grant.roleName);
+    }
 
     const users = await this.users.find({
       where: { id: In([...roleNameByUserId.keys()]), active: true },
@@ -288,11 +375,15 @@ export class UserService {
   async getProfile(id: number) {
     const user = await this.findOne(id);
 
-    const primaryRole = await this.userRoles.getPrimaryRole(id);
+    // findOne already read the live role set, so `role` and `roles` here can never disagree.
+    const [primaryRole] = user.roles;
     if (!primaryRole) {
       throw new NotFoundException('No role assigned to this user');
     }
-    const permissions = await this.rolePermissionService.getUserPermissions(primaryRole.roleId);
+    // The legacy navigation tree is still resolved for the PRIMARY role only (RolePermissionsService
+    // has no multi-role form of it). It is display data — authorization reads live Policies instead
+    // (PermissionGuard, GET /auth/me/actions).
+    const permissions = await this.rolePermissionService.getUserPermissions(primaryRole.id);
 
     return {
       id: user.id,
@@ -304,9 +395,10 @@ export class UserService {
       designation: user.designation,
 
       role: {
-        id: primaryRole.roleId,
+        id: primaryRole.id,
         name: primaryRole.roleName,
       },
+      roles: user.roles.map((role) => ({ id: role.id, name: role.roleName })),
 
       themeMode: user.themeMode ?? null,
       navTheme: user.navTheme ?? null,
@@ -366,12 +458,55 @@ export class UserService {
       .getOne();
   }
 
+  /**
+   * Sign-in access status for the Security Credentials tab's "Sign-in access" section — whether a
+   * usable password currently exists (never the hash itself) plus when it was last set. Deliberately
+   * its own narrow query rather than widening findOne's response shape, since passwordHash is
+   * select:false everywhere else and this is the one legitimate reason to peek at its presence (not
+   * its value) for an admin viewing another user.
+   */
+  async getSigninAccessStatus(id: number): Promise<{ signinAccessEnabled: boolean; passwordUpdatedAt: Date | null }> {
+    const user = await this.users
+      .createQueryBuilder('user')
+      .addSelect('user.passwordHash')
+      .where('user.id = :id', { id })
+      .getOne();
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+    return {
+      signinAccessEnabled: !!user.passwordHash,
+      passwordUpdatedAt: user.passwordUpdatedAt ?? null,
+    };
+  }
+
   // Always clears mustChangePassword alongside the hash — whether this password change was the
   // mandatory one (AuthService's own flow redirected them here) or a voluntary one from an already
   // fully-logged-in user, they've just demonstrated they can set a real password, so there is never
-  // a case where the flag should survive a successful change.
+  // a case where the flag should survive a successful change. Self-service only — see
+  // adminSetPasswordHash below for the admin-on-another-user equivalent, which does NOT share this
+  // always-false behavior (an admin reset can deliberately set mustChangePassword: true).
   async setPasswordHash(userId: number, passwordHash: string): Promise<void> {
-    await this.users.update(userId, { passwordHash, mustChangePassword: false });
+    await this.users.update(userId, { passwordHash, mustChangePassword: false, passwordUpdatedAt: new Date() });
+  }
+
+  // Admin-triggered password reset for ANOTHER user (AuthService.adminResetPassword). Deliberately a
+  // separate method from setPasswordHash above rather than a shared one with an extra parameter —
+  // that method's "always clear mustChangePassword" behavior is specific to the self-service "I just
+  // proved I know my new password" case, which does not apply here: an admin reset's whole point can
+  // be to FORCE mustChangePassword back to true, the opposite of setPasswordHash's own contract.
+  async adminSetPasswordHash(userId: number, passwordHash: string, mustChangePassword: boolean): Promise<void> {
+    await this.users.update(userId, { passwordHash, mustChangePassword, passwordUpdatedAt: new Date() });
+  }
+
+  // Admin-triggered "disable sign-in access" (AuthService.disableSigninAccess) — invalidates the
+  // CURRENT password without touching `active`, so the user still exists and shows as active
+  // everywhere else, but can no longer sign in (AuthService.login's own bcrypt.compare against a
+  // null/undefined hash never throws, it just returns false — confirmed safe, see its own comment).
+  // Distinct from account deactivation (the existing `active` field, toggled via ordinary
+  // UpdateUserDto) — this is specifically a credentials action, never touching account enablement.
+  async clearPasswordHash(userId: number): Promise<void> {
+    await this.users.update(userId, { passwordHash: null, passwordUpdatedAt: new Date() });
   }
 
   async updateLastLogin(
@@ -387,6 +522,13 @@ export class UserService {
   }
 
 
+  /**
+   * Never touches roles: UpdateUserDto has no role field (the global whitelist/forbidNonWhitelisted
+   * pipe answers one with a 400), and nothing here reads one either. Every role change goes through
+   * addRoles/removeRole — the one path that enforces the self-change, last-role and last-SUPER_ADMIN
+   * rules and writes the ASSIGN_ROLE/REVOKE_ROLE audit row. A profile save that could also edit
+   * roles would be a second, unguarded way around all of them.
+   */
   async update(id: number, dto: UpdateUserDto, actorId?: number) {
     const user = await this.findOne(id);
     const oldValue = { ...user };
@@ -395,11 +537,6 @@ export class UserService {
       id,
     );
     await this.assertDynamicRequiredFields(dto);
-    if (dto.roleId) {
-      // Validates the role exists (throws NotFoundException otherwise) before setPrimaryRole below
-      // writes it — user_roles is the only place a user's role is recorded, see create()'s same note.
-      await this.roles.findOne(dto.roleId);
-    }
 
     if ('reportingManagerId' in dto) {
       user.reportingManager = dto.reportingManagerId
@@ -441,15 +578,65 @@ export class UserService {
     });
     if (dto.password) {
       user.passwordHash = await bcrypt.hash(dto.password, 12);
+      user.passwordUpdatedAt = new Date();
     }
     const saved = await this.users.save(user);
 
-    if (dto.roleId) {
-      await this.userRoles.setPrimaryRole(saved.id, dto.roleId, undefined, actorId);
-    }
-
     await this.audit.record({ moduleName: 'users', entityId: id, action: 'UPDATE', oldValue, newValue: saved, performedBy: actorId });
     return saved;
+  }
+
+  /**
+   * POST /users/:id/roles — grants roles to an existing user, additively and idempotently (a role
+   * they already hold is skipped, not an error). An actor cannot grant roles to their OWN user: that
+   * is self-escalation with no second party accountable for it (a request that would change nothing
+   * stays allowed). That rule, and the audit row, are enforced inside UserRoleService.addRolesToUser's
+   * own transaction, where "would this change anything" can be decided against the rows being
+   * written — see that method for why they live there rather than here. Existence is checked first,
+   * so a request naming one unknown role never applies partially. Returns the user's full roles
+   * array AFTER the change (the same shape as findOne's `roles`), so a caller can replace its copy
+   * without a refetch.
+   */
+  async addRoles(userId: number, roleIds: number[], actorId?: number): Promise<Role[]> {
+    await this.assertUserExists(userId);
+    await this.assertRolesExist(roleIds);
+
+    await this.userRoles.addRolesToUser(userId, roleIds, undefined, actorId);
+
+    return this.userRoles.getRolesForUser(userId);
+  }
+
+  /**
+   * DELETE /users/:id/roles/:roleId — revokes ONE role, idempotently (a role the user does not hold
+   * is a no-op, not a 404 — including a role id that does not exist at all, which no one can hold).
+   * Three rules apply, enforced inside UserRoleService.removeRoleFromUser's own transaction against
+   * locked rows (see that method for the locking, and for why the row is hard-deleted — the unique
+   * (user_id, role_id) key ignores deleted_at, so a soft-deleted row would block re-granting):
+   *   - no self-change: role changes are made by someone else, so a second party is accountable;
+   *   - a user must keep at least one role: login and JwtStrategy reject a role-less user, so
+   *     removing the last one is an instant lock-out;
+   *   - the last SUPER_ADMIN cannot be demoted: every admin-only surface, user/role management
+   *     included, would be left with no one able to grant it back.
+   * Returns the user's full roles array AFTER the change.
+   */
+  async removeRole(userId: number, roleId: number, actorId?: number): Promise<Role[]> {
+    await this.assertUserExists(userId);
+
+    await this.userRoles.removeRoleFromUser(userId, roleId, undefined, actorId);
+
+    return this.userRoles.getRolesForUser(userId);
+  }
+
+  private async assertUserExists(id: number): Promise<void> {
+    const user = await this.users.findOne({ where: { id }, select: { id: true } });
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+  }
+
+  /** RoleService.findOne throws NotFoundException('Role not found') for an unknown id. */
+  private async assertRolesExist(roleIds: number[]): Promise<void> {
+    await Promise.all([...new Set(roleIds)].map((roleId) => this.roles.findOne(roleId)));
   }
 
   private async validateUniqueFields(

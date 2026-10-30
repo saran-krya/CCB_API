@@ -9,6 +9,15 @@ import {
   Min,
 } from "class-validator";
 
+export const ROLE_LIST_SORT_COLUMNS = [
+  "roleName",
+  "userCategory",
+  "assignedUserCount",
+  "policyCount",
+  "createdAt",
+] as const;
+export type RoleListSortColumn = (typeof ROLE_LIST_SORT_COLUMNS)[number];
+
 export class RoleQueryDto {
   @ApiPropertyOptional({
     default: 1,
@@ -33,11 +42,11 @@ export class RoleQueryDto {
   limit = 20;
 
   @ApiPropertyOptional({
-    description: "Search by role name",
+    description: "Matches the role name, its description or its user category",
   })
   @IsOptional()
   @IsString()
-  ["search.roleName"]?: string;
+  ["search.query"]?: string;
 
   @ApiPropertyOptional({
     description: "Filter by user category ID",
@@ -58,11 +67,12 @@ export class RoleQueryDto {
   ["search.createdAt"]?: string;
 
   @ApiPropertyOptional({
-    example: "createdAt",
+    enum: ROLE_LIST_SORT_COLUMNS,
+    default: "createdAt",
   })
   @IsOptional()
-  @IsString()
-  sortBy?: string;
+  @IsIn(ROLE_LIST_SORT_COLUMNS)
+  sortBy?: RoleListSortColumn;
 
   @ApiPropertyOptional({
     enum: ["ASC", "DESC"],

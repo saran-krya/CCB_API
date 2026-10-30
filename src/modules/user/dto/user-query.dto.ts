@@ -29,6 +29,18 @@ export class UserQueryDto {
   @IsString()
   ["search.query"]?: string;
 
+  @ApiPropertyOptional({ enum: ["active", "inactive"], description: "Only active or only inactive users" })
+  @IsOptional()
+  @IsIn(["active", "inactive"])
+  status?: "active" | "inactive";
+
+  @ApiPropertyOptional({ description: "Only users who currently hold this role" })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @IsOptional()
+  roleId?: number;
+
   @ApiPropertyOptional({ example: "createdAt" })
   @IsOptional()
   @IsString()

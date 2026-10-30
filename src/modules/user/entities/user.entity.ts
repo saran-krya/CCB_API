@@ -7,11 +7,11 @@ import {
 } from "typeorm";
 import { BaseEntity } from "../../../common/entities/base.entity";
 
-// A user's role is NOT a relation on this entity — see UserRoleService (user_roles is the only
-// source of truth for User -> Role; `users.role_id` has been removed, see migration
-// *-DropUsersRoleId.ts). Some query paths (UserService.findAll/findOne) still attach a `role`
-// property to a loaded User instance at runtime via `leftJoinAndMapOne`/manual assignment for
-// response-shape compatibility — that is NOT this entity's own column, just a query-time virtual.
+// A user's roles are NOT a relation on this entity — see UserRoleService (user_roles is the only
+// source of truth for User -> Role, one user to many roles; `users.role_id` has been removed, see
+// migration *-DropUsersRoleId.ts). UserService.findOne/findAll attach `role` (the PRIMARY role — the
+// first assigned) and `roles` (every role, in assignment order) to the User they return — query-time
+// virtuals (see UserWithRoles), NOT this entity's own columns or relations.
 @Entity("users")
 export class User extends BaseEntity {
   @ManyToOne(
@@ -111,6 +111,18 @@ export class User extends BaseEntity {
     default: false,
   })
   mustChangePassword!: boolean;
+
+  // When the current password_hash was last set (by any path — self-service change-password,
+  // admin-triggered reset, or creation). NOT the same as BaseEntity's own `updatedAt`, which ticks
+  // on ANY column change (a name edit would otherwise look like a password change) — this column
+  // changes for password-related writes only. Null for a user created with no password at all.
+  // Powers the Security Credentials tab's "Sign-in access password: Updated N days ago" display.
+  @Column({
+    name: "password_updated_at",
+    type: "timestamp",
+    nullable: true,
+  })
+  passwordUpdatedAt?: Date | null;
 
   @Column({
     name: "sso_provider",

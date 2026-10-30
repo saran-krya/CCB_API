@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, ParseIntPipe, Patch, Post } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, ParseIntPipe, Patch, Post, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -6,6 +6,10 @@ import { AuthenticatedUser } from '../../auth/interfaces/authenticated-user.inte
 import { ROLES } from '@app/common/constants/global';
 import { IamService } from './iam.service';
 import { CreatePolicyDto, UpdatePolicyDto, AttachPolicyDto } from './dto/policy.dto';
+import { RolePoliciesQueryDto } from './dto/role-policies-query.dto';
+import { PolicyListQueryDto } from './dto/policy-list-query.dto';
+import { PolicyAttachedRolesQueryDto } from './dto/policy-attached-roles-query.dto';
+import { PolicyQueryService } from './policy-query.service';
 
 /**
  * Policy administration is restricted to SUPER_ADMIN, same as the existing role-permissions/actions/
@@ -21,11 +25,21 @@ import { CreatePolicyDto, UpdatePolicyDto, AttachPolicyDto } from './dto/policy.
 @Roles(ROLES.SUPER_ADMIN)
 @Controller({ path: 'iam/policies', version: '1' })
 export class PolicyController {
-  constructor(private readonly iam: IamService) {}
+  constructor(
+    private readonly iam: IamService,
+    private readonly policyQuery: PolicyQueryService,
+  ) {}
 
   @Get()
   findAll() {
     return this.iam.findAllPolicies();
+  }
+
+  // The searchable / filterable / sortable / paged list behind the Policies page and the policy combobox.
+  // A literal segment, registered before ':id' like role-counts below.
+  @Get('list')
+  list(@Query() query: PolicyListQueryDto) {
+    return this.policyQuery.list(query);
   }
 
   // Registered before ':id' — a literal segment must come first or Nest would try to match
@@ -36,7 +50,7 @@ export class PolicyController {
   }
 
   // Same ordering requirement as role-counts above — mirror direction (per-POLICY count of
-  // attached roles), used by the Policies list's "Used as" column.
+  // attached roles), used by the Policies list's "Attached roles" column.
   @Get('attached-role-counts')
   getRoleCountsByPolicy() {
     return this.iam.getRoleCountsByPolicy();
@@ -45,6 +59,12 @@ export class PolicyController {
   @Get(':id')
   findOne(@Param('id', ParseIntPipe) id: number) {
     return this.iam.findOnePolicy(id);
+  }
+
+  // "roles/list" sits before ':id/roles' so the two never read as one another.
+  @Get(':id/roles/list')
+  findAttachedRolesPage(@Param('id', ParseIntPipe) id: number, @Query() query: PolicyAttachedRolesQueryDto) {
+    return this.policyQuery.attachedRoles(id, query);
   }
 
   @Get(':id/roles')
@@ -82,6 +102,12 @@ export class PolicyController {
 @Controller({ path: 'roles/:roleId/policies', version: '1' })
 export class RolePolicyController {
   constructor(private readonly iam: IamService) {}
+
+  // A literal segment, declared before anything keyed by :policyId.
+  @Get('list')
+  findAttachedPage(@Param('roleId', ParseIntPipe) roleId: number, @Query() query: RolePoliciesQueryDto) {
+    return this.iam.getPoliciesForRolePage(roleId, query);
+  }
 
   @Get()
   findAttached(@Param('roleId', ParseIntPipe) roleId: number) {

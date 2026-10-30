@@ -40,6 +40,6 @@ export class AttributeController {
     @Body() dto: UpdateAttributeDto,
     @CurrentUser() user?: AuthenticatedUser,
   ) {
-    return this.attributes.update(id, dto, user?.sub, user?.roleName, user?.roleId);
+    return this.attributes.update(id, dto, user?.sub, user?.roleNames, user?.roleIds);
   }
 }

@@ -615,6 +615,17 @@ export const ACTIONS: SeedAction[] = [
     code: 'DELETE_USER',
     description: 'Delete a user',
   },
+  // Separate from EDIT_USER deliberately — editing a user's profile fields (name, email, role) and
+  // controlling their sign-in credentials (reset/disable password, revoke sessions) are different
+  // levels of sensitivity; an org can grant one without the other. Backs the "Manage sign-in access"
+  // actions on the User Details page's Security Credentials tab.
+  {
+    screenCode: 'USER_LIST',
+    name: 'Reset User Password',
+    code: 'RESET_USER_PASSWORD',
+    description: "Reset or disable another user's sign-in password, and revoke their active sessions",
+    parentActionCode: 'EDIT_USER',
+  },
 
   {
     screenCode: 'ROLE',

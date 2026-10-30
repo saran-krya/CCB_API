@@ -24,6 +24,7 @@ import { Request } from 'express';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { CustomerAccessible } from '../common/decorators/customer-accessible.decorator';
 import { Public } from '../common/decorators/public.decorator';
+import { Permission } from '../common/decorators/permission.decorator';
 import { AttributeService } from '../modules/attribute/attribute.service';
 import { RolePermissionsService } from '../modules/role-permissions/role-permissions.service';
 import { AuthenticatedUser, AuthPrincipal } from './interfaces/authenticated-user.interface';
@@ -38,6 +39,10 @@ import { LoginHistoryDto } from './dto/login-history-response.dto';
 import { SessionConfigDto } from './dto/session-config-response.dto';
 import { BootstrapResponseDto } from './dto/bootstrap-response.dto';
 import { MyActionCodesDto } from './dto/my-action-codes-response.dto';
+import { AdminResetPasswordDto } from './dto/admin-reset-password.dto';
+import { AdminResetPasswordResponseDto } from './dto/admin-reset-password-response.dto';
+import { DisableSigninAccessDto } from './dto/disable-signin-access.dto';
+import { SigninAccessStatusResponseDto } from './dto/signin-access-status-response.dto';
 
 @ApiTags('Auth')
 @Controller({ path: 'auth', version: '1' })
@@ -171,6 +176,65 @@ export class AuthController {
     return { idleTimeoutMinutes: Number(raw) };
   }
 
+  // Admin-on-ANOTHER-user actions — the "Manage sign-in access" dialog. Unlike the self-service
+  // session block above (always @CurrentUser()-scoped, no :id), these four all take an explicit
+  // target :id, are gated behind RESET_USER_PASSWORD (a dedicated permission, separate from
+  // EDIT_USER, so an org can grant profile-editing without granting credential control over other
+  // accounts), and are deliberately placed under `users/:id/...` rather than inside the bare
+  // `devices`/`login-history` paths above, so the two concerns are never confusable at the routing
+  // level. Always 'staff' — this controller has no customer-equivalent of this feature.
+  @Get('users/:id/signin-access')
+  @Permission('RESET_USER_PASSWORD')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Sign-in access status for ANOTHER user (admin view) — never exposes the password itself" })
+  @ApiOkResponse({ type: SigninAccessStatusResponseDto })
+  getSigninAccessStatus(@Param('id') id: number): Promise<SigninAccessStatusResponseDto> {
+    return this.auth.getSigninAccessStatus(id);
+  }
+
+  @Patch('users/:id/reset-password')
+  @Permission('RESET_USER_PASSWORD')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary:
+      "Admin-triggered password reset for ANOTHER user — autogenerate or set a custom password, " +
+      'optionally forcing a mandatory change at next sign-in and/or revoking active sessions',
+  })
+  @ApiOkResponse({ type: AdminResetPasswordResponseDto })
+  adminResetPassword(
+    @Param('id') id: number,
+    @Body() dto: AdminResetPasswordDto,
+    @CurrentUser() principal: AuthPrincipal,
+  ): Promise<AdminResetPasswordResponseDto> {
+    return this.auth.adminResetPassword(id, dto, principal.sub);
+  }
+
+  @Patch('users/:id/disable-signin-access')
+  @Permission('RESET_USER_PASSWORD')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary:
+      "Admin-triggered 'Disable sign-in access' for ANOTHER user — invalidates their current " +
+      "password without touching the account's active/enabled status",
+  })
+  disableSigninAccess(
+    @Param('id') id: number,
+    @Body() dto: DisableSigninAccessDto,
+    @CurrentUser() principal: AuthPrincipal,
+  ): Promise<{ sessionsRevoked: boolean }> {
+    return this.auth.disableSigninAccess(id, !!dto.revokeSessions, principal.sub);
+  }
+
+  @Post('users/:id/revoke-sessions')
+  @Permission('RESET_USER_PASSWORD')
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({ summary: "Admin-triggered 'Revoke active sign-in sessions' for ANOTHER user" })
+  @ApiNoContentResponse({ description: 'Sessions revoked' })
+  adminRevokeSessions(@Param('id') id: number, @CurrentUser() principal: AuthPrincipal): Promise<void> {
+    return this.auth.adminRevokeSessions(id, principal.sub);
+  }
+
   @Get('context')
   @CustomerAccessible({ allowRestricted: true })
   @ApiBearerAuth()
@@ -189,15 +253,20 @@ export class AuthController {
   @ApiBearerAuth()
   @ApiOperation({
     summary:
-      "The authenticated principal's own Policy-granted Action codes — the exact same set " +
-      "PermissionGuard checks against, never the legacy permission tree. Drives frontend features " +
-      'like Policy-based sidebar visibility without duplicating authorization logic client-side. ' +
-      'Always an empty array for a customer session (Customers have no Role/Policy).',
+      "The authenticated principal's own Policy-granted Action codes — the UNION across all of " +
+      "their current roles, the exact same set PermissionGuard checks against, never the legacy " +
+      'permission tree. Drives frontend features like Policy-based sidebar visibility without ' +
+      'duplicating authorization logic client-side. Always an empty array for a customer session ' +
+      '(Customers have no Role/Policy).',
   })
   @ApiOkResponse({ type: MyActionCodesDto })
   async getMyActionCodes(@CurrentUser() principal: AuthPrincipal): Promise<MyActionCodesDto> {
     if (principal.type === 'customer') return { actionCodes: [] };
-    const actionCodes = await this.rolePermissions.getMyActionCodes(principal.roleId);
+    // Live role set (see PermissionGuard for why `roleIds` and the `?? [roleId]` fallback).
+    const actionCodes = await this.rolePermissions.getMyActionCodesForRoles(
+      principal.roleIds ?? [principal.roleId],
+      principal.sub,
+    );
     return { actionCodes };
   }
 

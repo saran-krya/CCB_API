@@ -302,7 +302,7 @@ export class MeterController {
   })
   @ApiParam({ name: 'id', type: Number })
   updateSubMeter(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateSubMeterDto, @CurrentUser() user?: AuthenticatedUser) {
-    return this.meters.updateSubMeter(id, dto, user?.sub, user?.roleId);
+    return this.meters.updateSubMeter(id, dto, user?.sub, user?.roleIds);
   }
 
   @Patch('sub-meters/:id/status')

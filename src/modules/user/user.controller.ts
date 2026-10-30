@@ -1,8 +1,9 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { Body, Controller, Delete, Get, Param, ParseIntPipe, Patch, Post, Query } from '@nestjs/common';
+import { ApiBearerAuth, ApiOperation, ApiParam, ApiTags } from '@nestjs/swagger';
 import { AuthenticatedUser } from '../../auth/interfaces/authenticated-user.interface';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Permission } from '../../common/decorators/permission.decorator';
+import { AddUserRolesDto } from './dto/add-user-roles.dto';
 import { CreateUserDto, UpdateUserDto } from './dto/create-user.dto';
 import { UpdatePreferencesDto } from './dto/update-preferences.dto';
 import { UserQueryDto } from './dto/user-query.dto';
@@ -25,6 +26,13 @@ export class UserController {
   @Permission('VIEW_USER')
   findAll(@Query() query: UserQueryDto) {
     return this.users.findAll(query);
+  }
+
+  // Declared above ":id" so it is never read as a user id.
+  @Get("filters")
+  @Permission('VIEW_USER')
+  getFilterOptions() {
+    return this.users.getFilterOptions();
   }
 
   @Get("profile")
@@ -71,6 +79,35 @@ export class UserController {
   @Permission('EDIT_USER')
   update(@Param('id') id: number, @Body() dto: UpdateUserDto, @CurrentUser() user?: AuthenticatedUser) {
     return this.users.update(id, dto, user?.sub);
+  }
+
+  // The ONLY way to change a user's roles (UpdateUserDto has no role field). Gated on EDIT_USER like
+  // the rest of user editing; the self-change / last-role / last-SUPER_ADMIN rules are enforced
+  // server-side, inside UserRoleService's transaction (via UserService), never left to the UI hiding
+  // a button.
+  @Post(':id/roles')
+  @Permission('EDIT_USER')
+  @ApiOperation({ summary: "Adds roles to a user — additive and idempotent (already-held roles are skipped). Returns the user's full roles array after the change." })
+  @ApiParam({ name: 'id', type: Number })
+  addRoles(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: AddUserRolesDto,
+    @CurrentUser() user?: AuthenticatedUser,
+  ) {
+    return this.users.addRoles(id, dto.roleIds, user?.sub);
+  }
+
+  @Delete(':id/roles/:roleId')
+  @Permission('EDIT_USER')
+  @ApiOperation({ summary: "Removes ONE role from a user — idempotent (a role not held is a no-op). Refused for your own user, for a user's last remaining role, and for the last SUPER_ADMIN. Returns the user's full roles array after the change." })
+  @ApiParam({ name: 'id', type: Number })
+  @ApiParam({ name: 'roleId', type: Number })
+  removeRole(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('roleId', ParseIntPipe) roleId: number,
+    @CurrentUser() user?: AuthenticatedUser,
+  ) {
+    return this.users.removeRole(id, roleId, user?.sub);
   }
 
   @Delete(':id')

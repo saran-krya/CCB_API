@@ -363,25 +363,44 @@ export class RolePermissionsService {
    * override a Policy revocation, which is exactly the "one clear source of truth" requirement this
    * migration exists to satisfy. `role_permissions` rows are kept in the table as historical/rollback
    * data only (see AddIamPolicyBackfill's down()) — they are inert for every live authorization check
-   * (this method and PermissionGuard) from this point on. The three roles that had zero actionable
-   * legacy grants to begin with (Technical: no rows at all; user01/user02: a single bare
-   * module-level row with a null actionId, which this method's old legacy branch could never have
-   * matched anyway since it always joined on a non-null actionId) needed no backfill — zero attached
-   * Policies is already their exact equivalent. Their module-level nav-visibility flag is unaffected:
-   * getPermissionTree() reads role_permissions directly and is a wholly separate code path from this
-   * method, untouched by this cutover.
+   * (this method, rolesHaveAction and PermissionGuard) from this point on. The three roles that had
+   * zero actionable legacy grants to begin with (Technical: no rows at all; user01/user02: a single
+   * bare module-level row with a null actionId, which this method's old legacy branch could never
+   * have matched anyway since it always joined on a non-null actionId) needed no backfill — zero
+   * attached Policies is already their exact equivalent. Their module-level nav-visibility flag is
+   * unaffected: getPermissionTree() reads role_permissions directly and is a wholly separate code
+   * path from this method, untouched by this cutover.
    */
   async roleHasAction(roleId: number, actionCode: string): Promise<boolean> {
     return this.iamService.roleHasActionViaPolicy(roleId, actionCode);
   }
 
+  /** True iff ANY of `roleIds` — or the user's own inline policies, when `userId` is given — grants
+   *  `actionCode`: the check for a USER, who may hold several roles: PermissionGuard and every
+   *  service-level permission check pass the user's LIVE role set (principal.roleIds, resolved per
+   *  request by JwtStrategy), never a single role, plus the authenticated user's id. Same Policy-only
+   *  resolution as roleHasAction; see IamService.getActionCodesGrantedByPoliciesForRoles for the
+   *  exact additive-union semantics. roleHasAction stays for ROLE-keyed questions (e.g. "does this
+   *  configured approver role hold the approve code"), never for authorizing a user's own request. */
+  async rolesHaveAction(roleIds: number[], actionCode: string, userId?: number): Promise<boolean> {
+    return this.iamService.rolesHaveActionViaPolicy(roleIds, actionCode, userId);
+  }
+
   /** The full set of Action codes a role actually holds via its attached Policies — same resolution
    *  path as roleHasAction/PermissionGuard (IamService.getActionCodesGrantedByPolicies), just
-   *  returning every granted code at once instead of checking one. Used by `GET /auth/me/actions` so
-   *  the frontend can drive Policy-based sidebar visibility from the exact same source of truth the
-   *  backend's own authorization guard uses — never the legacy role_permissions tree. */
+   *  returning every granted code at once instead of checking one. */
   async getMyActionCodes(roleId: number): Promise<string[]> {
     const codes = await this.iamService.getActionCodesGrantedByPolicies(roleId);
+    return [...codes];
+  }
+
+  /** The UNION of Action codes granted across all of `roleIds` (plus the user's own inline policies,
+   *  when `userId` is given) — what `GET /auth/me/actions` returns for the principal's live role set,
+   *  so the frontend can drive Policy-based sidebar visibility from the exact same source of truth
+   *  the backend's own authorization guard uses (never the legacy role_permissions tree). Empty for
+   *  an empty role set with no user. */
+  async getMyActionCodesForRoles(roleIds: number[], userId?: number): Promise<string[]> {
+    const codes = await this.iamService.getActionCodesGrantedByPoliciesForRoles(roleIds, userId);
     return [...codes];
   }
 
@@ -585,6 +604,8 @@ export class RolePermissionsService {
       userCategoryId: role?.userCategoryId ?? null,
       canBeReportingManager: role?.canBeReportingManager ?? false,
       canBeFieldInspector: role?.canBeFieldInspector ?? false,
+      // The system-managed role can't be renamed (see updateRolePermissions) — the edit form locks the field from this.
+      isSystem: role?.roleName === ROLES.SUPER_ADMIN,
       userId: 0,
 
       screenPermissionList: modules.map((module) => ({

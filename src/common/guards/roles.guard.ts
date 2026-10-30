@@ -27,10 +27,16 @@ export class RolesGuard implements CanActivate {
       return false;
     }
 
-    if (user.roleName === ROLES.SUPER_ADMIN) {
+    // The user's LIVE role names decide (JwtStrategy re-reads user_roles on every request) — never a
+    // role claim from the JWT — so SUPER_ADMIN held as a SECONDARY role still bypasses, and a
+    // SUPER_ADMIN claim in a token issued before the role was revoked grants nothing. `?? [roleName]`
+    // only covers a principal built without `roleNames` (the live primary).
+    const roleNames = user.roleNames ?? [user.roleName];
+
+    if (roleNames.includes(ROLES.SUPER_ADMIN)) {
       return true;
     }
 
-    return requiredRoles.includes(user.roleName);
+    return roleNames.some((roleName) => requiredRoles.includes(roleName));
   }
 }

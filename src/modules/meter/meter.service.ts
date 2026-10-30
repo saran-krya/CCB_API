@@ -569,7 +569,9 @@ export class MeterService {
     return this.findOneSubMeter(saved.id);
   }
 
-  async updateSubMeter(id: number, dto: UpdateSubMeterDto, actorId?: number, actorRoleId?: number) {
+  /** `actorRoleIds` is the actor's LIVE role set (principal.roleIds, resolved per request by
+   *  JwtStrategy — never a role claim from the JWT); omitted or empty means no grant. */
+  async updateSubMeter(id: number, dto: UpdateSubMeterDto, actorId?: number, actorRoleIds?: number[]) {
     const meter = await this.subMeters.findOne({ where: { id }, relations: ['unit', 'masterMeter'] });
     if (!meter) throw new NotFoundException('Sub meter not found');
     const oldValue = { ...meter };
@@ -587,7 +589,7 @@ export class MeterService {
     const nonMappingFieldsRequested = (['serialNumber', 'mBusAddress', 'floor', 'meterMake', 'meterModel', 'installationDate', 'customerAccountNumber'] as const)
       .some((field) => dto[field] !== undefined);
     if (nonMappingFieldsRequested) {
-      const hasFullEdit = !!actorRoleId && (await this.rolePermissions.roleHasAction(actorRoleId, 'METER_INVENTORY_EDIT'));
+      const hasFullEdit = !!actorRoleIds?.length && (await this.rolePermissions.rolesHaveAction(actorRoleIds, 'METER_INVENTORY_EDIT', actorId));
       if (!hasFullEdit) {
         throw new ForbiddenException('METER_MAPPING only allows changing which unit this sub meter is mapped to — METER_INVENTORY_EDIT is required to change other sub meter details');
       }

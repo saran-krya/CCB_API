@@ -16,12 +16,12 @@ import { RoleController } from './role.controller';
 // that PermissionGuard now genuinely enforces the matching code on each route.
 describe('RoleController authorization', () => {
   let guard: PermissionGuard;
-  let roleHasAction: jest.Mock;
+  let rolesHaveAction: jest.Mock;
 
   beforeEach(async () => {
-    roleHasAction = jest.fn();
+    rolesHaveAction = jest.fn();
     const moduleRef = await Test.createTestingModule({
-      providers: [PermissionGuard, { provide: RolePermissionsService, useValue: { roleHasAction } }],
+      providers: [PermissionGuard, { provide: RolePermissionsService, useValue: { rolesHaveAction } }],
     }).compile();
     guard = moduleRef.get(PermissionGuard);
   });
@@ -36,7 +36,7 @@ describe('RoleController authorization', () => {
       getHandler: () => handler,
       getClass: () => RoleController,
       switchToHttp: () => ({
-        getRequest: () => ({ user: { sub: roleId, roleId, roleName: 'TEST_ROLE', type: 'staff' } }),
+        getRequest: () => ({ user: { sub: roleId, roleId, roleName: 'TEST_ROLE', roleIds: [roleId], roleNames: ['TEST_ROLE'], type: 'staff' } }),
       }),
     } as unknown as ExecutionContext;
   }
@@ -70,21 +70,21 @@ describe('RoleController authorization', () => {
     ['update', 'EDIT_ROLE'],
     ['remove', 'DELETE_ROLE'],
   ] as const)('a role holding %s is allowed through PermissionGuard for %s', async (methodName, code) => {
-    roleHasAction.mockImplementation((_roleId: number, c: string) => Promise.resolve(c === code));
+    rolesHaveAction.mockImplementation((_roleIds: number[], c: string) => Promise.resolve(c === code));
     expect(await guard.canActivate(mockContext(methodName))).toBe(true);
   });
 
   it.each(['create', 'findAll', 'update', 'remove'] as const)(
     'a role holding none of the required codes is denied by PermissionGuard for %s (RolesGuard alone is no longer sufficient)',
     async (methodName) => {
-      roleHasAction.mockResolvedValue(false);
+      rolesHaveAction.mockResolvedValue(false);
       expect(await guard.canActivate(mockContext(methodName))).toBe(false);
     },
   );
 
   it('SUPER_ADMIN real grant combination (holds all four codes via ensureAdminGrants) passes every guarded route', async () => {
     const heldCodes = new Set(['VIEW_ROLE', 'CREATE_ROLE', 'EDIT_ROLE', 'DELETE_ROLE']);
-    roleHasAction.mockImplementation((_roleId: number, c: string) => Promise.resolve(heldCodes.has(c)));
+    rolesHaveAction.mockImplementation((_roleIds: number[], c: string) => Promise.resolve(heldCodes.has(c)));
 
     for (const methodName of ['create', 'findAll', 'findOne', 'findOneWithDetails', 'update', 'remove'] as const) {
       expect(await guard.canActivate(mockContext(methodName))).toBe(true);

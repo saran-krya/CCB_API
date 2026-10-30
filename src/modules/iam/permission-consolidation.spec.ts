@@ -47,12 +47,12 @@ const ALL_RETIRED_TO_SURVIVOR: Record<string, string> = (() => {
 //      renaming survivors to a shared bare "View"/"Approve"/"Reject" and failed outright).
 describe('Permission consolidation — duplicate Action codes retired onto one surviving code each', () => {
   let guard: PermissionGuard;
-  let roleHasAction: jest.Mock;
+  let rolesHaveAction: jest.Mock;
 
   beforeEach(async () => {
-    roleHasAction = jest.fn();
+    rolesHaveAction = jest.fn();
     const moduleRef = await Test.createTestingModule({
-      providers: [PermissionGuard, { provide: RolePermissionsService, useValue: { roleHasAction } }],
+      providers: [PermissionGuard, { provide: RolePermissionsService, useValue: { rolesHaveAction } }],
     }).compile();
     guard = moduleRef.get(PermissionGuard);
   });
@@ -68,12 +68,14 @@ describe('Permission consolidation — duplicate Action codes retired onto one s
     return {
       getHandler: () => handler,
       getClass: () => controllerClass,
-      switchToHttp: () => ({ getRequest: () => ({ user: { sub: roleId, roleId, roleName: 'TEST_ROLE', type: 'staff' } }) }),
+      switchToHttp: () => ({
+        getRequest: () => ({ user: { sub: roleId, roleId, roleName: 'TEST_ROLE', roleIds: [roleId], roleNames: ['TEST_ROLE'], type: 'staff' } }),
+      }),
     } as unknown as ExecutionContext;
   }
 
   async function grantOnly(code: string) {
-    roleHasAction.mockImplementation((_roleId: number, c: string) => Promise.resolve(c === code));
+    rolesHaveAction.mockImplementation((_roleIds: number[], c: string) => Promise.resolve(c === code));
   }
 
   describe('USER resource — USER_OVERVIEW (tab-named survivor) corrected onto properly-named VIEW_USER', () => {

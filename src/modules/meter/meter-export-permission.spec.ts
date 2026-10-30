@@ -15,12 +15,12 @@ import { MeterController } from './meter.controller';
 // @Permission metadata and the REAL PermissionGuard, not a hand-copied assumption.
 describe('Meter export routes — METER_EXPORT wired to a real guard (previously inert)', () => {
   let guard: PermissionGuard;
-  let roleHasAction: jest.Mock;
+  let rolesHaveAction: jest.Mock;
 
   beforeEach(async () => {
-    roleHasAction = jest.fn();
+    rolesHaveAction = jest.fn();
     const moduleRef = await Test.createTestingModule({
-      providers: [PermissionGuard, { provide: RolePermissionsService, useValue: { roleHasAction } }],
+      providers: [PermissionGuard, { provide: RolePermissionsService, useValue: { rolesHaveAction } }],
     }).compile();
     guard = moduleRef.get(PermissionGuard);
   });
@@ -36,12 +36,14 @@ describe('Meter export routes — METER_EXPORT wired to a real guard (previously
     return {
       getHandler: () => handler,
       getClass: () => MeterController,
-      switchToHttp: () => ({ getRequest: () => ({ user: { sub: 1, roleId: 3, roleName: 'TEST_ROLE', type: 'staff' } }) }),
+      switchToHttp: () => ({
+        getRequest: () => ({ user: { sub: 1, roleId: 3, roleName: 'TEST_ROLE', roleIds: [3], roleNames: ['TEST_ROLE'], type: 'staff' } }),
+      }),
     } as unknown as ExecutionContext;
   }
 
   async function grantOnly(code: string) {
-    roleHasAction.mockImplementation((_roleId: number, c: string) => Promise.resolve(c === code));
+    rolesHaveAction.mockImplementation((_roleIds: number[], c: string) => Promise.resolve(c === code));
   }
 
   it.each(['exportMasterMeters', 'exportSubMeters'])('%s requires METER_VIEW, METER_INVENTORY_EXPORT or METER_EXPORT', (methodName) => {

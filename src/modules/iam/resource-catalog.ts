@@ -100,7 +100,11 @@ export const RESOURCES: SeedResource[] = [
     // USER_OVERVIEW, which had been the surviving code since it was the one actually wired to real
     // routes, was itself a tab-named code ("Overview" names a screen, not a capability); the two rows
     // were swapped so the Resource's common View permission is properly named after what it does).
-    actionCodes: ['VIEW_USER', 'CREATE_USER', 'EDIT_USER', 'DELETE_USER'],
+    // RESET_USER_PASSWORD is the "Manage sign-in access" dialog's permission — deliberately a sibling
+    // of EDIT_USER here, not a child of it, since the Policy model has no concept of parent/child
+    // grants within one Resource; parentActionCode in seed-data.ts only affects seeding ORDER, not
+    // this Resource-level grouping.
+    actionCodes: ['VIEW_USER', 'CREATE_USER', 'EDIT_USER', 'DELETE_USER', 'RESET_USER_PASSWORD'],
   },
   {
     code: 'ROLE',
@@ -289,6 +293,21 @@ export const RESOURCES: SeedResource[] = [
     actionCodes: ['BILLING_VIEW', 'BILLING_CANCEL'],
   },
 ];
+
+/** The five deliberately nav-visibility-only Action codes (see this file's own top comment) that
+ *  intentionally have NO entry anywhere in RESOURCES above — Policy/Resource administration is
+ *  gated by the unchanged `@Roles(SUPER_ADMIN)` check, independent of whether a role holds these
+ *  codes, so a Policy statement granting one of them would be meaningless/circular. Exported as the
+ *  single shared source of truth for "is this code expected to have no Resource mapping" — used by
+ *  both the static resource-catalog correctness tests and any migration/script that needs to tell
+ *  apart a genuine mapping gap (a real bug) from one of these five intentional exceptions. */
+export const NAV_ONLY_ACTION_CODES = new Set([
+  'VIEW_POLICY',
+  'CREATE_POLICY',
+  'EDIT_POLICY',
+  'DELETE_POLICY',
+  'VIEW_RESOURCE',
+]);
 
 /** Reverse lookup built once, used by ActionResourceMapService — every Action code maps to exactly
  *  one Resource code. Throws at module load if the mapping ever has a real duplicate (a code

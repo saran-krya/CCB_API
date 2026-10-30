@@ -26,7 +26,7 @@ import { RegistrationRequestController } from './registration-request.controller
 describe('RegistrationRequestController deposit-permission split', () => {
   let guard: PermissionGuard;
   let reflector: Reflector;
-  let roleHasAction: jest.Mock;
+  let rolesHaveAction: jest.Mock;
 
   const DEPOSIT_HANDLERS = [
     'requestDeposit',
@@ -36,12 +36,12 @@ describe('RegistrationRequestController deposit-permission split', () => {
   ] as const;
 
   beforeEach(async () => {
-    roleHasAction = jest.fn();
+    rolesHaveAction = jest.fn();
 
     const moduleRef = await Test.createTestingModule({
       providers: [
         PermissionGuard,
-        { provide: RolePermissionsService, useValue: { roleHasAction } },
+        { provide: RolePermissionsService, useValue: { rolesHaveAction } },
       ],
     }).compile();
 
@@ -61,7 +61,7 @@ describe('RegistrationRequestController deposit-permission split', () => {
       getHandler: () => handler,
       getClass: () => RegistrationRequestController,
       switchToHttp: () => ({
-        getRequest: () => ({ user: { sub: roleId, roleId, roleName: 'TEST_ROLE', type: 'staff' } }),
+        getRequest: () => ({ user: { sub: roleId, roleId, roleName: 'TEST_ROLE', roleIds: [roleId], roleNames: ['TEST_ROLE'], type: 'staff' } }),
       }),
     } as unknown as ExecutionContext;
   }
@@ -72,7 +72,7 @@ describe('RegistrationRequestController deposit-permission split', () => {
       const codes = requiredCodesFor(methodName);
       expect(codes).toContain('REGISTRATION_APPROVAL_DEPOSIT_MANAGE');
 
-      roleHasAction.mockImplementation((_roleId: number, code: string) =>
+      rolesHaveAction.mockImplementation((_roleIds: number[], code: string) =>
         Promise.resolve(code === 'REGISTRATION_APPROVAL_DEPOSIT_MANAGE'),
       );
 
@@ -92,7 +92,7 @@ describe('RegistrationRequestController deposit-permission split', () => {
   it.each(DEPOSIT_HANDLERS)(
     'REGISTRATION_APPROVAL_APPROVE ALONE no longer grants access to %s (the fix this phase makes)',
     async (methodName) => {
-      roleHasAction.mockImplementation((_roleId: number, code: string) =>
+      rolesHaveAction.mockImplementation((_roleIds: number[], code: string) =>
         Promise.resolve(code === 'REGISTRATION_APPROVAL_APPROVE'),
       );
 
@@ -110,7 +110,7 @@ describe('RegistrationRequestController deposit-permission split', () => {
     // APPROVE_REGISTRATION_REQUEST"), so the approve route now requires only the one surviving code.
     expect(approveCodes).toEqual(['APPROVE_REGISTRATION_REQUEST']);
 
-    roleHasAction.mockImplementation((_roleId: number, code: string) =>
+    rolesHaveAction.mockImplementation((_roleIds: number[], code: string) =>
       Promise.resolve(code === 'REGISTRATION_APPROVAL_DEPOSIT_MANAGE'),
     );
 
@@ -126,7 +126,7 @@ describe('RegistrationRequestController deposit-permission split', () => {
   it.each(DEPOSIT_HANDLERS)(
     'existing access via EDIT_REGISTRATION_REQUEST alone still works for %s (unchanged)',
     async (methodName) => {
-      roleHasAction.mockImplementation((_roleId: number, code: string) =>
+      rolesHaveAction.mockImplementation((_roleIds: number[], code: string) =>
         Promise.resolve(code === 'EDIT_REGISTRATION_REQUEST'),
       );
 
@@ -136,7 +136,7 @@ describe('RegistrationRequestController deposit-permission split', () => {
   );
 
   it('a role holding none of the two remaining deposit-route codes is correctly denied on every deposit route', async () => {
-    roleHasAction.mockResolvedValue(false);
+    rolesHaveAction.mockResolvedValue(false);
 
     for (const methodName of DEPOSIT_HANDLERS) {
       const allowed = await guard.canActivate(mockContext(methodName));
@@ -145,7 +145,7 @@ describe('RegistrationRequestController deposit-permission split', () => {
   });
 
   it('the approve route no longer accepts the retired REGISTRATION_APPROVAL_APPROVE alone — consolidated into APPROVE_REGISTRATION_REQUEST', async () => {
-    roleHasAction.mockImplementation((_roleId: number, code: string) =>
+    rolesHaveAction.mockImplementation((_roleIds: number[], code: string) =>
       Promise.resolve(code === 'REGISTRATION_APPROVAL_APPROVE'),
     );
 
@@ -154,7 +154,7 @@ describe('RegistrationRequestController deposit-permission split', () => {
   });
 
   it('the approve route still accepts APPROVE_REGISTRATION_REQUEST alone, unaffected by the split', async () => {
-    roleHasAction.mockImplementation((_roleId: number, code: string) =>
+    rolesHaveAction.mockImplementation((_roleIds: number[], code: string) =>
       Promise.resolve(code === 'APPROVE_REGISTRATION_REQUEST'),
     );
 
@@ -172,7 +172,7 @@ describe('RegistrationRequestController deposit-permission split', () => {
   // access across every route either phase touched is unchanged, end to end.
   it("CUSTOMER_SERVICE_SUPERVISOR's real (post-migration) grant combination reaches approve AND all 4 deposit routes", async () => {
     const heldCodes = new Set(['APPROVE_REGISTRATION_REQUEST', 'REGISTRATION_APPROVAL_DEPOSIT_MANAGE']);
-    roleHasAction.mockImplementation((_roleId: number, code: string) => Promise.resolve(heldCodes.has(code)));
+    rolesHaveAction.mockImplementation((_roleIds: number[], code: string) => Promise.resolve(heldCodes.has(code)));
 
     expect(await guard.canActivate(mockContext('approve'))).toBe(true);
     for (const methodName of DEPOSIT_HANDLERS) {

@@ -641,17 +641,20 @@ export class AttributeService {
     return (await this.getValueByKey(key)) === 'true';
   }
 
+  /** `actorRoleNames`/`actorRoleIds` are the actor's LIVE role set (principal.roleNames/roleIds,
+   *  resolved per request by JwtStrategy — never role claims from the JWT); omitted or empty means
+   *  the actor holds nothing, so every check below fails closed. */
   async update(
     id: number,
     dto: UpdateAttributeDto,
     actorId?: number,
-    actorRoleName?: string,
-    actorRoleId?: number,
+    actorRoleNames?: string[],
+    actorRoleIds?: number[],
   ): Promise<Attribute> {
     const attribute = await this.attributes.findOne({ where: { id } });
     if (!attribute) throw new NotFoundException('Attribute not found');
 
-    if (attribute.scope === AttributeScope.SYSTEM && actorRoleName !== ROLES.SUPER_ADMIN) {
+    if (attribute.scope === AttributeScope.SYSTEM && !actorRoleNames?.includes(ROLES.SUPER_ADMIN)) {
       throw new ForbiddenException('Only Super Admin can edit General Attributes');
     }
 
@@ -659,17 +662,19 @@ export class AttributeService {
     // per attribute key: every attribute requires EDIT_ATTRIBUTE, EXCEPT OCR_DATA_ENTRY_ENABLED,
     // which anyone with Registration Request create/edit access may also flip — it's surfaced as a
     // toggle inside the registration wizard itself (System Admin -> Attributes remains the other
-    // place to change it). Permission-code checks throughout, never a role-name check, so this
-    // generalizes to whatever role is actually granted these action codes.
+    // place to change it). Permission-code checks throughout (any of the actor's roles may supply
+    // the code), never a role-name check beyond the SYSTEM-scope gate above, so this generalizes to
+    // whatever role is actually granted these action codes.
     const extraAllowedActionCodesByKey: Record<string, string[]> = {
       OCR_DATA_ENTRY_ENABLED: ['CREATE_REGISTRATION_REQUEST', 'EDIT_REGISTRATION_REQUEST'],
     };
-    const hasEditAttribute = !!actorRoleId && (await this.rolePermissions.roleHasAction(actorRoleId, 'EDIT_ATTRIBUTE'));
+    const roleIds = actorRoleIds ?? [];
+    const hasEditAttribute = roleIds.length > 0 && (await this.rolePermissions.rolesHaveAction(roleIds, 'EDIT_ATTRIBUTE', actorId));
     if (!hasEditAttribute) {
       const extraActionCodes = extraAllowedActionCodesByKey[attribute.key] ?? [];
       const hasExtra =
-        !!actorRoleId &&
-        (await Promise.all(extraActionCodes.map((code) => this.rolePermissions.roleHasAction(actorRoleId, code)))).some(
+        roleIds.length > 0 &&
+        (await Promise.all(extraActionCodes.map((code) => this.rolePermissions.rolesHaveAction(roleIds, code, actorId)))).some(
           Boolean,
         );
       if (!hasExtra) {

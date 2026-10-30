@@ -337,11 +337,13 @@ export class BootstrapService implements OnApplicationBootstrap {
     })
     const saved = await manager.save(admin)
 
-    // user_roles is the only place a user's role is recorded (users.role_id no longer exists) —
+    // user_roles is the only place a user's roles are recorded (users.role_id no longer exists) —
     // written in the same transaction as the rest of seed() so a fresh install never ends up with a
-    // Super Admin that has no role. setPrimaryRole() itself is idempotent (delete-then-insert), so
-    // this call is also safe if onApplicationBootstrap's seed() path is ever re-entered.
-    await this.userRoleService.setPrimaryRole(saved.id, superAdminRole.id, manager)
+    // Super Admin that has no role. addRolesToUser is an additive ensure-held: idempotent, and it can
+    // never remove a role someone else has granted to this account, so it stays safe if the seed
+    // path is ever re-entered. (seed() only runs on a database with no users at all — see
+    // onApplicationBootstrap.)
+    await this.userRoleService.addRolesToUser(saved.id, [superAdminRole.id], manager)
 
     this.logger.debug(`Super Admin user created: ${email}`)
   }

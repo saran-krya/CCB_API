@@ -6,6 +6,7 @@ import { Permission } from '../../common/decorators/permission.decorator';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 import { AuthenticatedUser } from '../../auth/interfaces/authenticated-user.interface';
 import { CreateRoleDto, UpdateRoleDto } from './dto/create-role.dto';
+import { RolePickerQueryDto } from './dto/role-picker-query.dto';
 import { RoleService } from './role.service';
 import { ROLES } from '@app/common/constants/global';
 import { RoleQueryDto } from '@app/common/dto/role-paginatoin.dto';
@@ -56,6 +57,12 @@ export class RoleController {
       userCategoryId ? Number(userCategoryId) : undefined,
     );
   }
+  // Same guard as `dropdown` (reachable from Create / Edit User), declared above `:id` so it never shadows.
+  @Get('picker')
+  getRolePicker(@Query() query: RolePickerQueryDto) {
+    return this.roles.getRolePicker(query);
+  }
+
   @Get("filter")
   getRoleFilter() {
     return this.roles.getRoleFilter();

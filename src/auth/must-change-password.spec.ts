@@ -54,6 +54,7 @@ describe('AuthService.login — mustChangePassword flag on the staff login respo
       attributesStub as any,
       {} as any, // LovService — unused by login
       {} as any, // RegistrationRequestService — unused by login
+      {} as any, // AuditService — unused by login
       refreshTokensRepoStub as any,
       {} as any, // UserDevice repo — only touched when deviceCtx.deviceId is set; test passes none
       loginHistoryRepoStub as any,
@@ -88,6 +89,13 @@ describe('UserService.setPasswordHash — always clears mustChangePassword', () 
 
     await service.setPasswordHash(42, 'new-hash');
 
-    expect(update).toHaveBeenCalledWith(42, { passwordHash: 'new-hash', mustChangePassword: false });
+    // passwordUpdatedAt is asserted separately (a real Date, not a fixed value) rather than baked
+    // into the object-equality check above, which would otherwise need a frozen clock.
+    expect(update).toHaveBeenCalledTimes(1);
+    const [calledId, calledPayload] = update.mock.calls[0];
+    expect(calledId).toBe(42);
+    expect(calledPayload.passwordHash).toBe('new-hash');
+    expect(calledPayload.mustChangePassword).toBe(false);
+    expect(calledPayload.passwordUpdatedAt).toBeInstanceOf(Date);
   });
 });

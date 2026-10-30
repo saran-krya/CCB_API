@@ -1,12 +1,14 @@
 import { Test } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
-import { DataSource } from 'typeorm';
+import { BadRequestException, ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
+import { DataSource, FindOperator } from 'typeorm';
 import { IamService } from './iam.service';
 import { Resource } from './entities/resource.entity';
 import { Policy } from './entities/policy.entity';
 import { PolicyStatement } from './entities/policy-statement.entity';
 import { RolePolicy } from './entities/role-policy.entity';
+import { UserInlinePolicy } from './entities/user-inline-policy.entity';
+import { RoleInlinePolicy } from './entities/role-inline-policy.entity';
 import { Role } from '../role/entities/role.entity';
 import { Action } from '../actions/entities/action.entity';
 import { AuditService } from '../../audit/audit.service';
@@ -23,6 +25,8 @@ describe('IamService', () => {
   let policiesRepo: { findOne: jest.Mock; save: jest.Mock; create: jest.Mock; softRemove: jest.Mock; count: jest.Mock };
   let statementsRepo: { find: jest.Mock; delete: jest.Mock; save: jest.Mock; create: jest.Mock };
   let rolePoliciesRepo: { findOne: jest.Mock; save: jest.Mock; create: jest.Mock; remove: jest.Mock; count: jest.Mock; find: jest.Mock };
+  let userInlinePoliciesRepo: { find: jest.Mock };
+  let roleInlinePoliciesRepo: { find: jest.Mock };
   let rolesRepo: { findOne: jest.Mock; find: jest.Mock };
   let actionsRepo: { find: jest.Mock };
   let auditService: { record: jest.Mock };
@@ -59,6 +63,8 @@ describe('IamService', () => {
       count: jest.fn(),
       find: jest.fn(),
     };
+    userInlinePoliciesRepo = { find: jest.fn().mockResolvedValue([]) };
+    roleInlinePoliciesRepo = { find: jest.fn().mockResolvedValue([]) };
     rolesRepo = { findOne: jest.fn(), find: jest.fn().mockResolvedValue([]) };
     actionsRepo = { find: jest.fn().mockResolvedValue([VIEW_CUSTOMER_ACTION, EDIT_CUSTOMER_ACTION]) };
     auditService = { record: jest.fn().mockResolvedValue(undefined) };
@@ -84,6 +90,8 @@ describe('IamService', () => {
         { provide: getRepositoryToken(Policy), useValue: policiesRepo },
         { provide: getRepositoryToken(PolicyStatement), useValue: statementsRepo },
         { provide: getRepositoryToken(RolePolicy), useValue: rolePoliciesRepo },
+        { provide: getRepositoryToken(UserInlinePolicy), useValue: userInlinePoliciesRepo },
+        { provide: getRepositoryToken(RoleInlinePolicy), useValue: roleInlinePoliciesRepo },
         { provide: getRepositoryToken(Role), useValue: rolesRepo },
         { provide: getRepositoryToken(Action), useValue: actionsRepo },
         { provide: DataSource, useValue: dataSource },
@@ -170,6 +178,41 @@ describe('IamService', () => {
     });
   });
 
+  describe('updatePolicy', () => {
+    it('refuses to edit a system-managed policy', async () => {
+      policiesRepo.findOne.mockResolvedValue({ id: 66, name: 'SUPER_ADMIN Policy', isSystem: true });
+
+      await expect(
+        service.updatePolicy(66, { name: 'SUPER_ADMIN Policy', statements: [{ resourceCode: 'CUSTOMER', actionCodes: ['VIEW_CUSTOMER'] }] }, 7),
+      ).rejects.toThrow(ForbiddenException);
+      await expect(
+        service.updatePolicy(66, { name: 'SUPER_ADMIN Policy', statements: [{ resourceCode: 'CUSTOMER', actionCodes: ['VIEW_CUSTOMER'] }] }, 7),
+      ).rejects.toThrow(/system-managed/);
+      expect(dataSource.transaction).not.toHaveBeenCalled();
+    });
+
+    it('throws NotFoundException for a policy that does not exist', async () => {
+      policiesRepo.findOne.mockResolvedValue(null);
+      await expect(
+        service.updatePolicy(999, { name: 'Anything', statements: [{ resourceCode: 'CUSTOMER', actionCodes: ['VIEW_CUSTOMER'] }] }, 7),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('still allows editing an ordinary, non-system policy', async () => {
+      policiesRepo.findOne.mockResolvedValueOnce({ id: 100, name: 'Custom Policy', isSystem: false }).mockResolvedValueOnce(null);
+      statementsRepo.find.mockResolvedValue([]);
+
+      const result = await service.updatePolicy(
+        100,
+        { name: 'Custom Policy', statements: [{ resourceCode: 'CUSTOMER', actionCodes: ['VIEW_CUSTOMER'] }] },
+        7,
+      );
+
+      expect(result).toBeDefined();
+      expect(dataSource.transaction).toHaveBeenCalled();
+    });
+  });
+
   describe('removePolicy', () => {
     it('refuses to delete a policy that is still attached to any role', async () => {
       policiesRepo.findOne.mockResolvedValue({ id: 100, name: 'Test Policy' });
@@ -192,6 +235,18 @@ describe('IamService', () => {
     it('throws NotFoundException for a policy that does not exist', async () => {
       policiesRepo.findOne.mockResolvedValue(null);
       await expect(service.removePolicy(999, 7)).rejects.toThrow(NotFoundException);
+    });
+
+    it('refuses to delete a system-managed policy, even with zero role attachments', async () => {
+      policiesRepo.findOne.mockResolvedValue({ id: 66, name: 'SUPER_ADMIN Policy', isSystem: true });
+      rolePoliciesRepo.count.mockResolvedValue(0);
+
+      await expect(service.removePolicy(66, 7)).rejects.toThrow(ForbiddenException);
+      await expect(service.removePolicy(66, 7)).rejects.toThrow(/system-managed/);
+      expect(policiesRepo.softRemove).not.toHaveBeenCalled();
+      // The system-managed check must run BEFORE the attachment-count check, so the real reason is
+      // always reported — never the generic "detach it first" message a system policy can't act on.
+      expect(rolePoliciesRepo.count).not.toHaveBeenCalled();
     });
   });
 
@@ -256,6 +311,40 @@ describe('IamService', () => {
 
       expect(rolePoliciesRepo.remove).toHaveBeenCalled();
     });
+
+    it('allows attaching a system-managed policy to an ordinary (non-SUPER_ADMIN) role — isSystem never blocks attach', async () => {
+      rolesRepo.findOne.mockResolvedValue({ id: 5, roleName: 'OPERATIONS' });
+      policiesRepo.findOne.mockResolvedValue({ id: 66, name: 'SUPER_ADMIN Policy', isSystem: true });
+      rolePoliciesRepo.findOne.mockResolvedValue(null);
+
+      await service.attachPolicyToRole(5, 66, 7);
+
+      expect(rolePoliciesRepo.save).toHaveBeenCalledWith({ roleId: 5, policyId: 66 });
+      expect(auditService.record).toHaveBeenCalledWith(expect.objectContaining({ action: 'ATTACH_POLICY' }));
+    });
+
+    it('allows detaching a system-managed policy from an ordinary (non-SUPER_ADMIN) role it happens to be attached to', async () => {
+      // isSystem protects the Policy's own name/description/statements (updatePolicy/removePolicy)
+      // and its grant to the SUPER_ADMIN role specifically — it is NOT a blanket "can never be
+      // detached from any role" rule. A system-managed policy attached to some other role (e.g. an
+      // admin explicitly reused it there) can be detached from THAT role like any other policy.
+      rolePoliciesRepo.findOne.mockResolvedValue({ id: 1, roleId: 5, policyId: 66 });
+      rolesRepo.findOne.mockResolvedValue({ id: 5, roleName: 'OPERATIONS' });
+
+      await service.detachPolicyFromRole(5, 66, 7);
+
+      expect(rolePoliciesRepo.remove).toHaveBeenCalled();
+      expect(auditService.record).toHaveBeenCalledWith(expect.objectContaining({ action: 'DETACH_POLICY' }));
+    });
+
+    it('still refuses to detach a system-managed policy (or any policy) from SUPER_ADMIN specifically', async () => {
+      rolePoliciesRepo.findOne.mockResolvedValue({ id: 1, roleId: 1, policyId: 66 });
+      rolesRepo.findOne.mockResolvedValue({ id: 1, roleName: 'SUPER_ADMIN' });
+
+      await expect(service.detachPolicyFromRole(1, 66, 7)).rejects.toThrow(ForbiddenException);
+      await expect(service.detachPolicyFromRole(1, 66, 7)).rejects.toThrow(/must always retain full access/);
+      expect(rolePoliciesRepo.remove).not.toHaveBeenCalled();
+    });
   });
 
   describe('getActionCodesGrantedByPolicies / roleHasActionViaPolicy', () => {
@@ -276,6 +365,280 @@ describe('IamService', () => {
 
       expect(await service.roleHasActionViaPolicy(5, 'VIEW_CUSTOMER')).toBe(true);
       expect(await service.roleHasActionViaPolicy(5, 'DELETE_CUSTOMER')).toBe(false);
+    });
+  });
+
+  // The multi-role resolution every authorization read now goes through (see
+  // getActionCodesGrantedByPoliciesForRoles's own doc comment): a user's effective permissions are the
+  // purely ADDITIVE union, across ALL of their current roles, of every Allow statement's action codes.
+  // These tests prove the semantics the multi-role migration promises — union, deny-by-default, nothing
+  // that can subtract, no query for an empty role set — against a role_policies mock that answers
+  // `find` the way the database would (only the rows whose roleId is in the requested set).
+  describe('getActionCodesGrantedByPoliciesForRoles / rolesHaveActionViaPolicy — multi-role union', () => {
+    type StatementRow = { effect: string; actions: string[] };
+    type RolePolicyRow = { roleId: number; policy?: { statements?: StatementRow[] } };
+
+    const allow = (...actions: string[]): StatementRow => ({ effect: 'Allow', actions });
+
+    // roleId -> that role's attached policies' statements, one RolePolicy row per policy. `where.roleId`
+    // is TypeORM's In(...) operator — at runtime its `.value` is the requested id array.
+    function seedRolePolicies(rows: RolePolicyRow[]) {
+      rolePoliciesRepo.find.mockImplementation(({ where }: { where: { roleId: { value: number[] } } }) =>
+        Promise.resolve(rows.filter((row) => where.roleId.value.includes(row.roleId))),
+      );
+    }
+
+    const FINANCE = 5;
+    const OPERATIONS = 8;
+    const NO_POLICY_ROLE = 20;
+
+    const baseRows = (): RolePolicyRow[] => [
+      { roleId: FINANCE, policy: { statements: [allow('VIEW_CUSTOMER', 'APPROVE_TARIFF')] } },
+      { roleId: OPERATIONS, policy: { statements: [allow('EDIT_CUSTOMER'), allow('VIEW_CUSTOMER', 'VIEW_METER')] } },
+    ];
+
+    it('is the UNION of every Allow statement across every role — each code once, whichever role grants it', async () => {
+      seedRolePolicies(baseRows());
+
+      const codes = await service.getActionCodesGrantedByPoliciesForRoles([FINANCE, OPERATIONS]);
+
+      expect(codes).toEqual(new Set(['VIEW_CUSTOMER', 'APPROVE_TARIFF', 'EDIT_CUSTOMER', 'VIEW_METER']));
+    });
+
+    it('resolves the whole role set in ONE query (roleId IN (...)), loading each policy with its statements', async () => {
+      seedRolePolicies(baseRows());
+
+      await service.getActionCodesGrantedByPoliciesForRoles([FINANCE, OPERATIONS]);
+
+      expect(rolePoliciesRepo.find).toHaveBeenCalledTimes(1);
+      const options = rolePoliciesRepo.find.mock.calls[0][0];
+      expect(options.where.roleId).toBeInstanceOf(FindOperator);
+      expect(options.where.roleId.type).toBe('in');
+      expect(options.where.roleId.value).toEqual([FINANCE, OPERATIONS]);
+      expect(options.relations).toEqual({ policy: { statements: true } });
+    });
+
+    it('rolesHaveActionViaPolicy is true when ANY role grants the code, in either role order', async () => {
+      seedRolePolicies(baseRows());
+
+      expect(await service.rolesHaveActionViaPolicy([FINANCE, OPERATIONS], 'EDIT_CUSTOMER')).toBe(true); // only OPERATIONS grants it
+      expect(await service.rolesHaveActionViaPolicy([OPERATIONS, FINANCE], 'APPROVE_TARIFF')).toBe(true); // only FINANCE grants it
+      expect(await service.rolesHaveActionViaPolicy([FINANCE, OPERATIONS], 'DELETE_CUSTOMER')).toBe(false); // nobody grants it — deny by default
+    });
+
+    it('an EMPTY role set holds nothing and never queries', async () => {
+      seedRolePolicies(baseRows());
+
+      expect(await service.getActionCodesGrantedByPoliciesForRoles([])).toEqual(new Set());
+      expect(await service.rolesHaveActionViaPolicy([], 'VIEW_CUSTOMER')).toBe(false);
+      expect(rolePoliciesRepo.find).not.toHaveBeenCalled();
+    });
+
+    it('drops anything that is not a real role id — an all-invalid set holds nothing and never queries; a mixed set queries only the valid ids', async () => {
+      seedRolePolicies(baseRows());
+
+      const invalid = [undefined, null, NaN, 0, -3, 2.5] as unknown as number[];
+      expect(await service.getActionCodesGrantedByPoliciesForRoles(invalid)).toEqual(new Set());
+      expect(rolePoliciesRepo.find).not.toHaveBeenCalled();
+
+      await service.getActionCodesGrantedByPoliciesForRoles([...invalid, FINANCE, FINANCE]);
+      expect(rolePoliciesRepo.find).toHaveBeenCalledTimes(1);
+      expect(rolePoliciesRepo.find.mock.calls[0][0].where.roleId.value).toEqual([FINANCE]); // de-duplicated too
+    });
+
+    it('a statement whose effect is not Allow contributes NOTHING', async () => {
+      seedRolePolicies([
+        { roleId: FINANCE, policy: { statements: [allow('VIEW_CUSTOMER'), { effect: 'Deny', actions: ['DELETE_CUSTOMER'] }] } },
+      ]);
+
+      const codes = await service.getActionCodesGrantedByPoliciesForRoles([FINANCE]);
+
+      expect(codes).toEqual(new Set(['VIEW_CUSTOMER']));
+      expect(await service.rolesHaveActionViaPolicy([FINANCE], 'DELETE_CUSTOMER')).toBe(false);
+    });
+
+    it('a non-Allow statement on one role can never SUBTRACT a code another role grants (no Deny machinery exists)', async () => {
+      seedRolePolicies([
+        { roleId: FINANCE, policy: { statements: [allow('DELETE_CUSTOMER')] } },
+        { roleId: OPERATIONS, policy: { statements: [{ effect: 'Deny', actions: ['DELETE_CUSTOMER'] }] } },
+      ]);
+
+      expect(await service.rolesHaveActionViaPolicy([FINANCE, OPERATIONS], 'DELETE_CUSTOMER')).toBe(true);
+      expect(await service.rolesHaveActionViaPolicy([OPERATIONS, FINANCE], 'DELETE_CUSTOMER')).toBe(true);
+    });
+
+    it('a role WITHOUT grants never removes another role\'s grant — no policy at all, a policy with no statements, and an unloaded policy all contribute nothing', async () => {
+      seedRolePolicies([
+        ...baseRows(),
+        { roleId: 30, policy: { statements: [] } },
+        { roleId: 31, policy: undefined },
+        // NO_POLICY_ROLE has no role_policies row whatsoever.
+      ]);
+
+      const alone = await service.getActionCodesGrantedByPoliciesForRoles([FINANCE]);
+      const withGrantless = await service.getActionCodesGrantedByPoliciesForRoles([NO_POLICY_ROLE, 30, 31, FINANCE]);
+
+      expect(withGrantless).toEqual(alone);
+      expect(await service.rolesHaveActionViaPolicy([NO_POLICY_ROLE, FINANCE], 'VIEW_CUSTOMER')).toBe(true);
+      expect(await service.rolesHaveActionViaPolicy([NO_POLICY_ROLE, 30, 31], 'VIEW_CUSTOMER')).toBe(false);
+    });
+
+    it('holding more roles can only ever ADD codes — every subset of roles resolves to exactly the union of its members, never less than any one member', async () => {
+      seedRolePolicies([...baseRows(), { roleId: 9, policy: { statements: [allow('VIEW_COMMUNITY')] } }]);
+      const roleIds = [FINANCE, OPERATIONS, 9];
+      const single = new Map<number, Set<string>>();
+      for (const id of roleIds) single.set(id, await service.getActionCodesGrantedByPoliciesForRoles([id]));
+
+      const subsets: number[][] = [[FINANCE, OPERATIONS], [FINANCE, 9], [OPERATIONS, 9], [FINANCE, OPERATIONS, 9]];
+      for (const subset of subsets) {
+        const resolved = await service.getActionCodesGrantedByPoliciesForRoles(subset);
+        const expectedUnion = new Set(subset.flatMap((id) => [...single.get(id)!]));
+        expect(resolved).toEqual(expectedUnion);
+        for (const id of subset) {
+          for (const code of single.get(id)!) expect(resolved.has(code)).toBe(true);
+        }
+      }
+    });
+
+    it('the result does not depend on the order of the roles', async () => {
+      seedRolePolicies(baseRows());
+
+      expect(await service.getActionCodesGrantedByPoliciesForRoles([OPERATIONS, FINANCE])).toEqual(
+        await service.getActionCodesGrantedByPoliciesForRoles([FINANCE, OPERATIONS]),
+      );
+    });
+
+    describe('the single-role methods are thin wrappers over the multi-role resolution (ONE implementation)', () => {
+      it('getActionCodesGrantedByPolicies(roleId) is exactly the multi-role result for [roleId], through the same In(...) query', async () => {
+        seedRolePolicies(baseRows());
+
+        const single = await service.getActionCodesGrantedByPolicies(FINANCE);
+        const multi = await service.getActionCodesGrantedByPoliciesForRoles([FINANCE]);
+
+        expect(single).toEqual(multi);
+        expect(single).toEqual(new Set(['VIEW_CUSTOMER', 'APPROVE_TARIFF']));
+        const [firstCall, secondCall] = rolePoliciesRepo.find.mock.calls;
+        expect(firstCall[0].where.roleId.type).toBe('in');
+        expect(firstCall[0].where.roleId.value).toEqual([FINANCE]);
+        expect(secondCall[0]).toEqual(firstCall[0]);
+      });
+
+      it('roleHasActionViaPolicy(roleId, code) agrees with rolesHaveActionViaPolicy([roleId], code)', async () => {
+        seedRolePolicies(baseRows());
+
+        for (const code of ['VIEW_CUSTOMER', 'APPROVE_TARIFF', 'EDIT_CUSTOMER', 'DELETE_CUSTOMER']) {
+          expect(await service.roleHasActionViaPolicy(FINANCE, code)).toBe(await service.rolesHaveActionViaPolicy([FINANCE], code));
+        }
+      });
+
+      it('a MISSING role id never matches every role\'s policies — it resolves to no grants and never queries (the fail-open hazard of a bare where: { roleId })', async () => {
+        seedRolePolicies(baseRows());
+
+        expect(await service.getActionCodesGrantedByPolicies(undefined as unknown as number)).toEqual(new Set());
+        expect(await service.roleHasActionViaPolicy(undefined as unknown as number, 'VIEW_CUSTOMER')).toBe(false);
+        expect(rolePoliciesRepo.find).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  // A user's OWN inline policies are part of the same live union as their roles' policies: purely
+  // additive, deny by default, never cached, and never another user's. The mock answers find the way
+  // the database would (only the rows of the requested userId).
+  describe('user inline policies join the same union (userId given)', () => {
+    type InlineRow = { userId: number; statements: { effect: string; actions: string[] }[] };
+    const allow = (...actions: string[]) => ({ effect: 'Allow', actions });
+
+    let inlineRows: InlineRow[];
+    beforeEach(() => {
+      inlineRows = [];
+      userInlinePoliciesRepo.find.mockImplementation(({ where }: { where: { userId: number } }) =>
+        Promise.resolve(inlineRows.filter((row) => row.userId === where.userId)),
+      );
+      rolePoliciesRepo.find.mockImplementation(({ where }: { where: { roleId: { value: number[] } } }) =>
+        Promise.resolve(
+          [{ roleId: 5, policy: { statements: [allow('VIEW_CUSTOMER')] } }].filter((row) => where.roleId.value.includes(row.roleId)),
+        ),
+      );
+    });
+
+    it("is the union of the roles' grants AND the user's own inline grants", async () => {
+      inlineRows = [{ userId: 42, statements: [allow('TARIFF_VIEW'), allow('VIEW_METER')] }];
+
+      const codes = await service.getActionCodesGrantedByPoliciesForRoles([5], 42);
+
+      expect(codes).toEqual(new Set(['VIEW_CUSTOMER', 'TARIFF_VIEW', 'VIEW_METER']));
+    });
+
+    it("loads the user's inline policies by userId with their statements — one extra query, alongside the role query", async () => {
+      inlineRows = [{ userId: 42, statements: [allow('TARIFF_VIEW')] }];
+
+      await service.getActionCodesGrantedByPoliciesForRoles([5], 42);
+
+      expect(userInlinePoliciesRepo.find).toHaveBeenCalledTimes(1);
+      expect(userInlinePoliciesRepo.find).toHaveBeenCalledWith({ where: { userId: 42 }, relations: { statements: true } });
+      expect(rolePoliciesRepo.find).toHaveBeenCalledTimes(1);
+    });
+
+    it('an inline grant alone is enough — rolesHaveActionViaPolicy is true with no role granting the code', async () => {
+      inlineRows = [{ userId: 42, statements: [allow('TARIFF_VIEW')] }];
+
+      expect(await service.rolesHaveActionViaPolicy([5], 'TARIFF_VIEW', 42)).toBe(true);
+      expect(await service.rolesHaveActionViaPolicy([5], 'DELETE_CUSTOMER', 42)).toBe(false); // nothing grants it — deny by default
+    });
+
+    it("never includes ANOTHER user's inline policies", async () => {
+      inlineRows = [{ userId: 43, statements: [allow('TARIFF_VIEW')] }];
+
+      expect(await service.rolesHaveActionViaPolicy([5], 'TARIFF_VIEW', 42)).toBe(false);
+    });
+
+    it('without a userId the inline policies are never read — a role-only question is answered by roles alone', async () => {
+      inlineRows = [{ userId: 42, statements: [allow('TARIFF_VIEW')] }];
+
+      expect(await service.rolesHaveActionViaPolicy([5], 'TARIFF_VIEW')).toBe(false);
+      expect(userInlinePoliciesRepo.find).not.toHaveBeenCalled();
+    });
+
+    it.each([[undefined], [null], [NaN], [0], [-1], [1.5]])('an invalid userId (%p) never queries the inline policies', async (invalid) => {
+      inlineRows = [{ userId: 42, statements: [allow('TARIFF_VIEW')] }];
+
+      const codes = await service.getActionCodesGrantedByPoliciesForRoles([5], invalid as unknown as number);
+
+      expect(userInlinePoliciesRepo.find).not.toHaveBeenCalled();
+      expect(codes).toEqual(new Set(['VIEW_CUSTOMER']));
+    });
+
+    it('a user with inline policies but NO roles resolves only the inline grants, without touching role_policies', async () => {
+      inlineRows = [{ userId: 42, statements: [allow('TARIFF_VIEW')] }];
+
+      const codes = await service.getActionCodesGrantedByPoliciesForRoles([], 42);
+
+      expect(codes).toEqual(new Set(['TARIFF_VIEW']));
+      expect(rolePoliciesRepo.find).not.toHaveBeenCalled();
+    });
+
+    it('no roles and no user holds nothing and queries nothing', async () => {
+      expect(await service.getActionCodesGrantedByPoliciesForRoles([], undefined)).toEqual(new Set());
+      expect(rolePoliciesRepo.find).not.toHaveBeenCalled();
+      expect(userInlinePoliciesRepo.find).not.toHaveBeenCalled();
+    });
+
+    it('a statement whose effect is not Allow contributes NOTHING — it can neither grant nor subtract', async () => {
+      inlineRows = [{ userId: 42, statements: [{ effect: 'Deny', actions: ['VIEW_CUSTOMER', 'TARIFF_VIEW'] }, allow('VIEW_METER')] }];
+
+      const codes = await service.getActionCodesGrantedByPoliciesForRoles([5], 42);
+
+      expect(codes).toEqual(new Set(['VIEW_CUSTOMER', 'VIEW_METER'])); // VIEW_CUSTOMER still comes from the role
+    });
+
+    it('is never cached — deleting an inline policy revokes its grants on the very next resolution', async () => {
+      inlineRows = [{ userId: 42, statements: [allow('TARIFF_VIEW')] }];
+      expect(await service.rolesHaveActionViaPolicy([5], 'TARIFF_VIEW', 42)).toBe(true);
+
+      inlineRows = []; // the policy is deleted
+
+      expect(await service.rolesHaveActionViaPolicy([5], 'TARIFF_VIEW', 42)).toBe(false);
+      expect(userInlinePoliciesRepo.find).toHaveBeenCalledTimes(2);
     });
   });
 
@@ -340,8 +703,9 @@ describe('IamService', () => {
       resourcesRepo.find.mockResolvedValue([USER_RESOURCE]);
       actionsRepo.find.mockResolvedValue([VIEW_USER_ACTION]);
 
-      const preExistingPolicy: { id: number; statements: { resourceId: number; effect: string; actions: string[] }[] } = {
+      const preExistingPolicy: { id: number; isSystem: boolean; statements: { resourceId: number; effect: string; actions: string[] }[] } = {
         id: 77,
+        isSystem: true,
         statements: [],
       };
       policiesRepo.findOne.mockResolvedValue(preExistingPolicy);
@@ -506,8 +870,13 @@ describe('IamService', () => {
       actionsRepo.find.mockResolvedValue([VIEW_USER_ACTION, CREATE_USER_ACTION]);
       policiesRepo.findOne.mockResolvedValue(null);
 
-      const createdPolicy: { id: number; statements: { resourceId: number; effect: string; actions: string[] }[] } = {
+      // isSystem: true from the start — mirrors the real create() call, which already passes
+      // isSystem: isSuperAdminRole at creation time (see ensureAdminPolicyGrants's fresh-install
+      // branch), so a later re-read on the second boot below never finds it unset and never fires
+      // the separate backfill-safety-net save that branch has for an ALREADY-EXISTING, unflagged row.
+      const createdPolicy: { id: number; isSystem: boolean; statements: { resourceId: number; effect: string; actions: string[] }[] } = {
         id: 100,
+        isSystem: true,
         statements: [],
       };
       // Consumed once (the very first read, before anything exists); every later read — within this

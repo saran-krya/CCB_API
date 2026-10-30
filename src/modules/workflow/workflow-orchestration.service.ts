@@ -411,20 +411,20 @@ export class WorkflowOrchestrationService {
    *  Resolves ALL of the acting user's currently active roles via UserRoleService.getRoleIds —
    *  never the JWT's single `roleId` claim, which is only ever that user's PRIMARY role and would
    *  silently under-authorize a genuinely multi-role user, exactly the same reasoning assertCanAct
-   *  already applies to the approve path. Throws ForbiddenException (matching PermissionGuard's own
-   *  failure shape) rather than returning a boolean, so callers get the same 403 behavior a
-   *  guard-rejected request would. */
+   *  already applies to the approve path. The actor's own inline policies count too (an inline
+   *  policy may grant a view code; it can never make someone an approver — approving is tied to a
+   *  ROLE at a workflow level, see assertCanAct). Throws ForbiddenException (matching
+   *  PermissionGuard's own failure shape) rather than returning a boolean, so callers get the same
+   *  403 behavior a guard-rejected request would. */
   async assertCanViewRuntime(workflowType: WorkflowType, actorId: number | undefined): Promise<void> {
     if (!actorId) {
       throw new ForbiddenException('Could not determine the acting user for this request.');
     }
     const requiredActionCodes = RUNTIME_VIEW_ACTION_CODES[workflowType];
     const actorRoleIds = await this.userRoleService.getRoleIds(actorId);
-    for (const roleId of actorRoleIds) {
-      for (const actionCode of requiredActionCodes) {
-        if (await this.rolePermissionsService.roleHasAction(roleId, actionCode)) {
-          return;
-        }
+    for (const actionCode of requiredActionCodes) {
+      if (await this.rolePermissionsService.rolesHaveAction(actorRoleIds, actionCode, actorId)) {
+        return;
       }
     }
     throw new ForbiddenException('You do not have access to view this workflow runtime state.');

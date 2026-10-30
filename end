@@ -1,0 +1,7 @@
+[35msrc/migrations/1791177015000-AddWorkflowApprovalLevels.ts[m[36m:[m[32m5[m[36m:[m * -> [1;31mApproval Workflows[m edit-mode policy exactly (role, department scope, SLA, on-breach behavior,
+[35msrc/modules/iam/resource-catalog.ts[m[36m:[m[32m135[m[36m:[m    name: '[1;31mApproval Workflows[m',
+[35msrc/modules/role/role-remove-safety.spec.ts[m[36m:[m[32m90[m[36m:[m    expect(error.message).toMatch(/approver in one or more [1;31mapproval workflows[m/);
+[35msrc/modules/role/role.service.ts[m[36m:[m[32m429[m[36m:[m        'This role is configured as an approver in one or more [1;31mapproval workflows[m — remove it from those workflows before deleting it.',
+[35msrc/modules/workflow/workflow.controller.ts[m[36m:[m[32m13[m[36m:[m// Matches CCB_Template's Business Admin -> Workflow Management -> [1;31mApproval Workflows[m tab exactly:
+[35msrc/modules/workflow/workflow.service.ts[m[36m:[m[32m17[m[36m:[m// Workflow Management -> [1;31mApproval Workflows[m, matching CCB_Template's own scope exactly: for each
+[35msrc/modules/workflow/workflow.service.ts[m[36m:[m[32m66[m[36m:[m   *  Workflow Management -> [1;31mApproval Workflows[m tab, but populated with THIS project's real data,

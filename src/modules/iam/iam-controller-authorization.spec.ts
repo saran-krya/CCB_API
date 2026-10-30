@@ -64,6 +64,17 @@ describe('IAM controllers — SUPER_ADMIN-only boundary', () => {
     },
   );
 
+  it.each(['FINANCE', 'CUSTOMER_SERVICE_SUPERVISOR', 'OPERATIONS', 'Cheif_Officer', 'ADMIN'])(
+    'role "%s" is DENIED on RolePolicyController.detach — cannot detach a Policy from any Role',
+    (roleName) => {
+      expect(rolesGuard.canActivate(mockContext(RolePolicyController, RolePolicyController.prototype.detach, roleName))).toBe(false);
+    },
+  );
+
+  it('SUPER_ADMIN passes RolePolicyController.detach', () => {
+    expect(rolesGuard.canActivate(mockContext(RolePolicyController, RolePolicyController.prototype.detach, 'SUPER_ADMIN'))).toBe(true);
+  });
+
   it('an unauthorized request (no user at all, e.g. a bad/missing token) is denied on every IAM route', () => {
     const context = {
       getHandler: () => PolicyController.prototype.create,

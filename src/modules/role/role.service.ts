@@ -17,10 +17,24 @@ import {
   UpdateRoleDto,
 } from './dto/create-role.dto';
 
+import { RolePickerQueryDto } from './dto/role-picker-query.dto';
 import { Role } from './entities/role.entity';
 import { RoleQueryDto } from '@app/common/dto/role-paginatoin.dto';
 import { LovService } from '../lov/lov.service';
 import { UserRoleService } from '../user-role/user-role.service';
+
+// Correlated subqueries behind the sortable count columns — selected as aliases (never joined) so a page
+// still holds one row per role.
+const ASSIGNED_USER_COUNT_SQL = `(
+  SELECT COUNT(*)
+  FROM user_roles ur_count
+  WHERE ur_count.role_id = role.id AND ur_count.deleted_at IS NULL
+)`;
+const POLICY_COUNT_SQL = `(
+  SELECT COUNT(*)
+  FROM role_policies rp_count
+  WHERE rp_count.roleId = role.id AND rp_count.deleted_at IS NULL
+)`;
 
 @Injectable()
 export class RoleService {
@@ -83,63 +97,27 @@ export class RoleService {
     return saved;
   }
 
+  /** Roles list: searched, filtered by User Category / created date, sorted and paged here. The counts are
+   *  correlated subqueries exposed as selected aliases (one row per role, and an alias is what TypeORM can
+   *  order a skip/take page by). `isSystem` / `deleteBlockedReason` are the server's own rules, so the client
+   *  never decides from a role's name whether it may be deleted. The User Category filter's options ride along
+   *  in `meta` so the client never hardcodes which categories exist. */
   async RoleLists(
     query: RoleQueryDto,
   ) {
-    const qb =
-      this.roles.createQueryBuilder(
-        "role",
+    const qb = this.roles
+      .createQueryBuilder("role")
+      .leftJoinAndSelect("role.userCategory", "userCategory")
+      .addSelect(ASSIGNED_USER_COUNT_SQL, "assigned_user_count")
+      .addSelect(POLICY_COUNT_SQL, "policy_count");
+
+    const term = query["search.query"]?.trim();
+    if (term) {
+      qb.andWhere(
+        `(role.roleName LIKE :term OR role.roleDescription LIKE :term OR userCategory.label LIKE :term)`,
+        { term: `%${term}%` },
       );
-
-    qb.leftJoinAndSelect(
-      "role.userCategory",
-      "userCategory",
-    );
-
-
-    switch (query.sortBy) {
-      case "userCategory":
-        qb.orderBy(
-          "userCategory.label",
-          query.sortOrder,
-        );
-        break;
-
-      case "roleName":
-        qb.orderBy(
-          "role.roleName",
-          query.sortOrder,
-        );
-        break;
-
-      case "createdAt":
-      default:
-        qb.orderBy(
-          "role.createdAt",
-          query.sortOrder,
-        );
-        break;
     }
-
-
-    if (query["search.roleName"]) {
-      const roleNames = query["search.roleName"]
-        .split(",")
-        .map((name) => name.trim())
-        .filter(Boolean);
-
-      if (roleNames.length > 1) {
-        qb.andWhere("role.roleName IN (:...roleNames)", { roleNames });
-      } else if (roleNames.length === 1) {
-        qb.andWhere(
-          "role.roleName LIKE :roleName",
-          {
-            roleName: `%${roleNames[0]}%`,
-          },
-        );
-      }
-    }
-
 
     if (query.userCategoryId) {
       qb.andWhere(
@@ -148,50 +126,91 @@ export class RoleService {
       );
     }
 
-
     if (query["search.createdAt"]) {
       qb.andWhere(
         "DATE(role.createdAt) = :createdAt",
-        {
-          createdAt:
-            query["search.createdAt"],
-        },
+        { createdAt: query["search.createdAt"] },
       );
     }
 
-    const result =
-      await paginate(
-        qb,
-        query,
-      );
+    const direction = query.sortOrder === "ASC" ? "ASC" : "DESC";
+    const sortColumns = {
+      roleName: "role.roleName",
+      userCategory: "userCategory.label",
+      assignedUserCount: "assigned_user_count",
+      policyCount: "policy_count",
+      createdAt: "role.createdAt",
+    } as const;
+    const sortColumn = sortColumns[query.sortBy ?? "createdAt"] ?? sortColumns.createdAt;
+    qb.orderBy(sortColumn, direction);
+    // Ties fall back to the name so the order never jumps between requests.
+    if (sortColumn !== sortColumns.roleName) qb.addOrderBy("role.roleName", "ASC");
 
-    // One grouped query for the whole page's "assigned users" count, not one query per row —
-    // see UserRoleService.getUserCountsByRoleIds's own doc comment on why this avoids N+1.
-    const userCounts = await this.userRoleService.getUserCountsByRoleIds(
-      result.items.map((role) => role.id),
-    );
+    const [result, userCategories] = await Promise.all([
+      paginate(qb, query),
+      this.lovService.findByCategory("USER_CATEGORY"),
+    ]);
+
+    // One grouped query per count for the whole page, not one per row — see
+    // UserRoleService.getUserCountsByRoleIds's own doc comment on why this avoids N+1.
+    const roleIds = result.items.map((role) => role.id);
+    const [userCounts, policyCounts] = await Promise.all([
+      this.userRoleService.getUserCountsByRoleIds(roleIds),
+      this.getPolicyCountsByRoleIds(roleIds),
+    ]);
 
     return {
-      items: result.items.map(
-        (role) => ({
+      items: result.items.map((role) => {
+        const assignedUserCount = userCounts.get(role.id) ?? 0;
+        return {
           roleId: role.id,
-          roleName:
-            role.roleName,
-          roleDescription:
-            role.roleDescription,
-          userCategoryType:
-            role.userCategory
-              ?.label ?? null,
-          created:
-            role.createdAt,
-          assignedUserCount:
-            userCounts.get(role.id) ?? 0,
-        }),
-      ),
-      pagination:
-        result.pagination,
+          roleName: role.roleName,
+          roleDescription: role.roleDescription,
+          userCategoryType: role.userCategory?.label ?? null,
+          created: role.createdAt,
+          assignedUserCount,
+          policyCount: policyCounts.get(role.id) ?? 0,
+          isSystem: this.isSystemRole(role),
+          deleteBlockedReason: this.deleteBlockedReason(role, assignedUserCount),
+        };
+      }),
+      pagination: result.pagination,
+      meta: { userCategoryOptions: this.toCategoryOptions(userCategories) },
     };
   }
+
+  /** The system-managed role (SUPER_ADMIN): RolesGuard's bypass and every boot-time grant reconciliation
+   *  match it by this exact name, so it can be neither renamed nor deleted. */
+  private isSystemRole(role: Pick<Role, "roleName">): boolean {
+    return role.roleName === ROLES.SUPER_ADMIN;
+  }
+
+  /** Why this role can't be deleted from the list, or null when it can be tried. The delete itself still
+   *  enforces every rule (see remove) — this only lets the list say so up front. */
+  private deleteBlockedReason(role: Pick<Role, "roleName">, assignedUserCount: number): string | null {
+    if (this.isSystemRole(role)) return `${role.roleName} is a system role and can't be deleted.`;
+    if (assignedUserCount > 0) {
+      return `Assigned to ${assignedUserCount} user${assignedUserCount === 1 ? "" : "s"} — reassign them to a different role first.`;
+    }
+    return null;
+  }
+
+  private toCategoryOptions(categories: { id: number; label: string }[]) {
+    return categories
+      .map((category) => ({ value: category.id, label: category.label }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }
+
+  /** Policies attached per role, for a page of roles — one grouped query. Roles with none are absent. */
+  private async getPolicyCountsByRoleIds(roleIds: number[]): Promise<Map<number, number>> {
+    if (roleIds.length === 0) return new Map();
+    const rows: { roleId: number; count: string }[] = await this.dataSource.query(
+      `SELECT roleId AS roleId, COUNT(*) AS count FROM role_policies WHERE deleted_at IS NULL AND roleId IN (${roleIds.map(() => "?").join(",")}) GROUP BY roleId`,
+      roleIds,
+    );
+    return new Map(rows.map((row) => [Number(row.roleId), Number(row.count)]));
+  }
+
 
   async getRoleDropdown(
     userCategoryId?: number,
@@ -206,6 +225,10 @@ export class RoleService {
 
     const roles = await qb.orderBy('role.roleName', 'ASC').getMany();
 
+    // The Roles picker on Create / Edit User shows how many users hold each role. Same batched count the Roles
+    // list uses for "Assigned Users" — one grouped query for the whole list, never one per role.
+    const userCounts = await this.userRoleService.getUserCountsByRoleIds(roles.map((role) => role.id));
+
     return roles.map((role) => ({
       id: role.id,
       name: role.roleName,
@@ -219,7 +242,59 @@ export class RoleService {
       userCategoryId: role.userCategoryId,
       userCategoryLabel: role.userCategory?.label ?? null,
       canBeReportingManager: role.canBeReportingManager,
+      assignedUserCount: userCounts.get(role.id) ?? 0,
     }));
+  }
+
+  /** The Roles picker on Create / Edit User: the same rows as getRoleDropdown, but searched, filtered by
+   *  User Category, sorted and paged here — the web client sends only the query and renders the page. The
+   *  "Filter by Type" options ride along in `meta` so the client never hardcodes which categories exist.
+   *  The user count is a correlated subquery exposed as a selected alias (one row per role, and an alias
+   *  is what TypeORM can order a skip/take page by). */
+  async getRolePicker(query: RolePickerQueryDto) {
+    const qb = this.roles
+      .createQueryBuilder('role')
+      .leftJoinAndSelect('role.userCategory', 'userCategory')
+      .addSelect(ASSIGNED_USER_COUNT_SQL, 'assigned_user_count');
+
+    const term = query['search.query']?.trim();
+    if (term) {
+      qb.andWhere(
+        `(role.roleName LIKE :term OR role.roleDescription LIKE :term OR userCategory.label LIKE :term)`,
+        { term: `%${term}%` },
+      );
+    }
+    if (query.userCategoryId) {
+      qb.andWhere('role.userCategoryId = :userCategoryId', { userCategoryId: query.userCategoryId });
+    }
+
+    const direction = query.sortOrder === 'DESC' ? 'DESC' : 'ASC';
+    const sortColumn =
+      query.sortBy === 'users' ? 'assigned_user_count' : query.sortBy === 'type' ? 'userCategory.label' : 'role.roleName';
+    qb.orderBy(sortColumn, direction);
+    // Ties fall back to the name so the order never jumps between requests.
+    if (sortColumn !== 'role.roleName') qb.addOrderBy('role.roleName', 'ASC');
+
+    const [page, userCategories] = await Promise.all([
+      paginate(qb, query),
+      this.lovService.findByCategory('USER_CATEGORY'),
+    ]);
+
+    const userCounts = await this.userRoleService.getUserCountsByRoleIds(page.items.map((role) => role.id));
+
+    return {
+      items: page.items.map((role) => ({
+        id: role.id,
+        name: role.roleName,
+        description: role.roleDescription ?? null,
+        userCategoryId: role.userCategoryId,
+        userCategoryLabel: role.userCategory?.label ?? null,
+        canBeReportingManager: role.canBeReportingManager,
+        assignedUserCount: userCounts.get(role.id) ?? 0,
+      })),
+      pagination: page.pagination,
+      meta: { typeOptions: this.toCategoryOptions(userCategories) },
+    };
   }
 
   async getRoleFilter() {
@@ -267,11 +342,25 @@ export class RoleService {
     return role;
   }
 
+  /** Same lookup as `findOne`, keyed by `roleName` instead of numeric id — for callers that need to
+   *  resolve a well-known role by its name constant (e.g. `ROLES.SUPER_ADMIN`) without first knowing
+   *  its id. Unlike `findOne`, returns `null` rather than throwing when no such role exists — an
+   *  install that has no SUPER_ADMIN role at all (should not happen in practice, but not this
+   *  method's place to assert that) is a valid "nothing to resolve" outcome for a caller, not an
+   *  error. */
+  async findByName(roleName: string): Promise<Role | null> {
+    return this.roles.findOne({
+      where: {
+        roleName,
+      },
+    });
+  }
+
   /** The Role Detail page's own read — same role lookup as `findOne`, plus the two facts that page
    *  needs beyond the plain entity: how many users currently hold this role, and its user-facing
    *  display fields (userCategoryType label, matching RoleLists' own projection). Kept separate from
    *  `findOne` rather than folding this into it, since `findOne`'s other two callers
-   *  (RoleController's plain GET and UserService.create/update's existence check) don't need this
+   *  (RoleController's plain GET and UserService.create/addRoles's existence check) don't need this
    *  extra query on every call — this is deliberately only for the one screen that does. */
   async findOneWithDetails(id: number) {
     // userCategory is `eager: true` on the entity, so a plain findOne already joins it — no
@@ -292,6 +381,7 @@ export class RoleService {
       userCategoryType: role.userCategory?.label ?? null,
       canBeReportingManager: role.canBeReportingManager,
       canBeFieldInspector: role.canBeFieldInspector,
+      isSystem: this.isSystemRole(role),
       assignedUserCount: assignedUsers.length,
       createdAt: role.createdAt,
       updatedAt: role.updatedAt,
