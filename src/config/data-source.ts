@@ -1,12 +1,15 @@
-import 'dotenv/config';
+import { config } from 'dotenv';
+import { basename } from 'path';
 import { DataSource } from 'typeorm';
+import { resolveEnvFilePath } from './env-file';
 
-/**
- * CLI-only DataSource for the TypeORM migration commands (migration:generate/run/revert). The
- * running Nest app itself uses typeorm.config.ts's async factory instead — this file exists only
- * because the TypeORM CLI needs a plain DataSource export, not a NestJS module factory. Kept in
- * sync manually: same connection env vars, same entity glob, same migrations glob.
- */
+const envFile = resolveEnvFilePath();
+config({ path: envFile });
+// The migration commands change a real schema, so say which database they are about to hit.
+console.log(
+  `[typeorm-cli] ${basename(envFile)} -> ${process.env.DB_USERNAME}@${process.env.DB_HOST}/${process.env.DB_DATABASE}`,
+);
+
 export const AppDataSource = new DataSource({
   type: 'mysql',
   host: process.env.DB_HOST,

@@ -9,6 +9,7 @@ import { AuthModule } from './auth/auth.module';
 import { BootstrapModule } from './bootstrap/bootstrap.module';
 import { MailModule } from './mail/mail.module';
 import { typeOrmConfig } from './config/typeorm.config';
+import { resolveEnvFilePath } from './config/env-file';
 import { CommunityModule } from './modules/community/community.module';
 import { PropertyModule } from './modules/property/property.module';
 import { RoleModule } from './modules/role/role.module';
@@ -44,7 +45,7 @@ import { IamModule } from './modules/iam/iam.module';
 
 @Module({
   imports: [
-    ConfigModule.forRoot({ isGlobal: true }),
+    ConfigModule.forRoot({ isGlobal: true, envFilePath: resolveEnvFilePath() }),
     EventEmitterModule.forRoot(),
     ScheduleModule.forRoot(),
     TypeOrmModule.forRootAsync(typeOrmConfig),
