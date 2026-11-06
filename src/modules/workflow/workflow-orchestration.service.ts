@@ -10,6 +10,8 @@ import { WorkflowDefinitionLevel } from './entities/workflow-definition-level.en
 import { WorkflowInstance, WorkflowInstanceStatus } from './entities/workflow-instance.entity';
 import { WorkflowInstanceStep, WorkflowStepAction } from './entities/workflow-instance-step.entity';
 import { WorkflowSlaUnit } from './entities/workflow-approval-level.entity';
+import { SORT_ORDER } from '../../common/constants/sort.constants';
+import { LOCK_MODE } from '../../common/constants/database.constants';
 
 /** Returned by `assertCanAct` — tells the calling domain service whether the action it's about to
  *  perform is the FINAL level (domain's own terminal transition should run) or an INTERMEDIATE one
@@ -109,7 +111,7 @@ export class WorkflowOrchestrationService {
     const definition = await defRepo.findOne({ where: { workflowType, status: WorkflowDefinitionStatus.ACTIVE } });
     if (!definition) return null;
 
-    const levels = await levelRepo.find({ where: { definitionId: definition.id }, order: { levelOrder: 'ASC' } });
+    const levels = await levelRepo.find({ where: { definitionId: definition.id }, order: { levelOrder: SORT_ORDER.ASC } });
     if (levels.length === 0) return null;
 
     return { definition, levels };
@@ -193,7 +195,8 @@ export class WorkflowOrchestrationService {
    *   - ForbiddenException — the acting user holds no role matching the CURRENT level's configured
    *     role. This is deliberately NOT a 403 from PermissionGuard (which already passed, confirming
    *     the user's role CAN approve this domain in general) — it is Workflow's own, independent
-   *     "not your turn" refusal.
+   *     "not your turn" refusal. Also thrown for any user who holds SUPER_ADMIN, whatever else they
+   *     hold: a system-administration role never acts at an approval level.
    *
    *  Role matching uses `UserRoleService.getRoleIds(actorId)` — ALL of the user's currently active
    *  roles, never `users.role_id` — so a user is eligible if ANY of their roles matches the
@@ -232,15 +235,15 @@ export class WorkflowOrchestrationService {
       ? await (async () => {
           const found = await manager
             .getRepository(WorkflowInstance)
-            .findOne({ where: { workflowType, businessObjectId }, order: { id: 'DESC' } });
+            .findOne({ where: { workflowType, businessObjectId }, order: { id: SORT_ORDER.DESC } });
           if (!found) return null;
           return manager
             .createQueryBuilder(WorkflowInstance, 'wi')
-            .setLock('pessimistic_write')
+            .setLock(LOCK_MODE.PESSIMISTIC_WRITE)
             .where('wi.id = :id', { id: found.id })
             .getOne();
         })()
-      : await this.instances.findOne({ where: { workflowType, businessObjectId }, order: { id: 'DESC' } });
+      : await this.instances.findOne({ where: { workflowType, businessObjectId }, order: { id: SORT_ORDER.DESC } });
 
     if (!instance) {
       // No instance was ever created for this object — either no definition was ACTIVE for this
@@ -269,6 +272,13 @@ export class WorkflowOrchestrationService {
         throw new ForbiddenException('Could not determine the acting user for this approval.');
       }
       const actorRoleIds = await this.userRoleService.getRoleIds(actorId);
+      // SUPER_ADMIN administers the system and never decides a business transaction. The permission resolver already
+      // withholds every approve code from it (so PermissionGuard stops the request first); this is the workflow
+      // engine's own, independent refusal — it also covers a level configured with the SUPER_ADMIN role before this
+      // rule existed, and any caller that reaches the engine without going through a guarded route.
+      if (await this.rolePermissionsService.anyRoleIsSuperAdmin(actorRoleIds)) {
+        throw new ForbiddenException('SUPER_ADMIN is a system-administration role and cannot approve or reject business transactions.');
+      }
       if (!actorRoleIds.includes(currentStep.roleId)) {
         throw new ForbiddenException(
           `This item is waiting on Level ${instance.currentLevelOrder! + 1} — your role is not the configured approver for that level.`,
@@ -400,7 +410,7 @@ export class WorkflowOrchestrationService {
 
   /** Authorizes VIEWING a workflowType's runtime state (instance/steps) — deliberately NOT the
    *  same question as WORKFLOW_VIEW (that gates CONFIGURATION: the definitions/levels screen under
-   *  Business Administration -> Workflow). A Finance user who can see/approve Tariffs must be able
+   *  Business Administration -> Workflow). A user who can see/approve Tariffs must be able
    *  to see a Tariff's approval progress without also being granted the generic workflow-config
    *  permission — see RUNTIME_VIEW_ACTION_CODES's own doc comment for why each domain's real
    *  view-or-approve codes are the right test here, not a new permission and not a hardcoded role
@@ -443,7 +453,7 @@ export class WorkflowOrchestrationService {
   async getInstanceView(workflowType: WorkflowType, businessObjectId: number) {
     const instance = await this.instances.findOne({
       where: { workflowType, businessObjectId },
-      order: { id: 'DESC' },
+      order: { id: SORT_ORDER.DESC },
       relations: { submittedBy: true },
       select: {
         id: true,
@@ -462,7 +472,7 @@ export class WorkflowOrchestrationService {
 
     const stepRows = await this.steps.find({
       where: { instanceId: instance.id },
-      order: { levelOrder: 'ASC' },
+      order: { levelOrder: SORT_ORDER.ASC },
       relations: { role: true, actedBy: true },
       select: {
         id: true,
@@ -496,7 +506,7 @@ export class WorkflowOrchestrationService {
     // client-side from steps.length; always this real, persisted level list.
     const definitionLevels = await this.definitionLevels.find({
       where: { definitionId: instance.definitionId },
-      order: { levelOrder: 'ASC' },
+      order: { levelOrder: SORT_ORDER.ASC },
       relations: { role: true },
       select: {
         id: true,
@@ -524,7 +534,7 @@ export class WorkflowOrchestrationService {
   async listInFlightInstances(workflowType: WorkflowType) {
     const instances = await this.instances.find({
       where: { workflowType, status: WorkflowInstanceStatus.WAITING_FOR_APPROVAL },
-      order: { submittedAt: 'ASC' },
+      order: { submittedAt: SORT_ORDER.ASC },
       relations: { submittedBy: true },
       select: {
         id: true,

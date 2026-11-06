@@ -32,6 +32,15 @@ import { MeterImportType } from './entities/meter-import-type.enum';
 import { MeterStatus } from './entities/meter-status.enum';
 import { SubMeter } from './entities/sub-meter.entity';
 import { ImportFailedRecord, ImportFailureReason, ImportSummary } from './entities/import-result.types';
+import { ATTRIBUTE_KEY } from '../attribute/attribute.constants';
+import { ISO_DATE_LENGTH, UTC_MIDNIGHT_SUFFIX, LOCAL_MIDNIGHT_SUFFIX, MS_PER_DAY } from '../../common/constants/time.constants';
+import { SORT_ORDER, SortOrder } from '../../common/constants/sort.constants';
+import { ERROR_MESSAGES } from '../../common/constants/error-messages.constants';
+import { AUDIT_MODULE, AUDIT_ACTION } from '../../audit/audit.constants';
+import { ACTION_CODES } from '../../common/constants/action-codes.constants';
+import { MYSQL_ERROR_CODE } from '../../common/constants/database.constants';
+import { XLSX_CONTENT_TYPE, MAX_IMPORT_FILE_SIZE_BYTES, BYTES_PER_MB } from '../../common/constants/file.constants';
+import { MAX_LIMIT, DEFAULT_LIMIT } from '../../common/constants/pagination.constants';
 
 interface ColumnConfig {
   internalField: string;
@@ -41,15 +50,14 @@ interface ColumnConfig {
   enabled: boolean;
 }
 
-const MASTER_METER_COLUMNS_KEY = 'MASTER_METER_IMPORT_COLUMNS';
-const SUB_METER_COLUMNS_KEY = 'SUB_METER_IMPORT_COLUMNS';
+const MASTER_METER_COLUMNS_KEY = ATTRIBUTE_KEY.MASTER_METER_IMPORT_COLUMNS;
+const SUB_METER_COLUMNS_KEY = ATTRIBUTE_KEY.SUB_METER_IMPORT_COLUMNS;
 
 const BUSINESS_CODE_MAX_LENGTH = 20;
-const MAX_IMPORT_FILE_SIZE_BYTES = 10 * 1024 * 1024; 
 const FREE_TEXT_MAX_LENGTH = 100; 
 
 const ACCEPTED_IMPORT_MIME_TYPES = new Set([
-  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  XLSX_CONTENT_TYPE,
   'application/octet-stream',
   'application/zip',
 ]);
@@ -70,19 +78,19 @@ function parseExcelDateCell(cellValue: unknown): { ok: true; value: string | nul
   if (cellValue === null || cellValue === undefined || cellValue === '') return { ok: true, value: null };
   if (cellValue instanceof Date) {
     if (Number.isNaN(cellValue.getTime())) return { ok: false };
-    return { ok: true, value: cellValue.toISOString().slice(0, 10) };
+    return { ok: true, value: cellValue.toISOString().slice(0, ISO_DATE_LENGTH) };
   }
   if (typeof cellValue === 'number') {
-    const ms = EXCEL_EPOCH_MS + cellValue * 86400000;
+    const ms = EXCEL_EPOCH_MS + cellValue * MS_PER_DAY;
     const date = new Date(ms);
     if (Number.isNaN(date.getTime())) return { ok: false };
-    return { ok: true, value: date.toISOString().slice(0, 10) };
+    return { ok: true, value: date.toISOString().slice(0, ISO_DATE_LENGTH) };
   }
   if (typeof cellValue === 'string') {
     const trimmed = cellValue.trim();
     if (!trimmed) return { ok: true, value: null };
     if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return { ok: false };
-    const date = new Date(`${trimmed}T00:00:00Z`);
+    const date = new Date(`${trimmed}${UTC_MIDNIGHT_SUFFIX}`);
     if (Number.isNaN(date.getTime())) return { ok: false };
     return { ok: true, value: trimmed };
   }
@@ -144,9 +152,9 @@ export class MeterService {
 
   async getCommunitiesOverview(query: MeterCommunitiesOverviewQueryDto = new MeterCommunitiesOverviewQueryDto()) {
     const page = query.page && query.page > 0 ? query.page : 1;
-    const limit = query.limit && query.limit > 0 ? Math.min(query.limit, 100) : 20;
+    const limit = query.limit && query.limit > 0 ? Math.min(query.limit, MAX_LIMIT) : DEFAULT_LIMIT;
     const sortBy = MeterService.COMMUNITIES_OVERVIEW_SORTABLE.has(query.sortBy ?? '') ? query.sortBy! : 'name';
-    const sortOrder = query.sortOrder ?? 'ASC';
+    const sortOrder = query.sortOrder ?? SORT_ORDER.ASC;
 
     const qb = this.communities.createQueryBuilder('c').orderBy(`c.${sortBy}`, sortOrder);
     if (query.search) qb.andWhere('c.name LIKE :s', { s: `%${query.search}%` });
@@ -201,7 +209,7 @@ export class MeterService {
 
   async getCommunityDetail(communityId: number) {
     const community = await this.communities.findOne({ where: { id: communityId } });
-    if (!community) throw new NotFoundException('Community not found');
+    if (!community) throw new NotFoundException(ERROR_MESSAGES.COMMUNITY_NOT_FOUND);
 
     const [totalUnits, totalProperties, totalMasterMeters, totalSubMeters, mappedMeters, mappedMasterMeters] = await Promise.all([
       this.units.createQueryBuilder('u').innerJoin('u.property', 'p').where('p.community_id = :communityId', { communityId }).getCount(),
@@ -234,9 +242,9 @@ export class MeterService {
 
   async getPropertiesOverview(communityId: number, query: MeterPropertiesOverviewQueryDto = new MeterPropertiesOverviewQueryDto()) {
     const page = query.page && query.page > 0 ? query.page : 1;
-    const limit = query.limit && query.limit > 0 ? Math.min(query.limit, 100) : 20;
+    const limit = query.limit && query.limit > 0 ? Math.min(query.limit, MAX_LIMIT) : DEFAULT_LIMIT;
     const sortBy = MeterService.PROPERTIES_OVERVIEW_SORTABLE.has(query.sortBy ?? '') ? query.sortBy! : 'name';
-    const sortOrder = query.sortOrder ?? 'ASC';
+    const sortOrder = query.sortOrder ?? SORT_ORDER.ASC;
 
     const qb = this.properties.createQueryBuilder('p').where('p.community_id = :communityId', { communityId }).orderBy(`p.${sortBy}`, sortOrder);
     if (query.search) qb.andWhere('p.name LIKE :s', { s: `%${query.search}%` });
@@ -284,11 +292,11 @@ export class MeterService {
 
   async getPropertyDetail(propertyId: number) {
     const property = await this.properties.findOne({ where: { id: propertyId }, relations: ['community'] });
-    if (!property) throw new NotFoundException('Property not found');
+    if (!property) throw new NotFoundException(ERROR_MESSAGES.PROPERTY_NOT_FOUND);
 
     const [units, masterMeter, subMeters] = await Promise.all([
-      this.units.find({ where: { property: { id: propertyId } }, order: { unitNumber: 'ASC' } }),
-      this.masterMeters.findOne({ where: { property: { id: propertyId } }, relations: ['property', 'property.community'], order: { id: 'ASC' } }),
+      this.units.find({ where: { property: { id: propertyId } }, order: { unitNumber: SORT_ORDER.ASC } }),
+      this.masterMeters.findOne({ where: { property: { id: propertyId } }, relations: ['property', 'property.community'], order: { id: SORT_ORDER.ASC } }),
       this.subMeters.find({ where: { property: { id: propertyId } }, relations: ['unit', 'masterMeter'] }),
     ]);
 
@@ -339,12 +347,12 @@ export class MeterService {
 
   async getUnitsOverview(propertyId: number, query: MeterUnitsOverviewQueryDto = new MeterUnitsOverviewQueryDto()) {
     const property = await this.properties.findOne({ where: { id: propertyId } });
-    if (!property) throw new NotFoundException('Property not found');
+    if (!property) throw new NotFoundException(ERROR_MESSAGES.PROPERTY_NOT_FOUND);
 
     const page = query.page && query.page > 0 ? query.page : 1;
-    const limit = query.limit && query.limit > 0 ? Math.min(query.limit, 100) : 20;
+    const limit = query.limit && query.limit > 0 ? Math.min(query.limit, MAX_LIMIT) : DEFAULT_LIMIT;
     const sortBy = MeterService.UNITS_OVERVIEW_SORTABLE.has(query.sortBy ?? '') ? query.sortBy! : 'unitNumber';
-    const sortOrder = query.sortOrder ?? 'ASC';
+    const sortOrder = query.sortOrder ?? SORT_ORDER.ASC;
 
     const qb = this.units
       .createQueryBuilder('u')
@@ -363,7 +371,7 @@ export class MeterService {
 
     const unitIds = units.map((u) => u.id);
     const [masterMeter, subMeters] = await Promise.all([
-      this.masterMeters.findOne({ where: { property: { id: propertyId } }, order: { id: 'ASC' } }),
+      this.masterMeters.findOne({ where: { property: { id: propertyId } }, order: { id: SORT_ORDER.ASC } }),
       this.subMeters.find({ where: { unit: { id: In(unitIds) } }, relations: ['unit'] }),
     ]);
     const subMeterByUnitId = new Map(subMeters.filter((s) => s.unit).map((s) => [s.unit!.id, s]));
@@ -388,8 +396,8 @@ export class MeterService {
 
   async getMeterInventoryFilterMetadata() {
     const [communities, properties] = await Promise.all([
-      this.communities.find({ select: ['id', 'name'], order: { name: 'ASC' } }),
-      this.properties.find({ select: ['id', 'name'], relations: ['community'], order: { name: 'ASC' } }),
+      this.communities.find({ select: ['id', 'name'], order: { name: SORT_ORDER.ASC } }),
+      this.properties.find({ select: ['id', 'name'], relations: ['community'], order: { name: SORT_ORDER.ASC } }),
     ]);
 
     return {
@@ -426,14 +434,14 @@ export class MeterService {
       qb.andWhere('(m.business_code LIKE :s OR m.serial_number LIKE :s OR m.dtu_id LIKE :s)', { s: `%${query.search}%` });
     }
     const orderCol = MeterService.MASTER_METERS_SORTABLE[query.sortBy ?? ''] ?? 'm.id';
-    qb.orderBy(orderCol, query.sortOrder === 'ASC' ? 'ASC' : 'DESC');
+    qb.orderBy(orderCol, query.sortOrder === SORT_ORDER.ASC ? SORT_ORDER.ASC : SORT_ORDER.DESC);
     const result = await paginate(qb, query);
     return { ...result, items: result.items.map((m) => this.mapMasterMeterResponse(m)) };
   }
 
   async findOneMasterMeter(id: number) {
     const meter = await this.masterMeters.findOne({ where: { id }, relations: ['property', 'property.community'] });
-    if (!meter) throw new NotFoundException('Master meter not found');
+    if (!meter) throw new NotFoundException(ERROR_MESSAGES.MASTER_METER_NOT_FOUND);
     return this.mapMasterMeterResponse(meter);
   }
 
@@ -464,32 +472,32 @@ export class MeterService {
     saved.businessCode = generateBusinessCode(BUSINESS_CODE_PREFIXES.MASTER_METER, saved.id);
     await this.masterMeters.update(saved.id, { businessCode: saved.businessCode });
 
-    await this.auditService.record({ moduleName: 'Meter', entityId: saved.id, action: 'CREATE', oldValue: null, newValue: saved, performedBy: actorId });
+    await this.auditService.record({ moduleName: AUDIT_MODULE.METER, entityId: saved.id, action: AUDIT_ACTION.CREATE, oldValue: null, newValue: saved, performedBy: actorId });
     return this.findOneMasterMeter(saved.id);
   }
 
   async updateMasterMeter(id: number, dto: UpdateMasterMeterDto, actorId?: number) {
     const meter = await this.masterMeters.findOne({ where: { id } });
-    if (!meter) throw new NotFoundException('Master meter not found');
+    if (!meter) throw new NotFoundException(ERROR_MESSAGES.MASTER_METER_NOT_FOUND);
     const oldValue = { ...meter };
     Object.assign(meter, dto);
     if (actorId) meter.lastModifiedByUser = { id: actorId } as any;
     const saved = await this.masterMeters.save(meter);
-    await this.auditService.record({ moduleName: 'Meter', entityId: id, action: 'UPDATE', oldValue, newValue: saved, performedBy: actorId });
+    await this.auditService.record({ moduleName: AUDIT_MODULE.METER, entityId: id, action: AUDIT_ACTION.UPDATE, oldValue, newValue: saved, performedBy: actorId });
     return this.findOneMasterMeter(id);
   }
 
   async setMasterMeterStatus(id: number, dto: SetMeterStatusDto, actorId?: number) {
     const meter = await this.masterMeters.findOne({ where: { id } });
-    if (!meter) throw new NotFoundException('Master meter not found');
+    if (!meter) throw new NotFoundException(ERROR_MESSAGES.MASTER_METER_NOT_FOUND);
     const oldValue = { status: meter.status };
     meter.status = dto.status;
     if (actorId) meter.lastModifiedByUser = { id: actorId } as any;
     const saved = await this.masterMeters.save(meter);
     await this.auditService.record({
-      moduleName: 'Meter',
+      moduleName: AUDIT_MODULE.METER,
       entityId: id,
-      action: dto.status === MeterStatus.ACTIVE ? 'ACTIVATE' : 'DEACTIVATE',
+      action: dto.status === MeterStatus.ACTIVE ? AUDIT_ACTION.ACTIVATE : AUDIT_ACTION.DEACTIVATE,
       oldValue,
       newValue: { status: saved.status },
       performedBy: actorId,
@@ -524,14 +532,14 @@ export class MeterService {
       qb.andWhere('(s.business_code LIKE :s OR s.serial_number LIKE :s)', { s: `%${query.search}%` });
     }
     const orderCol = MeterService.SUB_METERS_SORTABLE[query.sortBy ?? ''] ?? 's.id';
-    qb.orderBy(orderCol, query.sortOrder === 'ASC' ? 'ASC' : 'DESC');
+    qb.orderBy(orderCol, query.sortOrder === SORT_ORDER.ASC ? SORT_ORDER.ASC : SORT_ORDER.DESC);
     const result = await paginate(qb, query);
     return { ...result, items: result.items.map((s) => this.mapSubMeterResponse(s)) };
   }
 
   async findOneSubMeter(id: number) {
     const meter = await this.subMeters.findOne({ where: { id }, relations: ['property', 'property.community', 'unit', 'masterMeter'] });
-    if (!meter) throw new NotFoundException('Sub meter not found');
+    if (!meter) throw new NotFoundException(ERROR_MESSAGES.SUB_METER_NOT_FOUND);
     return this.mapSubMeterResponse(meter);
   }
 
@@ -565,7 +573,7 @@ export class MeterService {
     saved.businessCode = generateBusinessCode(BUSINESS_CODE_PREFIXES.SUB_METER, saved.id);
     await this.subMeters.update(saved.id, { businessCode: saved.businessCode });
 
-    await this.auditService.record({ moduleName: 'Meter', entityId: saved.id, action: 'CREATE', oldValue: null, newValue: saved, performedBy: actorId });
+    await this.auditService.record({ moduleName: AUDIT_MODULE.METER, entityId: saved.id, action: AUDIT_ACTION.CREATE, oldValue: null, newValue: saved, performedBy: actorId });
     return this.findOneSubMeter(saved.id);
   }
 
@@ -573,7 +581,7 @@ export class MeterService {
    *  JwtStrategy — never a role claim from the JWT); omitted or empty means no grant. */
   async updateSubMeter(id: number, dto: UpdateSubMeterDto, actorId?: number, actorRoleIds?: number[]) {
     const meter = await this.subMeters.findOne({ where: { id }, relations: ['unit', 'masterMeter'] });
-    if (!meter) throw new NotFoundException('Sub meter not found');
+    if (!meter) throw new NotFoundException(ERROR_MESSAGES.SUB_METER_NOT_FOUND);
     const oldValue = { ...meter };
 
     // METER_MAPPING's own seeded description scopes it to "map, unmap, or change which unit a sub
@@ -589,7 +597,7 @@ export class MeterService {
     const nonMappingFieldsRequested = (['serialNumber', 'mBusAddress', 'floor', 'meterMake', 'meterModel', 'installationDate', 'customerAccountNumber'] as const)
       .some((field) => dto[field] !== undefined);
     if (nonMappingFieldsRequested) {
-      const hasFullEdit = !!actorRoleIds?.length && (await this.rolePermissions.rolesHaveAction(actorRoleIds, 'METER_INVENTORY_EDIT', actorId));
+      const hasFullEdit = !!actorRoleIds?.length && (await this.rolePermissions.rolesHaveAction(actorRoleIds, ACTION_CODES.METER_INVENTORY_EDIT, actorId));
       if (!hasFullEdit) {
         throw new ForbiddenException('METER_MAPPING only allows changing which unit this sub meter is mapped to — METER_INVENTORY_EDIT is required to change other sub meter details');
       }
@@ -615,21 +623,21 @@ export class MeterService {
 
     const saved = await this.subMeters.save(meter);
 
-    await this.auditService.record({ moduleName: 'Meter', entityId: id, action: 'UPDATE', oldValue, newValue: saved, performedBy: actorId });
+    await this.auditService.record({ moduleName: AUDIT_MODULE.METER, entityId: id, action: AUDIT_ACTION.UPDATE, oldValue, newValue: saved, performedBy: actorId });
     return this.findOneSubMeter(id);
   }
 
   async setSubMeterStatus(id: number, dto: SetMeterStatusDto, actorId?: number) {
     const meter = await this.subMeters.findOne({ where: { id } });
-    if (!meter) throw new NotFoundException('Sub meter not found');
+    if (!meter) throw new NotFoundException(ERROR_MESSAGES.SUB_METER_NOT_FOUND);
     const oldValue = { status: meter.status };
     meter.status = dto.status;
     if (actorId) meter.lastModifiedByUser = { id: actorId } as any;
     const saved = await this.subMeters.save(meter);
     await this.auditService.record({
-      moduleName: 'Meter',
+      moduleName: AUDIT_MODULE.METER,
       entityId: id,
-      action: dto.status === MeterStatus.ACTIVE ? 'ACTIVATE' : 'DEACTIVATE',
+      action: dto.status === MeterStatus.ACTIVE ? AUDIT_ACTION.ACTIVATE : AUDIT_ACTION.DEACTIVATE,
       oldValue,
       newValue: { status: saved.status },
       performedBy: actorId,
@@ -646,7 +654,7 @@ export class MeterService {
 
   async getImportTemplate(meterType: MeterImportType): Promise<Buffer> {
     const columns = (await this.getColumns(meterType)).filter((c) => c.enabled);
-    if (columns.length === 0) throw new BadRequestException('No import columns are configured for this meter type');
+    if (columns.length === 0) throw new BadRequestException(ERROR_MESSAGES.NO_IMPORT_COLUMNS_CONFIGURED);
 
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet(meterType === MeterImportType.MASTER ? 'Master Meters' : 'Sub Meters');
@@ -741,9 +749,9 @@ export class MeterService {
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Import failed';
       await this.auditService.record({
-        moduleName: 'Meter',
+        moduleName: AUDIT_MODULE.METER,
         entityId: 0,
-        action: 'IMPORT_FAILED',
+        action: AUDIT_ACTION.IMPORT_FAILED,
         oldValue: null,
         newValue: { batchId, fileName, importType: meterType, durationMs: Date.now() - startedAt, error: message },
         performedBy: actorId,
@@ -763,7 +771,7 @@ export class MeterService {
   ): Promise<ImportSummary> {
     if (!fileBuffer || fileBuffer.length === 0) throw new BadRequestException('Uploaded file is empty');
     if (fileBuffer.length > MAX_IMPORT_FILE_SIZE_BYTES) {
-      throw new BadRequestException(`Uploaded file exceeds the ${MAX_IMPORT_FILE_SIZE_BYTES / (1024 * 1024)}MB import size limit`);
+      throw new BadRequestException(`Uploaded file exceeds the ${MAX_IMPORT_FILE_SIZE_BYTES / BYTES_PER_MB}MB import size limit`);
     }
     if (!/\.xlsx$/i.test(fileName)) {
       throw new BadRequestException('Only .xlsx files are accepted for import');
@@ -773,7 +781,7 @@ export class MeterService {
     }
 
     const columns = (await this.getColumns(meterType)).filter((c) => c.enabled);
-    if (columns.length === 0) throw new BadRequestException('No import columns are configured for this meter type');
+    if (columns.length === 0) throw new BadRequestException(ERROR_MESSAGES.NO_IMPORT_COLUMNS_CONFIGURED);
 
     const workbook = new ExcelJS.Workbook();
     try {
@@ -1105,9 +1113,9 @@ export class MeterService {
     };
 
     await this.auditService.record({
-      moduleName: 'Meter',
+      moduleName: AUDIT_MODULE.METER,
       entityId: created[0]?.id ?? 0,
-      action: 'IMPORT',
+      action: AUDIT_ACTION.IMPORT,
       oldValue: null,
       newValue: summary,
       performedBy: actorId,
@@ -1117,7 +1125,7 @@ export class MeterService {
 
 
   private async loadImportHistoryRows(fetchLimit: number) {
-    const logs = await this.auditService.findByModule('Meter', ['IMPORT', 'IMPORT_FAILED'], fetchLimit);
+    const logs = await this.auditService.findByModule(AUDIT_MODULE.METER, [AUDIT_ACTION.IMPORT, AUDIT_ACTION.IMPORT_FAILED], fetchLimit);
     const performerIds = [...new Set(logs.map((l) => l.performedBy).filter((id): id is number => !!id))];
     const performers = performerIds.length
       ? await this.users.find({ where: performerIds.map((id) => ({ id })) })
@@ -1131,7 +1139,7 @@ export class MeterService {
       } catch {
         summary = {};
       }
-      const isRejected = log.action === 'IMPORT_FAILED';
+      const isRejected = log.action === AUDIT_ACTION.IMPORT_FAILED;
       return {
         id: log.id,
         batchId: summary.batchId ?? null,
@@ -1176,12 +1184,12 @@ export class MeterService {
     page?: number;
     pageSize?: number;
     sortBy?: string;
-    sortOrder?: 'ASC' | 'DESC';
+    sortOrder?: SortOrder;
   }) {
     const page = filters.page && filters.page > 0 ? filters.page : 1;
-    const pageSize = filters.pageSize && filters.pageSize > 0 ? Math.min(filters.pageSize, 100) : 20;
+    const pageSize = filters.pageSize && filters.pageSize > 0 ? Math.min(filters.pageSize, MAX_LIMIT) : DEFAULT_LIMIT;
     const sortBy = MeterService.IMPORT_HISTORY_SORTABLE.has(filters.sortBy ?? '') ? filters.sortBy! : 'importedAt';
-    const sortOrder = filters.sortOrder ?? 'DESC';
+    const sortOrder = filters.sortOrder ?? SORT_ORDER.DESC;
 
     const allRows = await this.loadImportHistoryRows(MeterService.IMPORT_HISTORY_SCAN_LIMIT);
 
@@ -1194,7 +1202,7 @@ export class MeterService {
       return true;
     });
 
-    const direction = sortOrder === 'ASC' ? 1 : -1;
+    const direction = sortOrder === SORT_ORDER.ASC ? 1 : -1;
     const sortedRows = [...filteredRows].sort((a, b) => {
       const aValue = a[sortBy as keyof typeof a];
       const bValue = b[sortBy as keyof typeof b];
@@ -1355,7 +1363,7 @@ export class MeterService {
 
   private toCommitFailure(row: ImportRow, err: unknown, columns: ColumnConfig[]): ImportFailedRecord {
     const message = err instanceof Error ? err.message : 'Failed to save this record';
-    const isDuplicateKey = /duplicate entry/i.test(message) || (err as { code?: string })?.code === 'ER_DUP_ENTRY';
+    const isDuplicateKey = /duplicate entry/i.test(message) || (err as { code?: string })?.code === MYSQL_ERROR_CODE.DUP_ENTRY;
     const violatedIndex = Object.keys(MeterService.COMMIT_DUPLICATE_INDEX_MESSAGES).find((indexName) => message.includes(indexName));
     const reason = violatedIndex
       ? `${MeterService.COMMIT_DUPLICATE_INDEX_MESSAGES[violatedIndex]} — created by another import running at the same time`
@@ -1372,7 +1380,7 @@ export class MeterService {
 
   private toDuplicateKeyException(err: unknown): Error {
     const message = err instanceof Error ? err.message : String(err);
-    const isDuplicateKey = /duplicate entry/i.test(message) || (err as { code?: string })?.code === 'ER_DUP_ENTRY';
+    const isDuplicateKey = /duplicate entry/i.test(message) || (err as { code?: string })?.code === MYSQL_ERROR_CODE.DUP_ENTRY;
     if (!isDuplicateKey) return err instanceof Error ? err : new Error(message);
 
     const violatedIndex = Object.keys(MeterService.COMMIT_DUPLICATE_INDEX_MESSAGES).find((indexName) => message.includes(indexName));
@@ -1438,7 +1446,7 @@ export class MeterService {
   // Real unit numbers are zero-padded (AZC-T01-01 .. AZC-T01-25), so a plain lexicographic sort on
   // unitNumber already yields correct ascending numeric order — no natural-sort logic needed.
   private static readonly DAILY_READINGS_DEFAULT_SORT_BY = 'unit';
-  private static readonly DAILY_READINGS_DEFAULT_SORT_ORDER = 'ASC' as const;
+  private static readonly DAILY_READINGS_DEFAULT_SORT_ORDER = SORT_ORDER.ASC;
 
   // These 4 are COMPUTED fields (opening, consumption, 30-day average, deviation %) derived per-row
   // from a separate reading-history lookup — they are not real columns on MeterReading at all, so no
@@ -1458,10 +1466,10 @@ export class MeterService {
     // end when ranging, otherwise the single date — either way it's the same "as of" semantics
     // getReadingHistoryByMeterId already had.
     const hasRange = !!query.startDate && !!query.endDate;
-    const date = query.date ?? new Date().toISOString().slice(0, 10);
+    const date = query.date ?? new Date().toISOString().slice(0, ISO_DATE_LENGTH);
     const asOfDate = hasRange ? query.endDate! : date;
     const page = query.page && query.page > 0 ? query.page : 1;
-    const limit = query.limit && query.limit > 0 ? Math.min(query.limit, 100) : 20;
+    const limit = query.limit && query.limit > 0 ? Math.min(query.limit, MAX_LIMIT) : DEFAULT_LIMIT;
 
     if (query.validationStatus === 'missing') {
       return this.getMissingDailyReadings(query, hasRange ? null : date, page, limit);
@@ -1518,7 +1526,7 @@ export class MeterService {
     // 'unit' wasn't in the sortable whitelist below at all until this same fix added it).
     const effectiveSortBy = query.sortBy ?? MeterService.DAILY_READINGS_DEFAULT_SORT_BY;
     const effectiveSortOrder = query.sortBy
-      ? (query.sortOrder === 'ASC' ? 'ASC' : 'DESC')
+      ? (query.sortOrder === SORT_ORDER.ASC ? SORT_ORDER.ASC : SORT_ORDER.DESC)
       : (query.sortOrder ?? MeterService.DAILY_READINGS_DEFAULT_SORT_ORDER);
     const isComputedSort = MeterService.DAILY_READINGS_COMPUTED_SORTABLE.has(effectiveSortBy);
     // A computed-field sort has no real column to ORDER BY, so skip the SQL-level ordering entirely
@@ -1559,7 +1567,7 @@ export class MeterService {
         ),
       );
 
-      const sortDir = effectiveSortOrder === 'ASC' ? 1 : -1;
+      const sortDir = effectiveSortOrder === SORT_ORDER.ASC ? 1 : -1;
       const sortKey = effectiveSortBy as 'openingReading' | 'consumption' | 'thirtyDayAvg' | 'deviationPercent';
       allItems.sort((a, b) => {
         // Nulls (e.g. a brand-new meter with no prior reading to compute consumption/deviation
@@ -1632,7 +1640,7 @@ export class MeterService {
     );
 
     const combined = [...readingItems, ...missingItems];
-    const sortDir = effectiveSortOrder === 'ASC' ? 1 : -1;
+    const sortDir = effectiveSortOrder === SORT_ORDER.ASC ? 1 : -1;
     // Mirrors DAILY_READINGS_SORTABLE's column choices, but against the mapped item's own fields —
     // the two source queries can't share one SQL ORDER BY, so this re-sort is what actually decides
     // the union's final row order (readingDate is still the tiebreak for unit/meterId sorts, and
@@ -1717,7 +1725,7 @@ export class MeterService {
         await manager.save(MeterReading, reading);
         await this.auditService.record(
           {
-            moduleName: 'MeterReading',
+            moduleName: AUDIT_MODULE.METER_READING,
             entityId: reading.id,
             action: approve ? 'APPROVE' : 'REVOKE',
             oldValue,
@@ -1734,9 +1742,9 @@ export class MeterService {
 
   async getDailyMeterReadingsFilterMetadata() {
     const [communities, properties, units] = await Promise.all([
-      this.communities.find({ select: ['id', 'name'], order: { name: 'ASC' } }),
-      this.properties.find({ select: ['id', 'name'], relations: ['community'], order: { name: 'ASC' } }),
-      this.units.find({ select: ['id', 'unitNumber'], relations: ['property'], order: { unitNumber: 'ASC' } }),
+      this.communities.find({ select: ['id', 'name'], order: { name: SORT_ORDER.ASC } }),
+      this.properties.find({ select: ['id', 'name'], relations: ['community'], order: { name: SORT_ORDER.ASC } }),
+      this.units.find({ select: ['id', 'unitNumber'], relations: ['property'], order: { unitNumber: SORT_ORDER.ASC } }),
     ]);
 
     return {
@@ -1908,7 +1916,7 @@ export class MeterService {
   }
 
   async getAnomaliesByCommunity(date: string) {
-    const communities = await this.communities.find({ select: ['id', 'name'], order: { name: 'ASC' } });
+    const communities = await this.communities.find({ select: ['id', 'name'], order: { name: SORT_ORDER.ASC } });
 
     const rows = await this.meterReadings
       .createQueryBuilder('r')
@@ -1959,7 +1967,7 @@ export class MeterService {
     // involved — so running them concurrently only changes wall-clock time, never correctness or
     // result shape. Same reasoning as getPropertyReadingSummary's own parallelization above.
     const [communities, expectedRows, receivedRows, validRows, anomalyRows] = await Promise.all([
-      this.communities.find({ select: ['id', 'name'], order: { name: 'ASC' } }),
+      this.communities.find({ select: ['id', 'name'], order: { name: SORT_ORDER.ASC } }),
       this.subMeters
         .createQueryBuilder('s')
         .innerJoin('s.property', 'property')
@@ -2073,8 +2081,8 @@ export class MeterService {
     );
 
     const points: { date: string; expected: number; received: number; missing: number }[] = [];
-    const cursor = new Date(`${startDate}T00:00:00`);
-    const end = new Date(`${endDate}T00:00:00`);
+    const cursor = new Date(`${startDate}${LOCAL_MIDNIGHT_SUFFIX}`);
+    const end = new Date(`${endDate}${LOCAL_MIDNIGHT_SUFFIX}`);
     while (cursor <= end) {
       const dateKey = `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}-${String(cursor.getDate()).padStart(2, '0')}`;
       const received = receivedByDate.get(dateKey) ?? 0;
@@ -2085,7 +2093,7 @@ export class MeterService {
   }
 
   async getMeterReadingHistory(meterId: string, upToDate?: string): Promise<{ date: string; consumption: number }[]> {
-    const date = upToDate ?? new Date().toISOString().slice(0, 10);
+    const date = upToDate ?? new Date().toISOString().slice(0, ISO_DATE_LENGTH);
     const history = (await this.getReadingHistoryByMeterId([meterId], date)).get(meterId) ?? [];
 
     const points: { date: string; consumption: number }[] = [];
@@ -2105,8 +2113,8 @@ export class MeterService {
       .createQueryBuilder('r')
       .where('r.meter_id IN (:...distinctIds)', { distinctIds })
       .andWhere('r.readingDate <= :upToDate', { upToDate })
-      .orderBy('r.meter_id', 'ASC')
-      .addOrderBy('r.readingDate', 'DESC')
+      .orderBy('r.meter_id', SORT_ORDER.ASC)
+      .addOrderBy('r.readingDate', SORT_ORDER.DESC)
       .getMany();
 
     const byMeter = new Map<string, MeterReading[]>();
@@ -2194,7 +2202,7 @@ export class MeterService {
       .innerJoinAndSelect('s.masterMeter', 'masterMeter')
       .leftJoinAndSelect('s.unit', 'unit')
       .where('s.business_code IS NOT NULL')
-      .orderBy('unit.unitNumber', 'ASC');
+      .orderBy('unit.unitNumber', SORT_ORDER.ASC);
 
     if (query.communityId) qb.andWhere('community.id = :communityId', { communityId: query.communityId });
     if (query.propertyId) qb.andWhere('property.id = :propertyId', { propertyId: query.propertyId });

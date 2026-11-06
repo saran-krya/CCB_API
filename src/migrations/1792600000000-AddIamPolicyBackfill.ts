@@ -84,8 +84,8 @@ export class AddIamPolicyBackfill1792600000000 implements MigrationInterface {
         //    `synchronize: true` does — see 1788342228029's own comment for the confirmed
         //    cold-start evidence), which would fail this SELECT outright rather than just return
         //    zero rows. Safe to treat as "nothing to back-fill": IamService.ensureAdminPolicyGrants
-        //    (run during bootstrap, after seed() creates SUPER_ADMIN/ADMIN) creates each admin
-        //    role's own Policy from scratch when it finds none already attached — exactly the case
+        //    (run during bootstrap, after seed() creates the SUPER_ADMIN role) creates SUPER_ADMIN's
+        //    own Policy from scratch when it finds none already attached — exactly the case
         //    this produces.
         const hasRolesTable = await queryRunner.hasTable('roles');
         const hasRolePermissionsTable = await queryRunner.hasTable('role_permissions');

@@ -11,6 +11,8 @@ import {
   UserPermissionSortColumn,
   UserPermissionsQueryDto,
 } from './dto/user-permissions-query.dto';
+import { ERROR_MESSAGES } from '../../common/constants/error-messages.constants';
+import { SORT_ORDER, SortOrder } from '../../common/constants/sort.constants';
 
 const TYPE_LABEL: Record<UserPermissionKind, string> = { role: 'Role', inline: 'Inline policy' };
 // CCB has no groups or inherited assignment: a role is always assigned directly to the user and an inline
@@ -50,7 +52,7 @@ export class UserPermissionsService {
   ) {}
 
   async list(userId: number, query: UserPermissionsQueryDto, actor: AuthenticatedUser) {
-    if (!(await this.users.exist({ where: { id: userId } }))) throw new NotFoundException('User not found');
+    if (!(await this.users.exist({ where: { id: userId } }))) throw new NotFoundException(ERROR_MESSAGES.USER_NOT_FOUND);
 
     const canSeeInline = (actor.roleNames ?? [actor.roleName]).includes(ROLES.SUPER_ADMIN);
     const kinds: UserPermissionKind[] = canSeeInline ? ['role', 'inline'] : ['role'];
@@ -85,7 +87,7 @@ export class UserPermissionsService {
   private async loadRoleRows(userId: number): Promise<UserPermissionRow[]> {
     const rows = await this.userRoles.find({
       where: { userId },
-      order: { id: 'ASC' },
+      order: { id: SORT_ORDER.ASC },
       relations: { role: { userCategory: true } },
     });
     // A role soft-deleted after it was assigned joins to null and grants nothing — skipped.
@@ -103,7 +105,7 @@ export class UserPermissionsService {
   }
 
   private async loadInlineRows(userId: number): Promise<UserPermissionRow[]> {
-    const policies = await this.inlinePolicies.find({ where: { userId }, order: { id: 'ASC' } });
+    const policies = await this.inlinePolicies.find({ where: { userId }, order: { id: SORT_ORDER.ASC } });
     return policies.map((policy) => ({
       key: `inline:${policy.id}`,
       kind: 'inline' as const,
@@ -115,8 +117,8 @@ export class UserPermissionsService {
     }));
   }
 
-  private sort(rows: UserPermissionRow[], column: UserPermissionSortColumn, order: 'ASC' | 'DESC') {
-    const sign = order === 'DESC' ? -1 : 1;
+  private sort(rows: UserPermissionRow[], column: UserPermissionSortColumn, order: SortOrder) {
+    const sign = order === SORT_ORDER.DESC ? -1 : 1;
     const valueOf = (row: UserPermissionRow) =>
       column === 'type' ? row.typeLabel : column === 'attachedVia' ? row.attachedVia : row.name;
     // Ties fall back to the name (then the key) so the order never jumps between requests.

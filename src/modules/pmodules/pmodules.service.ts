@@ -14,6 +14,8 @@ import {
   UpdatePModuleDto,
 } from './dto/create-pmodule.dto';
 import { PMODULES } from '../../bootstrap/seed-data';
+import { ERROR_MESSAGES } from '../../common/constants/error-messages.constants';
+import { SORT_ORDER } from '../../common/constants/sort.constants';
 
 const MODULE_NAME_CODE_FIXES: Record<string, string> = {
   'System Admin': 'SYSTEM_ADMIN',
@@ -38,7 +40,7 @@ export class PModulesService {
 
     if (exists) {
       throw new ConflictException(
-        'Permission module already exists',
+        ERROR_MESSAGES.PERMISSION_MODULE_ALREADY_EXISTS,
       );
     }
 
@@ -63,7 +65,7 @@ async findAll() {
       code:true
     },
     order: {
-      displayOrder: 'ASC',
+      displayOrder: SORT_ORDER.ASC,
     },
   });
 }
@@ -81,7 +83,7 @@ async findAll() {
 
     if (!pModule) {
       throw new NotFoundException(
-        'Permission module not found',
+        ERROR_MESSAGES.PERMISSION_MODULE_NOT_FOUND,
       );
     }
 
@@ -110,7 +112,7 @@ async findAll() {
 
       if (exists) {
         throw new ConflictException(
-          'Permission module already exists',
+          ERROR_MESSAGES.PERMISSION_MODULE_ALREADY_EXISTS,
         );
       }
     }

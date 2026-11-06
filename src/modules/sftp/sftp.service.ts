@@ -6,6 +6,8 @@ import { extname, join } from 'path';
 import SftpClient = require('ssh2-sftp-client');
 import csvParser = require('csv-parser');
 import * as ExcelJS from 'exceljs';
+import { ERROR_MESSAGES } from '../../common/constants/error-messages.constants';
+import { ENV_KEY } from '../../common/constants/env.constants';
 
 const LOCAL_DOWNLOAD_DIR = join(process.cwd(), 'storage', 'sftp', 'temp');
 
@@ -67,7 +69,7 @@ export class SftpService {
       this.logger.log(`Connected to SFTP server ${host}:${port} as ${username}`);
       return client;
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Unknown error';
+      const message = err instanceof Error ? err.message : ERROR_MESSAGES.UNKNOWN_ERROR;
       this.logger.error(`SFTP connection to ${host}:${port} failed: ${message}`);
       throw new InternalServerErrorException('Failed to connect to the SFTP server');
     }
@@ -77,20 +79,20 @@ export class SftpService {
     try {
       await client.end();
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Unknown error';
+      const message = err instanceof Error ? err.message : ERROR_MESSAGES.UNKNOWN_ERROR;
       this.logger.warn(`SFTP disconnect encountered an issue: ${message}`);
     }
   }
 
   async listFiles(): Promise<SftpClient.FileInfo[]> {
-    const remotePath = this.config.getOrThrow<string>('SFTP_REMOTE_PATH');
+    const remotePath = this.config.getOrThrow<string>(ENV_KEY.SFTP_REMOTE_PATH);
     const client = await this.connect();
     try {
       const files = await client.list(remotePath);
       this.logger.log(`Listed ${files.length} entr${files.length === 1 ? 'y' : 'ies'} from ${remotePath}`);
       return files;
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Unknown error';
+      const message = err instanceof Error ? err.message : ERROR_MESSAGES.UNKNOWN_ERROR;
       this.logger.error(`Failed to list files at ${remotePath}: ${message}`);
       throw new InternalServerErrorException('Failed to list files on the SFTP server');
     } finally {
@@ -99,7 +101,7 @@ export class SftpService {
   }
 
   async downloadFile(fileName: string): Promise<{ fileName: string; localPath: string; size: number }> {
-    const remotePath = this.config.getOrThrow<string>('SFTP_REMOTE_PATH');
+    const remotePath = this.config.getOrThrow<string>(ENV_KEY.SFTP_REMOTE_PATH);
     const remoteFilePath = `${remotePath.replace(/\/+$/, '')}/${fileName}`;
     const localPath = join(LOCAL_DOWNLOAD_DIR, fileName);
 
@@ -120,7 +122,7 @@ export class SftpService {
       return { fileName, localPath, size };
     } catch (err) {
       if (err instanceof NotFoundException) throw err;
-      const message = err instanceof Error ? err.message : 'Unknown error';
+      const message = err instanceof Error ? err.message : ERROR_MESSAGES.UNKNOWN_ERROR;
       this.logger.error(`Failed to download "${fileName}" from ${remotePath}: ${message}`);
       throw new InternalServerErrorException('Failed to download the file from the SFTP server');
     } finally {
@@ -168,7 +170,7 @@ export class SftpService {
       this.logger.log(`Parsed ${rows.length} row${rows.length === 1 ? '' : 's'} from ${fileName}`);
       return { fileName, rowCount: rows.length, rows };
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Unknown error';
+      const message = err instanceof Error ? err.message : ERROR_MESSAGES.UNKNOWN_ERROR;
       this.logger.error(`Failed to parse CSV "${fileName}": ${message}`);
       throw new InternalServerErrorException('Failed to parse the CSV file');
     }
@@ -233,7 +235,7 @@ export class SftpService {
       return { fileName, rowCount: rows.length, rows };
     } catch (err) {
       if (err instanceof BadRequestException) throw err;
-      const message = err instanceof Error ? err.message : 'Unknown error';
+      const message = err instanceof Error ? err.message : ERROR_MESSAGES.UNKNOWN_ERROR;
       this.logger.error(`Failed to parse Excel workbook "${fileName}": ${message}`);
       throw new InternalServerErrorException('Failed to parse the Excel (.xlsx) file');
     }

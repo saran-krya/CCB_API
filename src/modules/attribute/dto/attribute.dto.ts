@@ -2,16 +2,17 @@ import { ApiPropertyOptional } from '@nestjs/swagger';
 import { IsEnum, IsIn, IsNotEmpty, IsOptional, IsString } from 'class-validator';
 import { BasePaginationDto } from '../../../common/dto/base-pagination.dto';
 import { AttributeScope, AttributeValueType } from '../entities/attribute.entity';
+import { APP_MODULE_KEY } from '../../../common/constants/app-module.constants';
 
 export const ATTRIBUTE_MODULE_KEYS = [
-  'customer',
-  'meter',
+  APP_MODULE_KEY.CUSTOMER,
+  APP_MODULE_KEY.METER,
   'billing',
   'field-operations',
-  'user-management',
-  'role-management',
-  'billing-cycle',
-  'tariff',
+  APP_MODULE_KEY.USER_MANAGEMENT,
+  APP_MODULE_KEY.ROLE_MANAGEMENT,
+  APP_MODULE_KEY.BILLING_CYCLE,
+  APP_MODULE_KEY.TARIFF,
 ] as const;
 
 export function isValueValidForType(value: string, valueType: AttributeValueType | undefined): boolean {

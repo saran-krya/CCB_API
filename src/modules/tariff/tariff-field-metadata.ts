@@ -4,6 +4,8 @@ export const ONE_TIME_FEE_MAX = 50_000;
 export const RECURRING_FEE_MAX = 5_000;
 export const PENALTY_FEE_MAX = 10_000;
 export const RATE_MAX = 100;
+/** Smallest rate per kWh a tariff may carry (a zero rate is rejected). */
+export const RATE_MIN = 0.0001;
 
 export const TARIFF_FIELD_METADATA: FieldMetadataMap = {
   name: { step: 1, label: 'Tariff Name', required: true, maxLength: 160, format: 'text' },
@@ -16,9 +18,9 @@ export const TARIFF_FIELD_METADATA: FieldMetadataMap = {
   effectiveTo: { step: 1, label: 'Effective To', required: false, format: 'date' },
   description: { step: 1, label: 'Description', required: false, maxLength: 1000, format: 'text' },
 
-  flatRate: { step: 2, label: 'Rate per kWh', required: true, allowZero: false, min: 0.0001, max: RATE_MAX, format: 'currency' },
+  flatRate: { step: 2, label: 'Rate per kWh', required: true, allowZero: false, min: RATE_MIN, max: RATE_MAX, format: 'currency' },
   tiers: { step: 2, label: 'Consumption Tiers', required: true, format: 'count' },
-  ratePerKwh: { step: 2, label: 'Tier Rate per kWh', required: true, allowZero: false, min: 0.0001, max: RATE_MAX, format: 'currency' },
+  ratePerKwh: { step: 2, label: 'Tier Rate per kWh', required: true, allowZero: false, min: RATE_MIN, max: RATE_MAX, format: 'currency' },
   minKwh: { step: 2, label: 'Tier Min kWh', required: true, allowZero: true, min: 0, format: 'count' },
   maxKwh: { step: 2, label: 'Tier Max kWh', required: false, allowZero: true, min: 0, format: 'count' },
 

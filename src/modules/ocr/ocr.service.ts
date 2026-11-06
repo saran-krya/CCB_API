@@ -2,6 +2,8 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
 import { AttributeService } from '../attribute/attribute.service';
+import { ATTRIBUTE_KEY } from '../attribute/attribute.constants';
+import { OCR_STATUS, OCR_ERROR_CODE, OcrStatus, OcrErrorCode } from './ocr.constants';
 
 /**
  * ConverseZen OCR proxy — mirrors the CentriZen ConverseZen Integration Spec §4/§6/§9. Holds the
@@ -31,24 +33,14 @@ export interface OcrExtractionField {
 export type OcrOutcome =
   | {
       ok: true;
-      status: 'SUCCEEDED' | 'PARTIAL' | 'FAILED';
+      status: OcrStatus;
       runId: string | null;
       fields: OcrExtractionField[];
       reason?: string;
     }
   | {
       ok: false;
-      code:
-        | 'OCR_DATA_ENTRY_DISABLED'
-        | 'DOCUMENT_TYPE_NOT_SUPPORTED'
-        | 'OCR_NOT_CONFIGURED'
-        | 'OCR_UPSTREAM_UNREACHABLE'
-        | 'OCR_UPSTREAM_TIMEOUT'
-        | 'OCR_RATE_LIMITED'
-        | 'OCR_AUTH_FAILED'
-        | 'OCR_AGENT_UNAVAILABLE'
-        | 'DOCUMENT_REJECTED'
-        | 'OCR_UPSTREAM_ERROR';
+      code: OcrErrorCode;
       message: string;
     };
 
@@ -71,11 +63,11 @@ export class OcrService {
   }
 
   async extract(documentType: string, file: { buffer: Buffer; originalname: string; mimetype: string }): Promise<OcrOutcome> {
-    const ocrEnabled = await this.attributes.isMandatory('OCR_DATA_ENTRY_ENABLED');
+    const ocrEnabled = await this.attributes.isMandatory(ATTRIBUTE_KEY.OCR_DATA_ENTRY_ENABLED);
     if (!ocrEnabled) {
       return {
         ok: false,
-        code: 'OCR_DATA_ENTRY_DISABLED',
+        code: OCR_ERROR_CODE.OCR_DATA_ENTRY_DISABLED,
         message: 'OCR-based data entry is switched off — enter the document details manually.',
       };
     }
@@ -84,7 +76,7 @@ export class OcrService {
     if (!envVar) {
       return {
         ok: false,
-        code: 'DOCUMENT_TYPE_NOT_SUPPORTED',
+        code: OCR_ERROR_CODE.DOCUMENT_TYPE_NOT_SUPPORTED,
         message: `Automatic extraction is not available for "${documentType}". Enter the details manually.`,
       };
     }
@@ -94,7 +86,7 @@ export class OcrService {
       this.logger.warn(`No agent configured for "${documentType}" — ${envVar} is unset`);
       return {
         ok: false,
-        code: 'DOCUMENT_TYPE_NOT_SUPPORTED',
+        code: OCR_ERROR_CODE.DOCUMENT_TYPE_NOT_SUPPORTED,
         message: `Automatic extraction is not available for "${documentType}". Enter the details manually.`,
       };
     }
@@ -103,7 +95,7 @@ export class OcrService {
     if (!apiKey) {
       return {
         ok: false,
-        code: 'OCR_NOT_CONFIGURED',
+        code: OCR_ERROR_CODE.OCR_NOT_CONFIGURED,
         message: 'Document extraction is not configured on this server.',
       };
     }
@@ -129,16 +121,16 @@ export class OcrService {
     } catch (err) {
       const name = (err as { name?: string } | undefined)?.name;
       if (name === 'TimeoutError' || name === 'AbortError') {
-        return { ok: false, code: 'OCR_UPSTREAM_TIMEOUT', message: 'The document extraction service did not respond in time. Try again.' };
+        return { ok: false, code: OCR_ERROR_CODE.OCR_UPSTREAM_TIMEOUT, message: 'The document extraction service did not respond in time. Try again.' };
       }
-      return { ok: false, code: 'OCR_UPSTREAM_UNREACHABLE', message: 'The document extraction service could not be reached. Try again shortly.' };
+      return { ok: false, code: OCR_ERROR_CODE.OCR_UPSTREAM_UNREACHABLE, message: 'The document extraction service could not be reached. Try again shortly.' };
     }
 
     let body: any;
     try {
       body = await response.json();
     } catch {
-      return { ok: false, code: 'OCR_UPSTREAM_ERROR', message: 'The document extraction service returned an unreadable response.' };
+      return { ok: false, code: OCR_ERROR_CODE.OCR_UPSTREAM_ERROR, message: 'The document extraction service returned an unreadable response.' };
     }
 
     const upstreamError = body?.error;
@@ -146,29 +138,29 @@ export class OcrService {
       const rawMessage: string = typeof upstreamError.message === 'string' ? upstreamError.message : '';
       const mentionsAgent = !!agentId && rawMessage.includes(agentId);
       if (response.status === 429) {
-        return { ok: false, code: 'OCR_RATE_LIMITED', message: 'Too many extraction requests right now. Try again shortly.' };
+        return { ok: false, code: OCR_ERROR_CODE.OCR_RATE_LIMITED, message: 'Too many extraction requests right now. Try again shortly.' };
       }
       if (response.status === 401) {
-        return { ok: false, code: 'OCR_AUTH_FAILED', message: 'Document extraction is not configured correctly on this server.' };
+        return { ok: false, code: OCR_ERROR_CODE.OCR_AUTH_FAILED, message: 'Document extraction is not configured correctly on this server.' };
       }
       if (response.status === 403 || response.status === 404 || mentionsAgent) {
-        return { ok: false, code: 'OCR_AGENT_UNAVAILABLE', message: 'The extraction agent for this document type is unavailable.' };
+        return { ok: false, code: OCR_ERROR_CODE.OCR_AGENT_UNAVAILABLE, message: 'The extraction agent for this document type is unavailable.' };
       }
       if (response.status === 400) {
-        return { ok: false, code: 'DOCUMENT_REJECTED', message: redactAgentId(rawMessage, agentId) || 'The document was rejected.' };
+        return { ok: false, code: OCR_ERROR_CODE.DOCUMENT_REJECTED, message: redactAgentId(rawMessage, agentId) || 'The document was rejected.' };
       }
-      return { ok: false, code: 'OCR_UPSTREAM_ERROR', message: 'The document extraction service returned an unexpected error.' };
+      return { ok: false, code: OCR_ERROR_CODE.OCR_UPSTREAM_ERROR, message: 'The document extraction service returned an unexpected error.' };
     }
 
     const data = body?.data;
-    if (!data || (data.status !== 'SUCCEEDED' && data.status !== 'PARTIAL' && data.status !== 'FAILED')) {
-      return { ok: false, code: 'OCR_UPSTREAM_ERROR', message: 'The document extraction service returned an unrecognised outcome.' };
+    if (!data || (data.status !== OCR_STATUS.SUCCEEDED && data.status !== OCR_STATUS.PARTIAL && data.status !== OCR_STATUS.FAILED)) {
+      return { ok: false, code: OCR_ERROR_CODE.OCR_UPSTREAM_ERROR, message: 'The document extraction service returned an unrecognised outcome.' };
     }
 
-    if (data.status === 'FAILED') {
+    if (data.status === OCR_STATUS.FAILED) {
       return {
         ok: false,
-        code: 'DOCUMENT_REJECTED',
+        code: OCR_ERROR_CODE.DOCUMENT_REJECTED,
         message: typeof data.error === 'string' ? redactAgentId(data.error, agentId) : 'The document could not be read. Try a clearer scan, or enter the details manually.',
       };
     }
@@ -186,7 +178,7 @@ export class OcrService {
       status: data.status,
       runId: typeof data.runId === 'string' ? data.runId : null,
       fields,
-      reason: data.status === 'PARTIAL' && typeof data.error === 'string' ? redactAgentId(data.error, agentId) : undefined,
+      reason: data.status === OCR_STATUS.PARTIAL && typeof data.error === 'string' ? redactAgentId(data.error, agentId) : undefined,
     };
   }
 }

@@ -1,7 +1,9 @@
 import { TariffStatus } from './entities/tariff-version.entity';
 import { UpdateTariffDto } from './dto/tariff.dto';
+import { AUDIT_MODULE } from '../../audit/audit.constants';
+import { LOV_CATEGORY } from '../lov/lov.constants';
 
-export const TARIFF_AUDIT_MODULE_NAME = 'Tariff';
+export const TARIFF_AUDIT_MODULE_NAME = AUDIT_MODULE.TARIFF;
 
 export interface TariffValidationIssue {
   field: string;
@@ -9,9 +11,9 @@ export interface TariffValidationIssue {
   step: number;
 }
 
-export const TARIFF_UNIT_TYPE_LOV_CATEGORY = 'TARIFF_UNIT_TYPE';
+export const TARIFF_UNIT_TYPE_LOV_CATEGORY = LOV_CATEGORY.TARIFF_UNIT_TYPE;
 
-export const TARIFF_REJECTION_REASON_LOV_CATEGORY = 'TARIFF_REJECTION_REASON';
+export const TARIFF_REJECTION_REASON_LOV_CATEGORY = LOV_CATEGORY.TARIFF_REJECTION_REASON;
 
 export const TARIFF_UNIT_TYPE_RESIDENTIAL = 'residential';
 export const TARIFF_UNIT_TYPE_COMMERCIAL = 'commercial';

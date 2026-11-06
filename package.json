@@ -16,7 +16,10 @@
     "migration:generate": "npm run typeorm -- migration:generate -d src/config/data-source.ts",
     "migration:create": "npm run typeorm -- migration:create",
     "migration:run": "npm run typeorm -- migration:run -d src/config/data-source.ts",
-    "migration:revert": "npm run typeorm -- migration:revert -d src/config/data-source.ts"
+    "migration:revert": "npm run typeorm -- migration:revert -d src/config/data-source.ts",
+    "maintenance:iam-orphans": "ts-node -T -r tsconfig-paths/register scripts/maintenance/cleanup-iam-orphans.ts",
+    "maintenance:iam-policy-repair": "ts-node -T -r tsconfig-paths/register scripts/maintenance/repair-iam-policy-statements.ts",
+    "maintenance:iam-audit": "ts-node -T -r tsconfig-paths/register scripts/maintenance/audit-iam-rbac.ts"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.15",
@@ -35,6 +38,7 @@
     "class-validator": "^0.14.4",
     "csv-parser": "^3.2.1",
     "exceljs": "^4.4.0",
+    "helmet": "^8.3.0",
     "ioredis": "^5.11.1",
     "multer": "^2.2.0",
     "mysql2": "^3.22.5",

@@ -3,6 +3,7 @@ import { Type } from 'class-transformer';
 import { IsEnum, IsInt, IsOptional, IsString, Min } from 'class-validator';
 import { BasePaginationDto } from '../../../common/dto/base-pagination.dto';
 import { BillStatus } from '../entities/bill.entity';
+import { SORT_ORDER_VALUES, SortOrder } from '../../../common/constants/sort.constants';
 
 export class BillQueryDto extends BasePaginationDto {
   @ApiPropertyOptional()
@@ -55,10 +56,10 @@ export class BillQueryDto extends BasePaginationDto {
   @IsString()
   sortBy?: string;
 
-  @ApiPropertyOptional({ enum: ['ASC', 'DESC'] })
+  @ApiPropertyOptional({ enum: SORT_ORDER_VALUES })
   @IsOptional()
   @IsString()
-  sortOrder?: 'ASC' | 'DESC';
+  sortOrder?: SortOrder;
 }
 
 export class CancelBillDto {

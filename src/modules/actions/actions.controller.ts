@@ -4,6 +4,7 @@ import {
   Delete,
   Get,
   Param,
+  ParseIntPipe,
   Patch,
   Post,
   Query,
@@ -53,14 +54,14 @@ export class ActionsController {
 
   @Get(':id')
   findOne(
-    @Param('id') id: number,
+    @Param('id', ParseIntPipe) id: number,
   ) {
     return this.actionsService.findOne(id);
   }
 
   @Patch(':id')
   update(
-    @Param('id') id: number,
+    @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpdateActionDto,
     @CurrentUser() user?: AuthenticatedUser,
   ) {
@@ -73,7 +74,7 @@ export class ActionsController {
 
   @Delete(':id')
   remove(
-    @Param('id') id: number,
+    @Param('id', ParseIntPipe) id: number,
     @CurrentUser() user?: AuthenticatedUser,
   ) {
     return this.actionsService.remove(id, user?.sub);

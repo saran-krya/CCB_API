@@ -3,6 +3,7 @@ import { Reflector } from '@nestjs/core';
 import { ROLES_KEY } from '../decorators/roles.decorator';
 import { AuthPrincipal } from '../../auth/interfaces/authenticated-user.interface';
 import { ROLES } from '../constants/global';
+import { PRINCIPAL_TYPE } from '../constants/auth.constants';
 
 @Injectable()
 export class RolesGuard implements CanActivate {
@@ -23,7 +24,7 @@ export class RolesGuard implements CanActivate {
 
     // A customer session carries no roleName at all — every @Roles-guarded route today is
     // staff-only, so a customer token can never satisfy one.
-    if (!user || user.type === 'customer') {
+    if (!user || user.type === PRINCIPAL_TYPE.CUSTOMER) {
       return false;
     }
 

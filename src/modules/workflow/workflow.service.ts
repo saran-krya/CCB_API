@@ -1,14 +1,17 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, GoneException, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, In, Repository } from 'typeorm';
-import { Action } from '../actions/entities/action.entity';
-import { RolePermission } from '../role-permissions/entities/role-permission.entity';
+import { ROLES } from '@app/common/constants/global';
+import { APPROVE_ACTION_CODES } from '../iam/business-approval-actions';
+import { RolePermissionsService } from '../role-permissions/role-permissions.service';
 import { Role } from '../role/entities/role.entity';
 import { ApprovalLevelDto, UpdateApprovalLevelsDto } from './dto/approval-level.dto';
 import { WorkflowType } from './dto/workflow.dto';
 import {
   WorkflowApprovalLevel, WorkflowDepartment, WorkflowOnBreach, WorkflowSlaUnit,
 } from './entities/workflow-approval-level.entity';
+import { ACTION_CODES } from '../../common/constants/action-codes.constants';
+import { SORT_ORDER } from '../../common/constants/sort.constants';
 
 const SLA_UNITS = Object.values(WorkflowSlaUnit);
 const ON_BREACH_BEHAVIOURS = Object.values(WorkflowOnBreach);
@@ -20,21 +23,20 @@ const DEPARTMENTS = Object.values(WorkflowDepartment);
 // items:
 //   TARIFF         -> existing Tariff Approval screen
 //   BILL_RUN       -> Billing Management -> Bill Run Register
-//   BILLING_CYCLE  -> existing Billing Cycle Finance approval screen
+//   BILLING_CYCLE  -> existing Billing Cycle approval screen
 //
 // Tariff and Billing Cycle each USED TO have two action codes gating the same approve mutation via
 // OR semantics (the Business-Admin-screen code and a separate Finance-facing code) — these were
 // confirmed to be literal duplicates for the same capability and consolidated onto one surviving
 // code each by 1792800000000-ConsolidateDuplicateActionCodes.ts (see resource-catalog.ts's own doc
-// comment for the full before/after map). setApprovers() grants/revokes whatever this array holds
-// for a role; it was already written to treat multiple codes as one logical permission, so
-// shrinking to a single code per type needed no logic change here. Bill Run was never split;
-// BILL_RUN_APPROVE alone gates its approve/reject/return.
-export const APPROVE_ACTION_CODES: Record<WorkflowType, string[]> = {
-  [WorkflowType.TARIFF]: ['TARIFF_APPROVE'],
-  [WorkflowType.BILL_RUN]: ['BILL_RUN_APPROVE'],
-  [WorkflowType.BILLING_CYCLE]: ['BILLING_CYCLE_APPROVE'],
-};
+// comment for the full before/after map). A role is an eligible approver for a workflow type while it
+// holds ANY code in that type's array through its Policies (IamService.getRoleIdsHoldingAnyAction), so an
+// array may hold several codes. Bill Run was never split; BILL_RUN_APPROVE alone gates its
+// approve/reject/return.
+//
+// Declared in the IAM module (business-approval-actions.ts) so IamService can use the same map for its
+// approver-eligibility checks without importing this module; re-exported here for every existing import.
+export { APPROVE_ACTION_CODES };
 
 // Centralizes "which real domain action code(s) let a user see a workflowType's RUNTIME state"
 // (GET /workflow/instances/...) — deliberately separate from WORKFLOW_VIEW, which gates
@@ -46,19 +48,18 @@ export const APPROVE_ACTION_CODES: Record<WorkflowType, string[]> = {
 // or grants more than a user already effectively has via their real domain access). See
 // WorkflowOrchestrationService.assertCanViewRuntime for the actual check this map feeds.
 export const RUNTIME_VIEW_ACTION_CODES: Record<WorkflowType, string[]> = {
-  [WorkflowType.TARIFF]: ['TARIFF_VIEW', ...APPROVE_ACTION_CODES[WorkflowType.TARIFF]],
-  [WorkflowType.BILL_RUN]: ['BILL_RUN_VIEW', ...APPROVE_ACTION_CODES[WorkflowType.BILL_RUN]],
-  [WorkflowType.BILLING_CYCLE]: ['VIEW_BILLING_CYCLE', ...APPROVE_ACTION_CODES[WorkflowType.BILLING_CYCLE]],
+  [WorkflowType.TARIFF]: [ACTION_CODES.TARIFF_VIEW, ...APPROVE_ACTION_CODES[WorkflowType.TARIFF]],
+  [WorkflowType.BILL_RUN]: [ACTION_CODES.BILL_RUN_VIEW, ...APPROVE_ACTION_CODES[WorkflowType.BILL_RUN]],
+  [WorkflowType.BILLING_CYCLE]: [ACTION_CODES.VIEW_BILLING_CYCLE, ...APPROVE_ACTION_CODES[WorkflowType.BILLING_CYCLE]],
 };
 
 @Injectable()
 export class WorkflowService {
   constructor(
     private readonly dataSource: DataSource,
-    @InjectRepository(Action) private readonly actions: Repository<Action>,
-    @InjectRepository(RolePermission) private readonly rolePermissions: Repository<RolePermission>,
     @InjectRepository(Role) private readonly roles: Repository<Role>,
     @InjectRepository(WorkflowApprovalLevel) private readonly approvalLevels: Repository<WorkflowApprovalLevel>,
+    private readonly rolePermissionsService: RolePermissionsService,
   ) {}
 
   /** The real, single-step approval flow for a workflow type — used by the Workflow screen's
@@ -75,17 +76,15 @@ export class WorkflowService {
     const actionCodes = APPROVE_ACTION_CODES[workflowType];
     if (!actionCodes) throw new BadRequestException(`Unsupported workflow type "${workflowType}"`);
 
-    const rows = await this.dataSource.query(
-      `SELECT DISTINCT r.id AS role_id, r.role_name
-       FROM roles r
-       JOIN role_permissions rp ON rp.roleId = r.id
-       JOIN actions a ON a.id = rp.actionId
-       WHERE a.code IN (${actionCodes.map(() => '?').join(',')}) AND a.deleted_at IS NULL
-       ORDER BY r.role_name ASC`,
-      actionCodes,
-    );
-    const approverRoles: string[] = rows.map((r: { role_name: string }) => r.role_name);
-    const approverRoleIds: number[] = rows.map((r: { role_id: number }) => r.role_id);
+    // Policy-based, exactly like real authorization: the roles whose Policies currently grant the approve code(s) —
+    // never the legacy role_permissions table, which no authorization decision reads any more. SUPER_ADMIN is
+    // never listed (it is not a business approver).
+    const eligibleRoleIds = await this.rolePermissionsService.getRoleIdsHoldingAnyAction(actionCodes);
+    const eligibleRoles = eligibleRoleIds.length
+      ? await this.roles.find({ where: { id: In(eligibleRoleIds) }, order: { roleName: SORT_ORDER.ASC } })
+      : [];
+    const approverRoles: string[] = eligibleRoles.map((r) => r.roleName);
+    const approverRoleIds: number[] = eligibleRoles.map((r) => r.id);
 
     return {
       workflowType,
@@ -99,65 +98,18 @@ export class WorkflowService {
     };
   }
 
-  /** Sets the COMPLETE list of roles that may approve this workflow type — adds a grant for every
-   *  roleId in the list that doesn't already have one, and removes the grant for every role that
-   *  currently has one but isn't in the list. Scoped to ONLY the approve action code(s) for this
-   *  workflow type; never touches any other permission a role holds (unlike
-   *  RolePermissionsService.updateRolePermissions/savePermissions, which wholesale delete-and-rebuild
-   *  a role's ENTIRE permission set and would be unsafe to reuse for this one-action edit).
-   *
-   *  For Tariff, writes/removes BOTH action codes together per role (see this module's own doc
-   *  comment above) — a role is "a Tariff approver" as one fact from this screen's point of view,
-   *  even though the real endpoint accepts either code alone. */
-  async setApprovers(workflowType: WorkflowType, roleIds: number[]): Promise<{ workflowType: WorkflowType; approverRoleIds: number[] }> {
-    const actionCodes = APPROVE_ACTION_CODES[workflowType];
-    if (!actionCodes) throw new BadRequestException(`Unsupported workflow type "${workflowType}"`);
-
-    const uniqueRoleIds = [...new Set(roleIds)];
-
-    const actions = await this.actions.find({
-      where: { code: In(actionCodes) },
-      relations: { screen: { subModule: true, pModule: true } },
-    });
-    if (actions.length !== actionCodes.length) {
-      throw new BadRequestException(`One or more approve actions for "${workflowType}" are missing or inactive — cannot edit approvers`);
-    }
-
-    await this.dataSource.transaction(async (manager) => {
-      const repo = manager.getRepository(RolePermission);
-
-      for (const action of actions) {
-        const screen = action.screen;
-        if (!screen) throw new BadRequestException(`Action "${action.code}" has no screen — cannot resolve its module chain`);
-        const moduleId = screen.subModule?.pModuleId ?? screen.pModuleId;
-        if (!moduleId) throw new BadRequestException(`Action "${action.code}"'s screen has no resolvable module — cannot resolve its module chain`);
-
-        const existing = await repo.find({ where: { actionId: action.id } });
-        const existingRoleIds = new Set(existing.map((e) => e.roleId));
-
-        const toAdd = uniqueRoleIds.filter((id) => !existingRoleIds.has(id));
-        const toRemove = existing.filter((e) => !uniqueRoleIds.includes(e.roleId));
-
-        if (toAdd.length > 0) {
-          await repo.save(
-            toAdd.map((roleId) =>
-              repo.create({
-                roleId,
-                moduleId,
-                subModuleId: screen.subModuleId ?? null,
-                screenId: screen.id,
-                actionId: action.id,
-              }),
-            ),
-          );
-        }
-        if (toRemove.length > 0) {
-          await repo.remove(toRemove);
-        }
-      }
-    });
-
-    return { workflowType, approverRoleIds: uniqueRoleIds };
+  /** RETIRED. This used to write the approve permission into the legacy `role_permissions` table, which no
+   *  authorization decision has read since the IAM cutover — so it changed who appears in this screen but never who
+   *  can actually approve, and let the two drift apart. A role may approve a workflow only through the Policies
+   *  attached to it; which roles act at each level is configured with PUT definitions/:workflowType, whose Approver
+   *  Role dropdown (GET definitions/:workflowType/eligible-approver-roles) lists exactly the roles the backend
+   *  accepts. Refused loudly rather than silently doing nothing; the route stays so an old client gets this message. */
+  async setApprovers(workflowType: WorkflowType, _roleIds: number[]): Promise<never> {
+    throw new GoneException(
+      `Approvers for ${workflowType} are no longer set by writing role permissions. A role approves only through the ` +
+        'policies attached to it: grant the approve permission to the role in a policy, then choose the role at the right ' +
+        'level of the workflow definition (PUT /workflow/definitions/:workflowType).',
+    );
   }
 
   /** The recorded POLICY for a workflow type — reproduces CCB_Template's getApprovalWorkflow exactly,
@@ -168,7 +120,7 @@ export class WorkflowService {
     const rows = await this.approvalLevels.find({
       where: { workflowType },
       relations: { role: true },
-      order: { levelOrder: 'ASC' },
+      order: { levelOrder: SORT_ORDER.ASC },
     });
 
     if (rows.length === 0) {
@@ -219,6 +171,7 @@ export class WorkflowService {
     const roleIds = [...new Set(levels.map((l) => l.roleId).filter((id): id is number => typeof id === 'number'))];
     const existingRoles = roleIds.length ? await this.roles.find({ where: { id: In(roleIds) } }) : [];
     const validRoleIds = new Set(existingRoles.map((r) => r.id));
+    const superAdminRoleIds = new Set(existingRoles.filter((r) => r.roleName === ROLES.SUPER_ADMIN).map((r) => r.id));
 
     const problems: string[] = [];
     levels.forEach((level, i) => {
@@ -226,6 +179,8 @@ export class WorkflowService {
 
       if (typeof level.roleId !== 'number' || !Number.isInteger(level.roleId) || !validRoleIds.has(level.roleId)) {
         problems.push(`${at}: unknown approver role "${String(level.roleId)}".`);
+      } else if (superAdminRoleIds.has(level.roleId)) {
+        problems.push(`${at}: SUPER_ADMIN is a system-administration role and cannot be a workflow approver.`);
       }
       if (level.department !== null && level.department !== undefined && !DEPARTMENTS.includes(level.department as WorkflowDepartment)) {
         problems.push(`${at}: unknown department "${String(level.department)}".`);

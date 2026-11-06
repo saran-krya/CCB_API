@@ -11,10 +11,12 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOkResponse, ApiTags } from '@nestjs/swagger';
 import { Permission } from '../../common/decorators/permission.decorator';
+import { Authenticated } from '../../common/decorators/authenticated.decorator';
 import { CreateLovDto, GetLovDto, SetLovCategoryModuleDto, UpdateLovDto } from './dto/lov.dto';
 import { LovCategory } from './entities/lov-category.entity';
 import { LovValue } from './entities/lov-value.entity';
 import { LovService } from './lov.service';
+import { ACTION_CODES } from '../../common/constants/action-codes.constants';
 
 @ApiBearerAuth()
 @ApiTags('LOV')
@@ -23,21 +25,21 @@ export class LovController {
   constructor(private readonly lovService: LovService) {}
 
   @Get('categories')
-  @Permission('LOV_VIEW')
+  @Permission(ACTION_CODES.LOV_VIEW)
   @ApiOkResponse({ type: String, isArray: true })
   findCategories(): Promise<string[]> {
     return this.lovService.findCategories();
   }
 
   @Get('categories/modules')
-  @Permission('LOV_VIEW')
+  @Permission(ACTION_CODES.LOV_VIEW)
   @ApiOkResponse({ type: Object })
   findCategoryModules(): Promise<Record<string, string | null>> {
     return this.lovService.findCategoryModules();
   }
 
   @Patch('categories/:category/module')
-  @Permission('LOV_MODULE_ASSIGN')
+  @Permission(ACTION_CODES.LOV_MODULE_ASSIGN)
   @ApiOkResponse({ type: LovCategory })
   setCategoryModule(
     @Param('category') category: string,
@@ -47,16 +49,17 @@ export class LovController {
   }
 
   @Get('languages')
+  @Authenticated()
   @ApiOkResponse({ type: LovValue, isArray: true })
   findActiveLanguages(): Promise<LovValue[]> {
     return this.lovService.findActiveLanguages();
   }
 
-  // No @Permission — LOV values are shared read-only config consumed by ordinary feature pages
-  // (e.g. dropdown options in the registration wizard), not just the LOV management screen. Any
-  // authenticated user can read them (JwtAuthGuard still applies globally); only writes below stay
-  // permission-gated.
+  // @Authenticated, not @Permission — LOV values are shared read-only config consumed by ordinary
+  // feature pages (e.g. dropdown options in the registration wizard), not just the LOV management
+  // screen. Any signed-in staff user can read them; only writes below stay permission-gated.
   @Get()
+  @Authenticated()
   @ApiOkResponse({ type: LovValue, isArray: true })
   findByCategory(@Query() query: GetLovDto): Promise<LovValue[]> {
     if (!query.category) return this.lovService.findAll();
@@ -64,14 +67,14 @@ export class LovController {
   }
 
   @Post()
-  @Permission('LOV_CREATE')
+  @Permission(ACTION_CODES.LOV_CREATE)
   @ApiOkResponse({ type: LovValue })
   create(@Body() dto: CreateLovDto): Promise<LovValue> {
     return this.lovService.create(dto);
   }
 
   @Patch(':id')
-  @Permission('LOV_EDIT')
+  @Permission(ACTION_CODES.LOV_EDIT)
   @ApiOkResponse({ type: LovValue })
   update(
     @Param('id', ParseIntPipe) id: number,
@@ -81,7 +84,7 @@ export class LovController {
   }
 
   @Delete(':id')
-  @Permission('LOV_DELETE')
+  @Permission(ACTION_CODES.LOV_DELETE)
   @ApiOkResponse()
   remove(@Param('id', ParseIntPipe) id: number): Promise<void> {
     return this.lovService.remove(id);

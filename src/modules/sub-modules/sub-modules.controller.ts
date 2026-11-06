@@ -4,6 +4,7 @@ import {
   Delete,
   Get,
   Param,
+  ParseIntPipe,
   Patch,
   Post,
   Query,
@@ -49,14 +50,14 @@ export class SubModulesController {
 
   @Get(':id')
   findOne(
-    @Param('id') id: number,
+    @Param('id', ParseIntPipe) id: number,
   ) {
     return this.subModulesService.findOne(id);
   }
 
   @Patch(':id')
   update(
-    @Param('id') id: number,
+    @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpdateSubModuleDto,
   ) {
     return this.subModulesService.update(
@@ -67,7 +68,7 @@ export class SubModulesController {
 
   @Delete(':id')
   remove(
-    @Param('id') id: number,
+    @Param('id', ParseIntPipe) id: number,
   ) {
     return this.subModulesService.remove(id);
   }

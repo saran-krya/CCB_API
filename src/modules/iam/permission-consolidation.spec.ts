@@ -11,6 +11,7 @@ import { ACTIONS } from '../../bootstrap/seed-data';
 import { ACTION_TO_RESOURCE_CODE, RESOURCES } from './resource-catalog';
 import { CODE_MERGE_MAP } from '../../migrations/1792800000000-ConsolidateDuplicateActionCodes';
 import { USER_OVERVIEW_CORRECTION_MAP } from '../../migrations/1792900000000-RenameUserOverviewToViewUser';
+import { rolePermissionsMock } from '../../../test/helpers/role-permissions.mock';
 
 // Combined, NET view of every retired->survivor mapping across both migrations, for the
 // catalog-consistency and fold-logic checks below. This must be a proper composition (resolve a code
@@ -52,7 +53,7 @@ describe('Permission consolidation — duplicate Action codes retired onto one s
   beforeEach(async () => {
     rolesHaveAction = jest.fn();
     const moduleRef = await Test.createTestingModule({
-      providers: [PermissionGuard, { provide: RolePermissionsService, useValue: { rolesHaveAction } }],
+      providers: [PermissionGuard, { provide: RolePermissionsService, useValue: rolePermissionsMock(rolesHaveAction) }],
     }).compile();
     guard = moduleRef.get(PermissionGuard);
   });

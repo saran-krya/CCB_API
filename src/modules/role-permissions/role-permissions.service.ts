@@ -20,6 +20,10 @@ import { SaveRoleWithPermissionsDto } from './dto/save-role-with-permissions.dto
 import { AuditService } from '../../audit/audit.service';
 import { ROLES } from '@app/common/constants/global';
 import { IamService } from '../iam/iam.service';
+import { BUSINESS_APPROVAL_ACTION_CODES } from '../iam/business-approval-actions';
+import { ERROR_MESSAGES } from '../../common/constants/error-messages.constants';
+import { AUDIT_MODULE, AUDIT_ACTION } from '../../audit/audit.constants';
+import { SORT_ORDER } from '../../common/constants/sort.constants';
 
 @Injectable()
 export class RolePermissionsService {
@@ -59,7 +63,7 @@ export class RolePermissionsService {
 
     if (!role) {
       throw new NotFoundException(
-        'Role not found',
+        ERROR_MESSAGES.ROLE_NOT_FOUND,
       );
     }
 
@@ -72,7 +76,7 @@ export class RolePermissionsService {
 
     if (!subModule) {
       throw new NotFoundException(
-        'Sub module not found',
+        ERROR_MESSAGES.SUB_MODULE_NOT_FOUND,
       );
     }
 
@@ -85,7 +89,7 @@ export class RolePermissionsService {
 
     if (!action) {
       throw new NotFoundException(
-        'Action not found',
+        ERROR_MESSAGES.ACTION_NOT_FOUND,
       );
     }
 
@@ -129,7 +133,7 @@ export class RolePermissionsService {
 
     if (existingRole) {
       throw new ConflictException(
-        'Role already exists',
+        ERROR_MESSAGES.ROLE_ALREADY_EXISTS,
       );
     }
 
@@ -270,9 +274,9 @@ export class RolePermissionsService {
     // prior permission state to record.
     await this.audit.record(
       {
-        moduleName: 'role_permissions',
+        moduleName: AUDIT_MODULE.ROLE_PERMISSIONS,
         entityId: role.id,
-        action: 'CREATE',
+        action: AUDIT_ACTION.CREATE,
         newValue: { roleId: role.id, roleName: role.roleName, grantedCount: permissions.length },
         performedBy: actorId,
       },
@@ -386,6 +390,15 @@ export class RolePermissionsService {
     return this.iamService.rolesHaveActionViaPolicy(roleIds, actionCode, userId);
   }
 
+  /** True iff ANY of `roleIds` (or the user's own inline policies) grants ANY of `actionCodes` — the
+   *  whole set resolved once, not once per code, so a route listing several codes costs the same three
+   *  queries as one listing a single code. Nothing is cached across requests: a revoked grant stops
+   *  counting on the very next call. */
+  async rolesHaveAnyAction(roleIds: number[], actionCodes: string[], userId?: number): Promise<boolean> {
+    const granted = await this.iamService.getActionCodesGrantedByPoliciesForRoles(roleIds, userId);
+    return actionCodes.some((code) => granted.has(code));
+  }
+
   /** The full set of Action codes a role actually holds via its attached Policies — same resolution
    *  path as roleHasAction/PermissionGuard (IamService.getActionCodesGrantedByPolicies), just
    *  returning every granted code at once instead of checking one. */
@@ -404,84 +417,67 @@ export class RolePermissionsService {
     return [...codes];
   }
 
-  async ensureAdminGrants(excludedActionCodes: string[] = []): Promise<void> {
-    const adminRoles = await this.roleRepository.find({
-      where: [{ roleName: 'SUPER_ADMIN' }, { roleName: 'ADMIN' }],
-    });
-    if (!adminRoles.length) return;
+  /** Ids of every role that may be configured as an approver of a workflow whose approve code(s) are `actionCodes`
+   *  — the Policy-based eligibility predicate (IamService.getRoleIdsHoldingAnyAction), never the legacy
+   *  `role_permissions` table. SUPER_ADMIN is never among them. */
+  async getRoleIdsHoldingAnyAction(actionCodes: string[]): Promise<number[]> {
+    return this.iamService.getRoleIdsHoldingAnyAction(actionCodes);
+  }
+
+  /** True iff ANY of `roleIds` is the SUPER_ADMIN role — a system-administration role that never acts as a
+   *  business approver (see business-approval-actions.ts). */
+  async anyRoleIsSuperAdmin(roleIds: number[]): Promise<boolean> {
+    return this.iamService.holdsSuperAdminRole(roleIds);
+  }
+
+  /** Keeps SUPER_ADMIN — the ONLY predefined role — granted every active action in the legacy permission tree, on every
+   *  boot (fresh install and every restart). Nothing else is touched: every other role is created and managed
+   *  dynamically by SUPER_ADMIN, so no other role name is looked up, assumed or auto-granted here. SUPER_ADMIN never
+   *  receives a business-approval code (the same rule the Policy model applies in IamService.ensureAdminPolicyGrants).
+   *  The tree decides no authorization any more (only Policies do); it still feeds the navigation tree. Idempotent: an
+   *  existing grant row is never touched or duplicated. */
+  async ensureAdminGrants(): Promise<void> {
+    // Exact name only: the database also matches look-alikes ("SÜPER_ADMIN") case- and accent-insensitively.
+    const superAdmin = (await this.roleRepository.find({ where: { roleName: ROLES.SUPER_ADMIN } })).find(
+      (role) => role.roleName === ROLES.SUPER_ADMIN,
+    );
+    if (!superAdmin) return;
 
     const actions = await this.actionRepository.find({
       where: { isActive: true },
       relations: { screen: { subModule: true, pModule: true } },
     });
 
-    for (const role of adminRoles) {
-      for (const action of actions) {
-        try {
-          if (excludedActionCodes.includes(action.code)) continue;
+    for (const action of actions) {
+      try {
+        // SUPER_ADMIN administers the system; it never decides a business transaction.
+        if (BUSINESS_APPROVAL_ACTION_CODES.has(action.code)) continue;
 
-          const screen = action.screen;
-          if (!screen) continue;
+        const screen = action.screen;
+        if (!screen) continue;
 
-          const moduleId = screen.subModule?.pModuleId ?? screen.pModuleId;
-          if (!moduleId) continue;
+        const moduleId = screen.subModule?.pModuleId ?? screen.pModuleId;
+        if (!moduleId) continue;
 
-          const exists = await this.rolePermissionRepository.findOne({
-            where: { roleId: role.id, actionId: action.id },
-          });
-          if (exists) continue;
+        const exists = await this.rolePermissionRepository.findOne({
+          where: { roleId: superAdmin.id, actionId: action.id },
+        });
+        if (exists) continue;
 
-          const grant = this.rolePermissionRepository.create({
-            roleId: role.id,
-            moduleId,
-            subModuleId: screen.subModuleId ?? null,
-            screenId: screen.id,
-            actionId: action.id,
-          });
-          await this.rolePermissionRepository.save(grant);
-        } catch (err) {
-          this.logger.error(`Failed to grant action "${action.code}" to role "${role.roleName}" — skipping`, err as Error);
-        }
+        const grant = this.rolePermissionRepository.create({
+          roleId: superAdmin.id,
+          moduleId,
+          subModuleId: screen.subModuleId ?? null,
+          screenId: screen.id,
+          actionId: action.id,
+        });
+        await this.rolePermissionRepository.save(grant);
+      } catch (err) {
+        this.logger.error(`Failed to grant action "${action.code}" to role "${superAdmin.roleName}" — skipping`, err as Error);
       }
     }
 
-    await this.ensureLeafModuleGrants(adminRoles);
-  }
-
-  /** Grants ONE specific action to SUPER_ADMIN only (never ADMIN) — for an action deliberately kept
-   *  out of ensureAdminGrants' blanket auto-grant loop (ADMIN_GRANT_EXCLUDED_ACTION_CODES) but that
-   *  still needs at least one holder from day one, or nothing could ever use it (no auto-grant, and
-   *  no reachable UI to self-grant an excluded action after the fact). Idempotent — a no-op once the
-   *  grant already exists. Runs on every boot alongside ensureAdminGrants, not just fresh installs,
-   *  the same convention as this codebase's other ensure-prefixed / ensureCriticalDefaults methods. */
-  async ensureSuperAdminGrant(actionCode: string): Promise<void> {
-    const superAdmin = await this.roleRepository.findOne({ where: { roleName: 'SUPER_ADMIN' } });
-    if (!superAdmin) return;
-
-    const action = await this.actionRepository.findOne({
-      where: { code: actionCode },
-      relations: { screen: { subModule: true, pModule: true } },
-    });
-    if (!action) return;
-
-    const screen = action.screen;
-    if (!screen) return;
-    const moduleId = screen.subModule?.pModuleId ?? screen.pModuleId;
-    if (!moduleId) return;
-
-    const exists = await this.rolePermissionRepository.findOne({
-      where: { roleId: superAdmin.id, actionId: action.id },
-    });
-    if (exists) return;
-
-    const grant = this.rolePermissionRepository.create({
-      roleId: superAdmin.id,
-      moduleId,
-      subModuleId: screen.subModuleId ?? null,
-      screenId: screen.id,
-      actionId: action.id,
-    });
-    await this.rolePermissionRepository.save(grant);
+    await this.ensureLeafModuleGrants([superAdmin]);
   }
 
   private async ensureLeafModuleGrants(adminRoles: Role[]): Promise<void> {
@@ -556,7 +552,7 @@ export class RolePermissionsService {
     // stops being independently manageable/visible in this tree going forward.
     const modules = await this.pModuleRepository.find({
       where: { isActive: true },
-      order: { displayOrder: 'ASC' },
+      order: { displayOrder: SORT_ORDER.ASC },
     });
     const subModules = await this.subModuleRepository.find({ where: { isActive: true } });
     const screens = await this.screenRepository.find({ where: { isActive: true } });
@@ -659,7 +655,7 @@ export class RolePermissionsService {
 
     if (!role) {
       throw new NotFoundException(
-        "Role not found",
+        ERROR_MESSAGES.ROLE_NOT_FOUND,
       );
     }
 
@@ -824,9 +820,9 @@ export class RolePermissionsService {
     // anywhere in this method rolls back both the permission change AND this audit row together.
     await this.audit.record(
       {
-        moduleName: 'role_permissions',
+        moduleName: AUDIT_MODULE.ROLE_PERMISSIONS,
         entityId: roleId,
-        action: 'UPDATE',
+        action: AUDIT_ACTION.UPDATE,
         oldValue: { actionCodes: previousActionCodes },
         newValue: { actionCodes: newActionCodes },
         performedBy: actorId,

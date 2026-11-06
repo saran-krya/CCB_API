@@ -13,9 +13,10 @@ import {
   TrendMetric,
   TrendPointDto,
 } from './dto/estate-summary-response.dto';
+import { ACTION_CODES } from '../../common/constants/action-codes.constants';
+import { ISO_DATE_LENGTH, MS_PER_DAY, TREND_MAX_DAYS } from '../../common/constants/time.constants';
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
-const TREND_MAX_DAYS = 90;
 const VALID_METRICS: TrendMetric[] = ['all', 'data_quality', 'files_received', 'anomaly_count'];
 
 function assertValidDate(label: string, value: string | undefined): string {
@@ -33,11 +34,11 @@ export class EstateSummaryController {
   constructor(private readonly estateSummary: EstateSummaryService) {}
 
   @Get('summary')
-  @Permission('SFTP_MONITOR_VIEW')
+  @Permission(ACTION_CODES.SFTP_MONITOR_VIEW)
   @ApiOperation({ summary: 'Estate-wide ingestion summary for one calendar date (defaults to today)' })
   @ApiQuery({ name: 'date', required: false, type: String, example: '2026-07-20' })
   async getSummary(@Query('date') dateParam?: string): Promise<SummaryResponseDto> {
-    const date = dateParam ? assertValidDate('date', dateParam) : new Date().toISOString().slice(0, 10);
+    const date = dateParam ? assertValidDate('date', dateParam) : new Date().toISOString().slice(0, ISO_DATE_LENGTH);
 
     const summary = await this.estateSummary.getSummaryForDate(date);
     if (!summary) {
@@ -53,7 +54,7 @@ export class EstateSummaryController {
   }
 
   @Get('summary/trend')
-  @Permission('SFTP_MONITOR_VIEW')
+  @Permission(ACTION_CODES.SFTP_MONITOR_VIEW)
   @ApiOperation({ summary: 'Daily estate summaries between from_date and to_date (max 90 days)' })
   @ApiQuery({ name: 'from_date', required: true, type: String, example: '2026-06-21' })
   @ApiQuery({ name: 'to_date', required: true, type: String, example: '2026-07-20' })
@@ -69,7 +70,7 @@ export class EstateSummaryController {
     if (fromDate > toDate) {
       throw new BadRequestException('from_date must not be after to_date');
     }
-    const spanDays = Math.round((Date.parse(toDate) - Date.parse(fromDate)) / (24 * 60 * 60 * 1000)) + 1;
+    const spanDays = Math.round((Date.parse(toDate) - Date.parse(fromDate)) / MS_PER_DAY) + 1;
     if (spanDays > TREND_MAX_DAYS) {
       throw new BadRequestException(`Date range cannot exceed ${TREND_MAX_DAYS} days (got ${spanDays})`);
     }
@@ -84,7 +85,7 @@ export class EstateSummaryController {
   }
 
   @Get('health')
-  @Permission('SFTP_MONITOR_VIEW')
+  @Permission(ACTION_CODES.SFTP_MONITOR_VIEW)
   @ApiOperation({ summary: 'Most recent ingestion status and the next scheduled poll time' })
   async getHealth(): Promise<HealthResponseDto> {
     const latest = await this.estateSummary.getLatestSummary();
@@ -99,11 +100,11 @@ export class EstateSummaryController {
   }
 
   @Get('missing-files')
-  @Permission('SFTP_MONITOR_VIEW')
+  @Permission(ACTION_CODES.SFTP_MONITOR_VIEW)
   @ApiOperation({ summary: 'Missing and failed DTU files for one calendar date (defaults to today)' })
   @ApiQuery({ name: 'date', required: false, type: String, example: '2026-07-20' })
   async getMissingFiles(@Query('date') dateParam?: string): Promise<MissingFilesResponseDto> {
-    const date = dateParam ? assertValidDate('date', dateParam) : new Date().toISOString().slice(0, 10);
+    const date = dateParam ? assertValidDate('date', dateParam) : new Date().toISOString().slice(0, ISO_DATE_LENGTH);
 
     const [missingLogs, failedLogs] = await Promise.all([
       this.estateSummary.getMissingLogsForDate(date),

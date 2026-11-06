@@ -4,6 +4,7 @@ import {
   Delete,
   Get,
   Param,
+  ParseIntPipe,
   Patch,
   Post,
   Query,
@@ -53,14 +54,14 @@ export class PModulesController {
 
   @Get(':id')
   findOne(
-    @Param('id') id: number,
+    @Param('id', ParseIntPipe) id: number,
   ) {
     return this.pModulesService.findOne(id);
   }
 
   @Patch(':id')
   update(
-    @Param('id') id: number,
+    @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpdatePModuleDto,
   ) {
     return this.pModulesService.update(
@@ -71,7 +72,7 @@ export class PModulesController {
 
   @Delete(':id')
   remove(
-    @Param('id') id: number,
+    @Param('id', ParseIntPipe) id: number,
   ) {
     return this.pModulesService.remove(id);
   }

@@ -3,6 +3,7 @@ import {
   Controller,
   Get,
   Param,
+  ParseIntPipe,
   Patch,
   Post,
   Query,
@@ -47,7 +48,7 @@ export class RolePermissionsController {
 
   @Get("role/:roleId")
   getRolePermissionByRoleId(
-    @Param("roleId") roleId: number,
+    @Param("roleId", ParseIntPipe) roleId: number,
   ) {
     return this.rolePermissionsService.getPermissionTree(
       Number(roleId),
@@ -68,7 +69,7 @@ export class RolePermissionsController {
 
   @Patch("role/:roleId")
   updateRolePermissions(
-    @Param("roleId") roleId: number,
+    @Param("roleId", ParseIntPipe) roleId: number,
     @Body()
     dto: SaveRoleWithPermissionsDto,
     @CurrentUser() user?: AuthenticatedUser,

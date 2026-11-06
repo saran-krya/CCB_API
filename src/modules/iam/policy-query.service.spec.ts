@@ -12,6 +12,7 @@ describe('PolicyQueryService', () => {
   let items: any[];
   let attachedCountRows: { policyId: number; count: string }[];
   let statements: { policyId: number; actions: string[] }[];
+  let totalRoles: number;
 
   const newQb = () => {
     const qb: any = {
@@ -49,11 +50,12 @@ describe('PolicyQueryService', () => {
     items = [];
     attachedCountRows = [];
     statements = [];
+    totalRoles = 0;
     policiesExist = jest.fn().mockResolvedValue(true);
     service = new PolicyQueryService(
       { createQueryBuilder: newQb, exist: policiesExist, manager: { createQueryBuilder: newQb } } as any,
       { find: jest.fn().mockImplementation(async () => statements) } as any,
-      { createQueryBuilder: newQb } as any,
+      { createQueryBuilder: newQb, count: jest.fn().mockImplementation(async () => totalRoles) } as any,
     );
   });
 
@@ -124,6 +126,37 @@ describe('PolicyQueryService', () => {
       expect(rows[2].deleteBlockedReason).toBeNull();
     });
 
+    it('says how many roles could still receive each policy: every role minus the ones that hold it', async () => {
+      items = [
+        { id: 1, name: 'Holds one', isSystem: false },
+        { id: 2, name: 'Holds all', isSystem: false },
+        { id: 3, name: 'Holds none', isSystem: false },
+      ];
+      totalRoles = 4;
+      attachedCountRows = [
+        { policyId: 1, count: '1' },
+        { policyId: 2, count: '4' },
+      ];
+
+      const { items: rows } = await service.list(q());
+
+      expect(rows.map((r) => [r.attachedRoleCount, r.availableRoleCount])).toEqual([
+        [1, 3],
+        [4, 0],
+        [0, 4],
+      ]);
+    });
+
+    it('never reports a negative available count, even if a stale link outnumbers the roles', async () => {
+      items = [{ id: 1, name: 'Stale', isSystem: false }];
+      totalRoles = 1;
+      attachedCountRows = [{ policyId: 1, count: '2' }];
+
+      const { items: rows } = await service.list(q());
+
+      expect(rows[0].availableRoleCount).toBe(0);
+    });
+
     it('offers the attachment and type filter options with the page', async () => {
       const { meta } = await service.list(q());
       expect(meta.attachmentOptions.map((o) => o.value)).toEqual(['attached', 'unattached']);
@@ -160,6 +193,43 @@ describe('PolicyQueryService', () => {
         { id: 4, roleName: 'FINANCE', userCategoryLabel: 'Internal' },
         { id: 5, roleName: 'NONE', userCategoryLabel: null },
       ]);
+      expect(result.meta.userCategoryOptions.map((o) => o.label)).toEqual(['External', 'Internal']);
+    });
+
+    it('does not exclude anything itself — it lists the roles the policy IS attached to', async () => {
+      await service.attachedRoles(1, q({ sortBy: 'roleName' }));
+      expect(andWhereCalls.filter((c) => c.sql.includes('NOT EXISTS'))).toHaveLength(0);
+    });
+  });
+
+  describe('availableRoles', () => {
+    it('404s for a policy that does not exist', async () => {
+      policiesExist.mockResolvedValue(false);
+      await expect(service.availableRoles(9, q({ sortBy: 'roleName' }))).rejects.toBeInstanceOf(NotFoundException);
+    });
+
+    it('lists only roles with no live link to this policy (NOT EXISTS on role_policies, scoped to the policy)', async () => {
+      await service.availableRoles(7, q({ sortBy: 'roleName' }));
+      const notAttached = andWhereCalls.find((c) => c.sql.includes('NOT EXISTS'));
+      expect(notAttached?.sql).toMatch(/FROM role_policies[\s\S]*rp_att\.roleId = role\.id[\s\S]*rp_att\.policyId = :policyId[\s\S]*deleted_at IS NULL/);
+      expect(notAttached?.params).toEqual({ policyId: 7 });
+    });
+
+    it('applies the same search, category filter and sorting as the attached list, on top of the exclusion', async () => {
+      await service.availableRoles(1, q({ sortBy: 'userCategory', sortOrder: 'DESC', 'search.query': 'fin', userCategoryId: 2 }));
+      // The last { policyId } is the category-options query, scoped to the same available roles as the page.
+      expect(andWhereCalls.map((c) => c.params)).toEqual([{ policyId: 1 }, { term: '%fin%' }, { userCategoryId: 2 }, { policyId: 1 }]);
+      expect(orderByCalls[0]).toEqual({ column: 'userCategory.label', order: 'DESC' });
+      expect(addOrderByCalls[0]).toEqual({ column: 'role.roleName', order: 'ASC' });
+    });
+
+    it("returns the same row shape as the attached list, with the categories the available roles actually have (A-Z)", async () => {
+      items = [{ id: 6, roleName: 'MANAGER', userCategory: { label: 'Internal' } }];
+      attachedCountRows = [{ id: 2, label: 'Internal' } as any, { id: 1, label: 'External' } as any];
+
+      const result = await service.availableRoles(1, q({ sortBy: 'roleName' }));
+
+      expect(result.items).toEqual([{ id: 6, roleName: 'MANAGER', userCategoryLabel: 'Internal' }]);
       expect(result.meta.userCategoryOptions.map((o) => o.label)).toEqual(['External', 'Internal']);
     });
   });

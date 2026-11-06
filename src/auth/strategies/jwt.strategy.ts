@@ -2,12 +2,15 @@ import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
-import { UserService } from '../../modules/user/user.service';
-import { User } from '../../modules/user/entities/user.entity';
-import { Role } from '../../modules/role/entities/role.entity';
+import { UserAuthState, UserService } from '../../modules/user/user.service';
 import { CustomerService } from '../../modules/customer/customer.service';
 import { CustomerAccountStatus } from '../../modules/customer/entities/customer.entity';
 import { AuthPrincipal } from '../interfaces/authenticated-user.interface';
+import { SessionLivenessService } from '../session-liveness.service';
+import { SESSION_ERROR_MESSAGES } from '../session.constants';
+import { ENV_KEY } from '../../common/constants/env.constants';
+import { ERROR_MESSAGES } from '../../common/constants/error-messages.constants';
+import { PRINCIPAL_TYPE } from '../../common/constants/auth.constants';
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
@@ -15,11 +18,15 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     config: ConfigService,
     private readonly users: UserService,
     private readonly customers: CustomerService,
+    private readonly sessions: SessionLivenessService,
   ) {
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
       ignoreExpiration: false,
-      secretOrKey: config.getOrThrow<string>('JWT_SECRET'),
+      secretOrKey: config.getOrThrow<string>(ENV_KEY.JWT_SECRET),
+      // Tokens are only ever signed with HS256; accepting just that closes off algorithm-confusion
+      // tricks instead of trusting whatever the token header claims.
+      algorithms: ['HS256'],
     });
   }
 
@@ -41,64 +48,78 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
    *  existing, separate billing-suspension concept — see CustomerAccountStatus's own doc comment).
    *
    *  STALE-CLAIM RULE (staff): the token's `roleId`/`roleName` are NEVER used for a decision. The
-   *  user's live role set is re-read here on every request (UserService.findOne already loads it —
-   *  no extra query) and attached to the principal as `roleIds`/`roleNames`, in assignment order,
-   *  while the singular `roleId`/`roleName` are overwritten with the live PRIMARY (first) role. So a
-   *  role revoked or granted after the token was issued takes effect on the very next request made
-   *  with the SAME, still-unexpired token, and a user whose roles were all removed is rejected
-   *  immediately. Deliberately uncached — a cache here would reintroduce exactly the staleness this
-   *  closes. */
+   *  user's live state — active flag, live role set, and whether a password change is required — is
+   *  re-read here on every request (UserService.findAuthState: two lean queries) and attached to the
+   *  principal as `roleIds`/`roleNames`/`mustChangePassword`, in assignment order, while the singular
+   *  `roleId`/`roleName` are overwritten with the live PRIMARY (first) role. So a role revoked or
+   *  granted after the token was issued takes effect on the very next request made with the SAME,
+   *  still-unexpired token, and a user whose roles were all removed is rejected immediately. Deliberately
+   *  uncached — a cache here would reintroduce exactly the staleness this closes.
+   *
+   *  SESSION BINDING (staff and customers): a token that carries `sid` is honoured only while its session — the
+   *  refresh-token family it was issued for — still has a live refresh token. Signing out, "sign out others", a
+   *  password change, an admin revoke or a replayed refresh token revoke those tokens, so the access token dies on its
+   *  next request instead of when it would have expired. A token without `sid` (issued before this check existed) is
+   *  not checked and simply runs out; the refresh that follows issues a bound one. */
   async validate(payload: AuthPrincipal): Promise<AuthPrincipal> {
     if (!payload.sub || !payload.email) {
-      throw new UnauthorizedException('Invalid token payload');
+      throw new UnauthorizedException(ERROR_MESSAGES.INVALID_TOKEN_PAYLOAD);
     }
 
-    if (payload.type === 'customer') {
+    await this.assertSessionIsLive(payload);
+
+    if (payload.type === PRINCIPAL_TYPE.CUSTOMER) {
       try {
         const customer = await this.customers.findOne(payload.sub);
         if (customer.accountStatus === CustomerAccountStatus.OVERDUE) {
-          throw new UnauthorizedException('Account is not active');
+          throw new UnauthorizedException(ERROR_MESSAGES.ACCOUNT_NOT_ACTIVE);
         }
       } catch (err) {
         if (err instanceof UnauthorizedException) throw err;
-        throw new UnauthorizedException('Customer not found');
+        throw new UnauthorizedException(ERROR_MESSAGES.CUSTOMER_NOT_FOUND);
       }
       return payload;
     }
 
     if (!payload.roleName) {
-      throw new UnauthorizedException('Invalid token payload');
+      throw new UnauthorizedException(ERROR_MESSAGES.INVALID_TOKEN_PAYLOAD);
     }
 
-    let liveRoles: Role[];
+    let state: UserAuthState;
     try {
-      const user = await this.users.findOne(payload.sub);
-      if (!user.active) {
-        throw new UnauthorizedException('Account is deactivated');
-      }
-      // `roles` is every current role; `role` (the primary) is the fallback for a result that
-      // predates it — primary only, so a missing field can never widen access.
-      const { role, roles } = user as User & { role?: Role | null; roles?: Role[] };
-      liveRoles = Array.isArray(roles) ? roles : role ? [role] : [];
-    } catch (err) {
-      if (err instanceof UnauthorizedException) throw err;
-      throw new UnauthorizedException('User not found');
+      state = await this.users.findAuthState(payload.sub);
+    } catch {
+      throw new UnauthorizedException(ERROR_MESSAGES.USER_NOT_FOUND);
+    }
+    if (!state.active) {
+      throw new UnauthorizedException(ERROR_MESSAGES.ACCOUNT_DEACTIVATED);
     }
 
     // Same rule as login()/refresh(), enforced per request: without it a user whose last role was
-    // just revoked would still pass every route that carries no @Permission/@Roles metadata, which
-    // both guards allow unconditionally.
-    if (liveRoles.length === 0) {
-      throw new UnauthorizedException('No role assigned');
+    // just revoked would still pass every route that carries only @Authenticated, which the guards
+    // allow for any signed-in session.
+    if (state.roles.length === 0) {
+      throw new UnauthorizedException(ERROR_MESSAGES.NO_ROLE_ASSIGNED);
     }
 
-    const [primaryRole] = liveRoles;
+    const [primaryRole] = state.roles;
     return {
       ...payload,
       roleId: primaryRole.id,
       roleName: primaryRole.roleName,
-      roleIds: liveRoles.map((r) => r.id),
-      roleNames: liveRoles.map((r) => r.roleName),
+      roleIds: state.roles.map((r) => r.id),
+      roleNames: state.roles.map((r) => r.roleName),
+      mustChangePassword: state.mustChangePassword,
     };
+  }
+
+  private async assertSessionIsLive(payload: AuthPrincipal): Promise<void> {
+    if (payload.sid === undefined) return;
+
+    const principalType = payload.type === PRINCIPAL_TYPE.CUSTOMER ? PRINCIPAL_TYPE.CUSTOMER : PRINCIPAL_TYPE.STAFF;
+    const live = typeof payload.sid === 'string' && payload.sid !== '' && (await this.sessions.isLive(principalType, payload.sub, payload.sid));
+    if (!live) {
+      throw new UnauthorizedException(SESSION_ERROR_MESSAGES.SESSION_ENDED);
+    }
   }
 }

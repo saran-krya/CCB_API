@@ -11,6 +11,8 @@ import { MeterReading, ReadingApprovalStatus, ReadingValidationStatus } from '..
 import { AnomalySeverity } from '../sftp/validation.service';
 import { BillRun } from '../bill-run/entities/bill-run.entity';
 import { BillingReadinessQueryDto } from './dto/billing-readiness.dto';
+import { SORT_ORDER } from '../../common/constants/sort.constants';
+import { ERROR_MESSAGES } from '../../common/constants/error-messages.constants';
 
 export enum BillingReadinessStatus {
   READY = 'ready',
@@ -80,7 +82,7 @@ export class BillingReadinessService {
         ...(query.communityId ? { community: { id: query.communityId } } : {}),
       },
       relations: ['community'],
-      order: { name: 'ASC' },
+      order: { name: SORT_ORDER.ASC },
     });
 
     return Promise.all(properties.map((property) => this.evaluateProperty(property)));
@@ -209,7 +211,7 @@ export class BillingReadinessService {
     }>;
   }> {
     const property = await this.properties.findOne({ where: { id: propertyId }, relations: ['community'] });
-    if (!property) throw new NotFoundException('Property not found');
+    if (!property) throw new NotFoundException(ERROR_MESSAGES.PROPERTY_NOT_FOUND);
 
     const resolution = await this.billingCycleService.resolveVersionForReadingDate(propertyId, readingDate);
 
@@ -302,7 +304,7 @@ export class BillingReadinessService {
     }>;
   }> {
     const property = await this.properties.findOne({ where: { id: propertyId }, relations: ['community'] });
-    if (!property) throw new NotFoundException('Property not found');
+    if (!property) throw new NotFoundException(ERROR_MESSAGES.PROPERTY_NOT_FOUND);
 
     let version: { versionId: number; masterId: number; periodStart: string; periodEnd: string; effectiveFrom: string; deprecatedOn: string | null; ageDays: number } | undefined;
 
@@ -382,7 +384,7 @@ export class BillingReadinessService {
     // Run process once operationally appropriate).
     const existingBillRun = await this.billRuns.findOne({
       where: { propertyId: property.id, cycleVersionId },
-      order: { id: 'DESC' },
+      order: { id: SORT_ORDER.DESC },
     });
     if (existingBillRun) {
       blockingReasons.push(

@@ -8,6 +8,8 @@ import { EstateIngestionStatus } from './entities/estate-ingestion-status.enum';
 import { MeterReading } from './entities/meter-reading.entity';
 import { MasterMeter } from '../meter/entities/master-meter.entity';
 import { SubMeter } from '../meter/entities/sub-meter.entity';
+import { ISO_DATE_LENGTH, MS_PER_HOUR } from '../../common/constants/time.constants';
+import { SORT_ORDER } from '../../common/constants/sort.constants';
 
 const DUBAI_UTC_OFFSET_HOURS = 4;
 
@@ -281,7 +283,7 @@ export class EstateSummaryService {
   }
 
   private toDateString(date: Date): string {
-    return date.toISOString().slice(0, 10);
+    return date.toISOString().slice(0, ISO_DATE_LENGTH);
   }
 
   async getSummaryForDate(date: string): Promise<SftpEstateSummary | null> {
@@ -321,23 +323,23 @@ export class EstateSummaryService {
   async getSummariesBetween(fromDate: string, toDate: string): Promise<SftpEstateSummary[]> {
     return this.summaries.find({
       where: { summaryDate: Between(fromDate, toDate) },
-      order: { summaryDate: 'ASC' },
+      order: { summaryDate: SORT_ORDER.ASC },
     });
   }
 
   async getLatestSummary(): Promise<SftpEstateSummary | null> {
-    return this.summaries.findOne({ where: {}, order: { summaryDate: 'DESC' } });
+    return this.summaries.findOne({ where: {}, order: { summaryDate: SORT_ORDER.DESC } });
   }
 
   getNextScheduledPoll(now: Date = new Date()): string {
-    const dubaiNow = new Date(now.getTime() + DUBAI_UTC_OFFSET_HOURS * 60 * 60 * 1000);
+    const dubaiNow = new Date(now.getTime() + DUBAI_UTC_OFFSET_HOURS * MS_PER_HOUR);
     const nextDubai = new Date(
       Date.UTC(dubaiNow.getUTCFullYear(), dubaiNow.getUTCMonth(), dubaiNow.getUTCDate(), 0, 30, 0, 0),
     );
     if (nextDubai.getTime() <= dubaiNow.getTime()) {
       nextDubai.setUTCDate(nextDubai.getUTCDate() + 1);
     }
-    const nextUtc = new Date(nextDubai.getTime() - DUBAI_UTC_OFFSET_HOURS * 60 * 60 * 1000);
+    const nextUtc = new Date(nextDubai.getTime() - DUBAI_UTC_OFFSET_HOURS * MS_PER_HOUR);
     return nextUtc.toISOString();
   }
 }

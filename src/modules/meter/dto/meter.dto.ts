@@ -7,6 +7,8 @@ import { ImportFailureReason } from '../entities/import-result.types';
 import { CommunityStatus } from '../../community/entities/community.entity';
 import { PropertyStatus } from '../../property/entities/property.entity';
 import { UnitStatus } from '../../unit/entities/unit.entity';
+import { DEFAULT_PAGE, MIN_PAGE } from '../../../common/constants/pagination.constants';
+import { SORT_ORDER_VALUES, SORT_ORDER, SortOrder } from '../../../common/constants/sort.constants';
 
 export class CreateMasterMeterDto {
   @IsOptional()
@@ -262,7 +264,7 @@ export class ImportHistoryQueryDto {
   @IsEnum(['success', 'failed', 'partial'])
   status?: 'success' | 'failed' | 'partial';
 
-  @ApiPropertyOptional({ default: 1, minimum: 1 })
+  @ApiPropertyOptional({ default: DEFAULT_PAGE, minimum: MIN_PAGE })
   @IsOptional()
   @Type(() => Number)
   @IsInt()
@@ -279,10 +281,10 @@ export class ImportHistoryQueryDto {
   @IsString()
   sortBy?: string;
 
-  @ApiPropertyOptional({ enum: ['ASC', 'DESC'], default: 'DESC' })
+  @ApiPropertyOptional({ enum: SORT_ORDER_VALUES, default: SORT_ORDER.DESC })
   @IsOptional()
-  @IsIn(['ASC', 'DESC'])
-  sortOrder?: 'ASC' | 'DESC';
+  @IsIn(SORT_ORDER_VALUES)
+  sortOrder?: SortOrder;
 }
 
 export class DailyMeterReadingSummaryQueryDto {
@@ -409,10 +411,10 @@ export class DailyMeterReadingQueryDto extends BasePaginationDto {
   @IsString()
   sortBy?: string;
 
-  @ApiPropertyOptional({ enum: ['ASC', 'DESC'], default: 'DESC' })
+  @ApiPropertyOptional({ enum: SORT_ORDER_VALUES, default: SORT_ORDER.DESC })
   @IsOptional()
-  @IsIn(['ASC', 'DESC'])
-  sortOrder?: 'ASC' | 'DESC';
+  @IsIn(SORT_ORDER_VALUES)
+  sortOrder?: SortOrder;
 }
 
 // Approve/revoke one or more Daily Meter Readings by their real MeterReading.id (the same `id`

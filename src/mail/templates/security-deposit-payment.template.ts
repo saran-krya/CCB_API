@@ -37,5 +37,5 @@ export const securityDepositPaymentTemplate: MailTemplate<SecurityDepositPayment
     'If you did not expect this email, you can safely ignore it.',
   ].join('\n');
 
-  return { subject, html, text };
+  return { subject, html, text, purpose: 'customer security deposit' };
 };

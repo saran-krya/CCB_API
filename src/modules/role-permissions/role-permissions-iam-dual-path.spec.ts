@@ -246,7 +246,8 @@ describe('RolePermissionsService over the real IamService — multi-role union e
         RolePermissionsService,
         IamService,
         { provide: getRepositoryToken(RolePermission), useValue: rolePermissionRepoMock },
-        { provide: getRepositoryToken(Role), useValue: {} },
+        // The resolver asks the roles table whether the principal holds SUPER_ADMIN; none of these roles is it.
+        { provide: getRepositoryToken(Role), useValue: { find: jest.fn().mockResolvedValue([]) } },
         { provide: getRepositoryToken(SubModule), useValue: {} },
         { provide: getRepositoryToken(Action), useValue: {} },
         { provide: getRepositoryToken(PModule), useValue: {} },

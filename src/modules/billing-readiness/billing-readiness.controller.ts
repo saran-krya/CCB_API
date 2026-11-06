@@ -3,6 +3,7 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Permission } from '../../common/decorators/permission.decorator';
 import { BillingReadinessService } from './billing-readiness.service';
 import { BillingReadinessQueryDto } from './dto/billing-readiness.dto';
+import { ACTION_CODES } from '../../common/constants/action-codes.constants';
 
 @ApiBearerAuth()
 @ApiTags('Billing Readiness')
@@ -16,7 +17,7 @@ export class BillingReadinessController {
   // pure UI navigation, not separate RBAC boundaries. BILLING_READINESS_PROPERTY_VIEW existed as a
   // second, independently-assignable code but was merged into this one on explicit request — see
   // BILLING_READINESS_VIEW's own seed-data comment.
-  @Permission('BILLING_READINESS_VIEW')
+  @Permission(ACTION_CODES.BILLING_READINESS_VIEW)
   @ApiOperation({ summary: 'Live per-property billing readiness (Ready/On Hold/Not Ready), computed on every request — not cached' })
   getProperties(@Query() query: BillingReadinessQueryDto) {
     return this.billingReadiness.getReadiness(query);

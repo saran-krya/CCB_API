@@ -15,8 +15,15 @@ export class UpdatePreferencesDto {
   @IsIn(NAV_THEMES)
   navTheme?: string;
 
-  @ApiPropertyOptional({ description: 'Must be an active code in the LANGUAGE lookup category' })
+  // Left out = unchanged. `null` clears the personal choice, so the system default language (DEFAULT_LANGUAGE) applies again;
+  // anything else must be an active code of the LANGUAGE lookup (checked by UserService.updateOwnPreferences).
+  @ApiPropertyOptional({
+    type: String,
+    nullable: true,
+    description:
+      'Must be an active code in the LANGUAGE lookup category. null clears the personal choice, so the system default language applies again.',
+  })
   @IsOptional()
   @IsString()
-  preferredLanguageCode?: string;
+  preferredLanguageCode?: string | null;
 }

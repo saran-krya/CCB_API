@@ -1,5 +1,6 @@
 import { Controller, Get, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Authenticated } from '../../common/decorators/authenticated.decorator';
 import { DashboardService } from './dashboard.service';
 import { DashboardConsumptionQueryDto } from './dto/dashboard-query.dto';
 
@@ -22,6 +23,7 @@ import { DashboardConsumptionQueryDto } from './dto/dashboard-query.dto';
  */
 @ApiBearerAuth()
 @ApiTags('Dashboard')
+@Authenticated()
 @Controller({ path: 'dashboard', version: '1' })
 export class DashboardController {
   constructor(private readonly dashboard: DashboardService) {}

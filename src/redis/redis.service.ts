@@ -59,6 +59,49 @@ export class RedisService implements OnModuleDestroy {
     }
   }
 
+  /** Atomically adds one to a counter, starting its TTL (seconds) on the first increment so the window
+   *  is fixed from the first event. Returns the new count and the seconds left in the window, or null
+   *  when Redis is unavailable — the caller then falls back to its own in-process counter, so a Redis
+   *  outage never blocks (or silently disables) the feature that uses it. */
+  async incrementWithTtl(key: string, ttlSeconds: number): Promise<{ count: number; ttlSeconds: number } | null> {
+    try {
+      const count = await this.client.incr(key);
+      // A key with no expiry (-1) would count — and block — forever, so the TTL is (re)applied whenever it
+      // is missing: on the first increment, and again if a crash ever lost it between the two calls.
+      // Plain EXPIRE (no NX) keeps this working on every Redis version.
+      let ttl = await this.client.ttl(key);
+      if (ttl < 0) {
+        await this.client.expire(key, ttlSeconds);
+        ttl = ttlSeconds;
+      }
+      return { count, ttlSeconds: ttl };
+    } catch (err) {
+      this.logger.error(`Redis INCR failed for key "${key}": ${(err as Error).message}`);
+      return null;
+    }
+  }
+
+  /** Current counter value and remaining window, or null (absent key or Redis unavailable).
+   *
+   *  A counter that exists WITHOUT an expiry (TTL -1 — the connection dropped between INCR and EXPIRE) would
+   *  block its subject forever, and a blocked subject records no further failures that could repair it.
+   *  So when the caller passes the window (`repairTtlSeconds`), a missing expiry is applied right here, on
+   *  the read: the lock then ends one window from now instead of never. */
+  async counter(key: string, repairTtlSeconds?: number): Promise<{ count: number; ttlSeconds: number } | null> {
+    try {
+      const [count, ttl] = await Promise.all([this.client.get(key), this.client.ttl(key)]);
+      if (count === null) return null;
+      if (ttl === -1 && repairTtlSeconds !== undefined) {
+        await this.client.expire(key, repairTtlSeconds);
+        return { count: Number(count), ttlSeconds: repairTtlSeconds };
+      }
+      return { count: Number(count), ttlSeconds: ttl > 0 ? ttl : 0 };
+    } catch (err) {
+      this.logger.error(`Redis counter read failed for key "${key}": ${(err as Error).message}`);
+      return null;
+    }
+  }
+
   async onModuleDestroy(): Promise<void> {
     await this.client.quit().catch(() => undefined);
   }

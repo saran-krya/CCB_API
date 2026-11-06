@@ -16,10 +16,12 @@ import {
   ApiParam,
   ApiTags,
 } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { AuthenticatedUser } from '../../auth/interfaces/authenticated-user.interface';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Permission } from '../../common/decorators/permission.decorator';
 import { Public } from '../../common/decorators/public.decorator';
+import { strictRateLimit } from '../../common/security/throttle-settings';
 import { CustomerService } from './customer.service';
 import { ActivateCustomerDto } from './dto/activate-customer.dto';
 import {
@@ -29,6 +31,7 @@ import {
 } from './dto/create-customer.dto';
 import { CustomerDetailDto, CustomerListDto } from './dto/customer-response.dto';
 import { OpenForTenantQueryDto, UnitResidentConflictQueryDto } from './dto/open-for-tenant.dto';
+import { ACTION_CODES } from '../../common/constants/action-codes.constants';
 
 @ApiBearerAuth()
 @ApiTags('Customers')
@@ -37,7 +40,7 @@ export class CustomerController {
   constructor(private readonly customers: CustomerService) {}
 
   @Post()
-  @Permission('CREATE_CUSTOMER')
+  @Permission(ACTION_CODES.CREATE_CUSTOMER)
   @ApiOperation({ summary: 'Register a customer against a unit' })
   create(
     @Body() dto: CreateCustomerDto,
@@ -47,7 +50,7 @@ export class CustomerController {
   }
 
   @Get()
-  @Permission('VIEW_CUSTOMER')
+  @Permission(ACTION_CODES.VIEW_CUSTOMER)
   @ApiOperation({ summary: 'List all customers with pagination and filters' })
   @ApiOkResponse({ type: CustomerListDto, isArray: true, description: 'Paginated list of customers' })
   findAll(@Query() query: CustomerQueryDto) {
@@ -55,14 +58,14 @@ export class CustomerController {
   }
 
   @Get('units/open-for-tenant')
-  @Permission('VIEW_CUSTOMER', 'VIEW_REGISTRATION_REQUESTS', 'CREATE_REGISTRATION_REQUEST')
+  @Permission(ACTION_CODES.VIEW_CUSTOMER, ACTION_CODES.VIEW_REGISTRATION_REQUESTS, ACTION_CODES.CREATE_REGISTRATION_REQUEST)
   @ApiOperation({ summary: 'Resolve tenant-occupancy eligibility for one or more units' })
   checkUnitsOpenForTenant(@Query() query: OpenForTenantQueryDto) {
     return this.customers.checkUnitsOpenForTenant(query.unitIds);
   }
 
   @Get('units/resident-conflicts')
-  @Permission('VIEW_CUSTOMER', 'VIEW_REGISTRATION_REQUESTS', 'CREATE_REGISTRATION_REQUEST')
+  @Permission(ACTION_CODES.VIEW_CUSTOMER, ACTION_CODES.VIEW_REGISTRATION_REQUESTS, ACTION_CODES.CREATE_REGISTRATION_REQUEST)
   @ApiOperation({ summary: 'Check whether a customer of the given resident type already exists on one or more units' })
   checkUnitResidentTypeConflicts(@Query() query: UnitResidentConflictQueryDto) {
     return this.customers.checkUnitResidentTypeConflicts(query.unitIds, query.residentType);
@@ -70,7 +73,10 @@ export class CustomerController {
 
   // No @Permission() — the customer holds no staff role/JWT at this point, only their emailed
   // one-time activation token (validated inside CustomerService.activate itself, not by any guard).
+  // Public and unauthenticated, so it carries the strict per-IP limit: an attacker could otherwise hammer it
+  // guessing activation tokens or probing the password policy.
   @Public()
+  @Throttle(strictRateLimit())
   @Post('activate')
   @ApiOperation({ summary: 'Consume a one-time activation link and set the customer\'s own password' })
   activate(@Body() dto: ActivateCustomerDto) {
@@ -78,7 +84,7 @@ export class CustomerController {
   }
 
   @Post(':id/resend-activation')
-  @Permission('EDIT_CUSTOMER')
+  @Permission(ACTION_CODES.EDIT_CUSTOMER)
   @ApiOperation({ summary: 'Re-send the activation email with a fresh token (invalidates any previous unused token)' })
   @ApiParam({ name: 'id', type: Number })
   resendActivation(
@@ -89,7 +95,7 @@ export class CustomerController {
   }
 
   @Get(':id')
-  @Permission('VIEW_CUSTOMER')
+  @Permission(ACTION_CODES.VIEW_CUSTOMER)
   @ApiOperation({ summary: 'Get customer detail' })
   @ApiOkResponse({ type: CustomerDetailDto })
   @ApiParam({ name: 'id', type: Number })
@@ -98,7 +104,7 @@ export class CustomerController {
   }
 
   @Patch(':id')
-  @Permission('EDIT_CUSTOMER')
+  @Permission(ACTION_CODES.EDIT_CUSTOMER)
   @ApiOperation({ summary: 'Update customer' })
   @ApiParam({ name: 'id', type: Number })
   update(
@@ -110,7 +116,7 @@ export class CustomerController {
   }
 
   @Delete(':id')
-  @Permission('DELETE_CUSTOMER')
+  @Permission(ACTION_CODES.DELETE_CUSTOMER)
   @ApiOperation({ summary: 'Soft-delete a customer' })
   @ApiParam({ name: 'id', type: Number })
   remove(

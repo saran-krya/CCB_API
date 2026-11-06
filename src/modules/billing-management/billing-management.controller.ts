@@ -5,6 +5,7 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { AuthenticatedUser } from '../../auth/interfaces/authenticated-user.interface';
 import { BillingManagementService } from './billing-management.service';
 import { BillQueryDto, CancelBillDto } from './dto/billing-management.dto';
+import { ACTION_CODES } from '../../common/constants/action-codes.constants';
 
 // This controller never creates, approves, or rejects a Bill Run — that entire workflow stays
 // exclusively in bill-run.controller.ts (Bill Run Request / Bill Run Register). generateBillsForBillRun
@@ -23,28 +24,28 @@ export class BillingManagementController {
   constructor(private readonly billingManagement: BillingManagementService) {}
 
   @Get()
-  @Permission('BILLING_VIEW')
+  @Permission(ACTION_CODES.BILLING_VIEW)
   @ApiOperation({ summary: 'Paginated, filtered list of generated Bills' })
   findAll(@Query() query: BillQueryDto) {
     return this.billingManagement.findAll(query);
   }
 
   @Get('summary')
-  @Permission('BILLING_VIEW')
+  @Permission(ACTION_CODES.BILLING_VIEW)
   @ApiOperation({ summary: 'Real backend aggregation — total bills, per-status counts, total billed amount, overdue count' })
   getSummary(@Query() query: BillQueryDto) {
     return this.billingManagement.getSummary(query);
   }
 
   @Get(':id')
-  @Permission('BILLING_VIEW')
+  @Permission(ACTION_CODES.BILLING_VIEW)
   @ApiOperation({ summary: 'Bill detail, including line items' })
   findOne(@Param('id', ParseIntPipe) id: number) {
     return this.billingManagement.findOne(id);
   }
 
   @Post(':id/cancel')
-  @Permission('BILLING_CANCEL')
+  @Permission(ACTION_CODES.BILLING_CANCEL)
   @ApiOperation({ summary: 'Cancel a Bill' })
   cancel(@Param('id', ParseIntPipe) id: number, @Body() dto: CancelBillDto, @CurrentUser() user?: AuthenticatedUser) {
     return this.billingManagement.cancelBill(id, dto, user?.sub);

@@ -4,6 +4,7 @@ import {
   Delete,
   Get,
   Param,
+  ParseIntPipe,
   Patch,
   Post,
   Query,
@@ -48,14 +49,14 @@ export class ScreensController {
 
   @Get(':id')
   findOne(
-    @Param('id') id: number,
+    @Param('id', ParseIntPipe) id: number,
   ) {
     return this.screensService.findOne(id);
   }
 
   @Patch(':id')
   update(
-    @Param('id') id: number,
+    @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpdateScreenDto,
   ) {
     return this.screensService.update(
@@ -66,7 +67,7 @@ export class ScreensController {
 
   @Delete(':id')
   remove(
-    @Param('id') id: number,
+    @Param('id', ParseIntPipe) id: number,
   ) {
     return this.screensService.remove(id);
   }

@@ -31,6 +31,11 @@ import {
   BillingCycleAuditAction,
   NEW_VERSION_SOURCE_STATUSES,
 } from './billing-cycle.constants';
+import { SORT_ORDER } from '../../common/constants/sort.constants';
+import { LOV_CATEGORY } from '../lov/lov.constants';
+import { ERROR_MESSAGES } from '../../common/constants/error-messages.constants';
+import { ISO_DATE_LENGTH, MS_PER_DAY, LOCAL_MIDNIGHT_SUFFIX } from '../../common/constants/time.constants';
+import { LOCK_MODE } from '../../common/constants/database.constants';
 
 const VERSION_RESPONSE_RELATIONS = ['master', 'master.community', 'master.property', 'submittedBy', 'approvedBy', 'parentVersion'];
 
@@ -58,11 +63,11 @@ export class BillingCycleService {
 
   async getFilterMetadata() {
     const [communitiesRaw, propertiesRaw, frequencies] = await Promise.all([
-      this.communities.find({ select: ['id', 'name'], order: { name: 'ASC' } }),
+      this.communities.find({ select: ['id', 'name'], order: { name: SORT_ORDER.ASC } }),
       this.dataSource.query<Array<{ id: number; name: string; communityId: number }>>(
         'SELECT id, property_name AS name, community_id AS communityId FROM properties WHERE deleted_at IS NULL ORDER BY property_name ASC',
       ),
-      this.lovService.findByCategory('BILLING_FREQUENCY'),
+      this.lovService.findByCategory(LOV_CATEGORY.BILLING_FREQUENCY),
     ]);
 
     return {
@@ -271,12 +276,12 @@ export class BillingCycleService {
       this.communities.findOne({ where: { id: dto.communityId } }),
       this.properties.findOne({ where: { id: dto.propertyId } }),
     ]);
-    if (!community) throw new NotFoundException('Community not found');
-    if (!property) throw new NotFoundException('Property not found');
+    if (!community) throw new NotFoundException(ERROR_MESSAGES.COMMUNITY_NOT_FOUND);
+    if (!property) throw new NotFoundException(ERROR_MESSAGES.PROPERTY_NOT_FOUND);
 
     let versionNumber = '1.0';
     if (master) {
-      const lastVersion = await this.versions.findOne({ where: { masterId: master.id }, order: { id: 'DESC' } });
+      const lastVersion = await this.versions.findOne({ where: { masterId: master.id }, order: { id: SORT_ORDER.DESC } });
       if (lastVersion) versionNumber = nextMajorVersion(lastVersion.version);
     }
 
@@ -342,7 +347,7 @@ export class BillingCycleService {
       .leftJoinAndSelect('bc.submittedBy', 'submittedBy')
       .leftJoinAndSelect('bc.approvedBy', 'approvedBy')
       .leftJoinAndSelect('bc.parentVersion', 'parentVersion')
-      .orderBy(`bc.${orderCol}`, sortOrder ?? 'DESC');
+      .orderBy(`bc.${orderCol}`, sortOrder ?? SORT_ORDER.DESC);
 
     if (communityId) qb.andWhere('master.community_id = :communityId', { communityId });
     if (propertyId) qb.andWhere('master.property_id = :propertyId', { propertyId });
@@ -376,7 +381,7 @@ export class BillingCycleService {
       where: { id },
       relations: VERSION_RESPONSE_RELATIONS,
     });
-    if (!bc) throw new NotFoundException('Billing cycle not found');
+    if (!bc) throw new NotFoundException(ERROR_MESSAGES.BILLING_CYCLE_NOT_FOUND);
     return this.mapToResponse(bc);
   }
 
@@ -487,7 +492,7 @@ export class BillingCycleService {
     const deprecatedVersions = await this.versions.find({
       where: { masterId: master.id, status: BillingCycleStatus.DEPRECATED },
       select: ['id', 'readingStartDay', 'readingEndDay', 'effectiveFrom', 'deprecatedOn'],
-      order: { effectiveFrom: 'DESC' },
+      order: { effectiveFrom: SORT_ORDER.DESC },
     });
 
     const today = new Date();
@@ -503,13 +508,13 @@ export class BillingCycleService {
 
     for (const version of deprecatedVersions) {
       if (!version.effectiveFrom) continue;
-      const anchor = new Date(`${version.effectiveFrom}T00:00:00`);
+      const anchor = new Date(`${version.effectiveFrom}${LOCAL_MIDNIGHT_SUFFIX}`);
       const { start, end } = this.readingPeriodAnchoredTo(version.readingStartDay, version.readingEndDay, anchor);
       const periodStart = this.formatDate(start);
       const periodEnd = this.formatDate(end);
       if (!periodStart || !periodEnd) continue;
 
-      const ageDays = Math.max(0, Math.round((today.getTime() - end.getTime()) / (24 * 60 * 60 * 1000)));
+      const ageDays = Math.max(0, Math.round((today.getTime() - end.getTime()) / MS_PER_DAY));
 
       results.push({
         versionId: version.id,
@@ -599,14 +604,14 @@ export class BillingCycleService {
     }
     const LIVE_CHILD_STATUSES = new Set<BillingCycleStatus>([BillingCycleStatus.ACTIVE, BillingCycleStatus.DEPRECATED]);
 
-    const target = new Date(`${readingDate}T00:00:00`);
+    const target = new Date(`${readingDate}${LOCAL_MIDNIGHT_SUFFIX}`);
     const today = new Date();
     const matches: Array<{ versionId: number; periodStart: string; periodEnd: string }> = [];
 
     for (const version of candidateVersions) {
       if (!version.effectiveFrom) continue; // No real anchor — never genuinely live, same guard as getHistoricalVersionsForProperty.
 
-      const windowStart = new Date(`${version.effectiveFrom}T00:00:00`);
+      const windowStart = new Date(`${version.effectiveFrom}${LOCAL_MIDNIGHT_SUFFIX}`);
 
       // The child-derived bound (Option A): among this version's own children that ever genuinely
       // went live, the EARLIEST such child's effectiveFrom is this version's true handover date —
@@ -628,8 +633,8 @@ export class BillingCycleService {
       // earlier. A still-current version (deprecatedOn null, no live child) is bounded by today — no
       // period can exist for a month that hasn't happened yet.
       const candidateBounds = [
-        version.deprecatedOn ? new Date(`${version.deprecatedOn}T00:00:00`) : null,
-        childEffectiveFrom ? new Date(`${childEffectiveFrom}T00:00:00`) : null,
+        version.deprecatedOn ? new Date(`${version.deprecatedOn}${LOCAL_MIDNIGHT_SUFFIX}`) : null,
+        childEffectiveFrom ? new Date(`${childEffectiveFrom}${LOCAL_MIDNIGHT_SUFFIX}`) : null,
       ].filter((d): d is Date => d !== null);
       const windowEndExclusive = candidateBounds.length > 0
         ? new Date(Math.min(...candidateBounds.map((d) => d.getTime())))
@@ -685,7 +690,7 @@ export class BillingCycleService {
       where: { id },
       relations: ['childVersions'],
     });
-    if (!source) throw new NotFoundException('Billing cycle not found');
+    if (!source) throw new NotFoundException(ERROR_MESSAGES.BILLING_CYCLE_NOT_FOUND);
     if (!NEW_VERSION_SOURCE_STATUSES.has(source.status)) {
       throw new BadRequestException("A new version can only be created from the property's active or inactive billing cycle");
     }
@@ -695,7 +700,7 @@ export class BillingCycleService {
       throw new ConflictException('A new version is already pending approval for this billing cycle');
     }
 
-    const today = new Date().toISOString().slice(0, 10);
+    const today = new Date().toISOString().slice(0, ISO_DATE_LENGTH);
     if (dto.effectiveFrom <= today) {
       throw new BadRequestException('Effective date must be in the future — a billing cycle cannot activate mid-cycle');
     }
@@ -758,12 +763,12 @@ export class BillingCycleService {
 
       const cycle = await manager
         .createQueryBuilder(BillingCycleVersion, 'bcv')
-        .setLock('pessimistic_write')
+        .setLock(LOCK_MODE.PESSIMISTIC_WRITE)
         .leftJoinAndSelect('bcv.submittedBy', 'submittedBy')
         .leftJoinAndSelect('bcv.parentVersion', 'parentVersion')
         .where('bcv.id = :id', { id })
         .getOne();
-      if (!cycle) throw new NotFoundException('Billing cycle not found');
+      if (!cycle) throw new NotFoundException(ERROR_MESSAGES.BILLING_CYCLE_NOT_FOUND);
       if (cycle.status !== BillingCycleStatus.PENDING) {
         throw new BadRequestException('Only a pending billing cycle version can be approved');
       }
@@ -778,9 +783,9 @@ export class BillingCycleService {
       // isFinalLevel is always true, so this runs exactly as before.
       if (workflowContext.isFinalLevel) {
         if (actorId) cycle.approvedBy = { id: actorId } as any;
-        cycle.approvalDate = new Date().toISOString().slice(0, 10);
+        cycle.approvalDate = new Date().toISOString().slice(0, ISO_DATE_LENGTH);
 
-        const today = new Date().toISOString().slice(0, 10);
+        const today = new Date().toISOString().slice(0, ISO_DATE_LENGTH);
         if (cycle.effectiveFrom && cycle.effectiveFrom <= today) {
           await this.activateVersion(cycle, actorId, manager);
         } else {
@@ -805,11 +810,11 @@ export class BillingCycleService {
 
       const cycle = await manager
         .createQueryBuilder(BillingCycleVersion, 'bcv')
-        .setLock('pessimistic_write')
+        .setLock(LOCK_MODE.PESSIMISTIC_WRITE)
         .leftJoinAndSelect('bcv.submittedBy', 'submittedBy')
         .where('bcv.id = :id', { id })
         .getOne();
-      if (!cycle) throw new NotFoundException('Billing cycle not found');
+      if (!cycle) throw new NotFoundException(ERROR_MESSAGES.BILLING_CYCLE_NOT_FOUND);
       if (cycle.status !== BillingCycleStatus.PENDING) {
         throw new BadRequestException('Only a pending billing cycle version can be rejected');
       }
@@ -819,7 +824,7 @@ export class BillingCycleService {
       cycle.status = BillingCycleStatus.REJECTED;
       cycle.rejectionNotes = dto.notes;
       if (actorId) cycle.approvedBy = { id: actorId } as any;
-      cycle.approvalDate = new Date().toISOString().slice(0, 10);
+      cycle.approvalDate = new Date().toISOString().slice(0, ISO_DATE_LENGTH);
       const saved = await manager.save(BillingCycleVersion, cycle);
       // A rejection at ANY level ends the whole workflow — same principle as Tariff/BillRun. The
       // version's own existing resubmit() path (REJECTED -> PENDING on the same row) is what starts
@@ -832,7 +837,7 @@ export class BillingCycleService {
 
   async resubmit(id: number, actorId?: number) {
     const cycle = await this.versions.findOne({ where: { id } });
-    if (!cycle) throw new NotFoundException('Billing cycle not found');
+    if (!cycle) throw new NotFoundException(ERROR_MESSAGES.BILLING_CYCLE_NOT_FOUND);
     if (cycle.status !== BillingCycleStatus.REJECTED) {
       throw new BadRequestException('Only a rejected billing cycle version can be resubmitted');
     }
@@ -844,7 +849,7 @@ export class BillingCycleService {
       cycle.approvedBy = null;
       cycle.approvalDate = null;
       if (actorId) cycle.submittedBy = { id: actorId } as any;
-      cycle.submittedOn = new Date().toISOString().slice(0, 10);
+      cycle.submittedOn = new Date().toISOString().slice(0, ISO_DATE_LENGTH);
       const saved = await manager.save(BillingCycleVersion, cycle);
       // Resubmitting reuses the SAME row (unlike Bill Run's resubmit, which inserts a new one) — the
       // prior instance for this businessObjectId is already REJECTED/terminal, so startInstance
@@ -858,12 +863,12 @@ export class BillingCycleService {
 
   async deprecate(id: number, dto: DeprecateBillingCycleDto, actorId?: number) {
     const cycle = await this.versions.findOne({ where: { id }, relations: ['childVersions'] });
-    if (!cycle) throw new NotFoundException('Billing cycle not found');
+    if (!cycle) throw new NotFoundException(ERROR_MESSAGES.BILLING_CYCLE_NOT_FOUND);
     if (cycle.status === BillingCycleStatus.DEPRECATED) {
       throw new BadRequestException('This billing cycle is already deprecated');
     }
     if (cycle.status === BillingCycleStatus.PENDING) {
-      throw new BadRequestException('A version awaiting Finance approval is read-only — reject it instead of deprecating it');
+      throw new BadRequestException('A version awaiting approval is read-only — reject it instead of deprecating it');
     }
     if (this.hasScheduledDeprecation(cycle)) {
       throw new ConflictException(`A deprecation is already scheduled for this billing cycle, effective ${cycle.deprecatedOn}`);
@@ -884,7 +889,7 @@ export class BillingCycleService {
       throw new BadRequestException('You must acknowledge that billing will stop for this property before deprecating.');
     }
 
-    const today = new Date().toISOString().slice(0, 10);
+    const today = new Date().toISOString().slice(0, ISO_DATE_LENGTH);
     const effectiveDate = dto.effectiveDeprecationDate ?? today;
     if (effectiveDate < today) {
       throw new BadRequestException('Effective deprecation date cannot be in the past.');
@@ -935,12 +940,12 @@ export class BillingCycleService {
   }
 
   private hasScheduledDeprecation(cycle: BillingCycleVersion): boolean {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = new Date().toISOString().slice(0, ISO_DATE_LENGTH);
     return !!cycle.deprecatedOn && cycle.deprecatedOn > today && cycle.status !== BillingCycleStatus.DEPRECATED;
   }
 
   async autoDeprecateDueCycles(): Promise<number> {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = new Date().toISOString().slice(0, ISO_DATE_LENGTH);
     const due = await this.versions
       .createQueryBuilder('bc')
       .where('bc.status != :deprecated', { deprecated: BillingCycleStatus.DEPRECATED })
@@ -991,7 +996,7 @@ export class BillingCycleService {
           parent,
           'replaced-by-new-version',
           null,
-          new Date().toISOString().slice(0, 10),
+          new Date().toISOString().slice(0, ISO_DATE_LENGTH),
           manager,
         );
         await this.recordAudit(
@@ -1009,7 +1014,7 @@ export class BillingCycleService {
   }
 
   async autoActivateDueVersions(): Promise<number> {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = new Date().toISOString().slice(0, ISO_DATE_LENGTH);
     const due = await this.versions
       .createQueryBuilder('bc')
       .leftJoinAndSelect('bc.parentVersion', 'parentVersion')

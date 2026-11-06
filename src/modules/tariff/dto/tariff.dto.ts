@@ -31,7 +31,7 @@ import {
   ONE_TIME_FEE_MAX,
   PENALTY_FEE_MAX,
   RATE_MAX,
-  RECURRING_FEE_MAX,
+  RECURRING_FEE_MAX, RATE_MIN,
 } from '../tariff-field-metadata';
 
 export enum VatApplicableFeeKey {
@@ -54,7 +54,7 @@ export class TariffTierDto {
   maxKwh?: number | null;
 
   @IsNumber()
-  @Min(0.0001)
+  @Min(RATE_MIN)
   @Max(RATE_MAX)
   ratePerKwh!: number;
 }
@@ -78,7 +78,7 @@ export class CreateTariffDto {
   @ValidateIf((o) => o.rateType === TariffRateType.FLAT)
   @IsOptional()
   @IsNumber()
-  @Min(0.0001)
+  @Min(RATE_MIN)
   @Max(RATE_MAX)
   flatRate?: number;
 

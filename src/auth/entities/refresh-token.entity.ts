@@ -40,6 +40,13 @@ export class RefreshToken {
   @Column({ name: 'revoked_at', type: 'timestamp', nullable: true, default: null })
   revokedAt!: Date | null;
 
+  /** True when this session was signed in with "Remember me". AuthService.refresh copies it onto the next token on every
+   *  rotation, so a remembered session stays remembered for as long as it is refreshed. It decides the token's lifetime
+   *  (REFRESH_TOKEN_REMEMBER_ME_EXPIRES_IN instead of REFRESH_TOKEN_EXPIRES_IN) and whether the refresh cookie is
+   *  persistent. Every row that existed before the column is false. */
+  @Column({ name: 'remember_me', type: 'boolean', default: false })
+  rememberMe!: boolean;
+
   @CreateDateColumn({ name: 'created_at' })
   createdAt!: Date;
 }

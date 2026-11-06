@@ -1,4 +1,5 @@
 import {
+  ForbiddenException,
   Injectable,
   NotFoundException,
   ConflictException,
@@ -10,6 +11,8 @@ import { DataSource, Repository } from 'typeorm';
 import { AuditService } from '../../audit/audit.service';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 import { paginate } from '../../common/utils/pagination.util';
+import { releaseSoftDeletedUnique } from '../../common/utils/release-soft-deleted-unique';
+import { Actor, actorUserId, isSuperAdminActor } from '../../common/security/actor';
 import { ROLES } from '@app/common/constants/global';
 
 import {
@@ -22,6 +25,31 @@ import { Role } from './entities/role.entity';
 import { RoleQueryDto } from '@app/common/dto/role-paginatoin.dto';
 import { LovService } from '../lov/lov.service';
 import { UserRoleService } from '../user-role/user-role.service';
+import { ERROR_MESSAGES } from '../../common/constants/error-messages.constants';
+import { AUDIT_MODULE, AUDIT_ACTION } from '../../audit/audit.constants';
+import { SORT_ORDER } from '../../common/constants/sort.constants';
+import { LOV_CATEGORY } from '../lov/lov.constants';
+
+/** The one role name with system meaning. SUPER_ADMIN is the ONLY predefined role: RolesGuard's bypass and the
+ *  boot-time grant reconciliation (ensureAdminPolicyGrants, ensureAdminGrants) match it by this exact name. It is
+ *  created by the boot-time seed only — through the API it can be neither created, renamed into, renamed away from
+ *  nor deleted, so a delegated administrator cannot manufacture, hijack or dismantle it by renaming roles. Every
+ *  other role is created and managed dynamically by SUPER_ADMIN: no other name is special, reserved or auto-granted
+ *  anything. */
+const RESERVED_ROLE_NAMES: readonly string[] = [ROLES.SUPER_ADMIN];
+
+/** The comparison key of a role name: Unicode-normalised (a full-width spelling or a composed/decomposed
+ *  accent is the same string), accents and invisible/control characters removed, trimmed, upper-cased. The
+ *  database compares role names case- and accent-insensitively and the boot-time reconciliation looks the
+ *  system role up by name IN SQL, so a look-alike such as "SÜPER_ADMIN" or "super_admín" would be taken for
+ *  SUPER_ADMIN there — it must count as reserved here. Deliberately a little broader than the database, never
+ *  narrower. */
+export const canonicalRoleName = (name: string): string =>
+  name.normalize('NFKD').replace(/[\p{M}\p{Cc}\p{Cf}]/gu, '').trim().toUpperCase();
+
+const RESERVED_CANONICAL_NAMES: ReadonlySet<string> = new Set(RESERVED_ROLE_NAMES.map(canonicalRoleName));
+const isReservedRoleName = (name: string | undefined): boolean =>
+  name !== undefined && RESERVED_CANONICAL_NAMES.has(canonicalRoleName(name));
 
 // Correlated subqueries behind the sortable count columns — selected as aliases (never joined) so a page
 // still holds one row per role.
@@ -59,21 +87,28 @@ export class RoleService {
     dto: CreateRoleDto,
     actorId?: number,
   ) {
+    const roleName = dto.roleName.trim();
+    if (isReservedRoleName(roleName)) {
+      throw new ForbiddenException(
+        `"${roleName}" is a reserved system role name and cannot be created.`,
+      );
+    }
+
     const existingRole =
       await this.roles.findOne({
         where: {
-          roleName: dto.roleName,
+          roleName,
         },
       });
 
     if (existingRole) {
       throw new ConflictException(
-        'Role already exists',
+        ERROR_MESSAGES.ROLE_ALREADY_EXISTS,
       );
     }
 
     const role = this.roles.create({
-      roleName: dto.roleName,
+      roleName,
       roleDescription:
         dto.roleDescription,
       userCategoryId:
@@ -83,13 +118,16 @@ export class RoleService {
         false,
     });
 
-    const saved =
-      await this.roles.save(role);
+    // A deleted role keeps its name reserved at the database index; release it so the name is reusable.
+    const saved = await this.dataSource.transaction(async (manager) => {
+      await releaseSoftDeletedUnique(manager, Role, 'roleName', roleName);
+      return manager.getRepository(Role).save(role);
+    });
 
     await this.audit.record({
-      moduleName: 'roles',
+      moduleName: AUDIT_MODULE.ROLES,
       entityId: saved.id,
-      action: 'CREATE',
+      action: AUDIT_ACTION.CREATE,
       newValue: saved,
       performedBy: actorId,
     });
@@ -133,7 +171,7 @@ export class RoleService {
       );
     }
 
-    const direction = query.sortOrder === "ASC" ? "ASC" : "DESC";
+    const direction = query.sortOrder === SORT_ORDER.ASC ? SORT_ORDER.ASC : SORT_ORDER.DESC;
     const sortColumns = {
       roleName: "role.roleName",
       userCategory: "userCategory.label",
@@ -144,11 +182,11 @@ export class RoleService {
     const sortColumn = sortColumns[query.sortBy ?? "createdAt"] ?? sortColumns.createdAt;
     qb.orderBy(sortColumn, direction);
     // Ties fall back to the name so the order never jumps between requests.
-    if (sortColumn !== sortColumns.roleName) qb.addOrderBy("role.roleName", "ASC");
+    if (sortColumn !== sortColumns.roleName) qb.addOrderBy("role.roleName", SORT_ORDER.ASC);
 
     const [result, userCategories] = await Promise.all([
       paginate(qb, query),
-      this.lovService.findByCategory("USER_CATEGORY"),
+      this.lovService.findByCategory(LOV_CATEGORY.USER_CATEGORY),
     ]);
 
     // One grouped query per count for the whole page, not one per row — see
@@ -179,10 +217,19 @@ export class RoleService {
     };
   }
 
-  /** The system-managed role (SUPER_ADMIN): RolesGuard's bypass and every boot-time grant reconciliation
-   *  match it by this exact name, so it can be neither renamed nor deleted. */
+  /** The system-managed role (SUPER_ADMIN, the only predefined one): RolesGuard's bypass and the boot-time grant
+   *  reconciliation match it by exact name, so it can be neither renamed nor deleted. */
   private isSystemRole(role: Pick<Role, "roleName">): boolean {
-    return role.roleName === ROLES.SUPER_ADMIN;
+    return isReservedRoleName(role.roleName);
+  }
+
+  /** Whether the signed-in user may hand this role out in Create User / Assign Roles. SUPER_ADMIN is
+   *  listed for everyone but only a SUPER_ADMIN may assign it — the same rule UserRoleService enforces
+   *  on the write, so the web app can show the option disabled instead of letting a request fail. */
+  private assignability(role: Pick<Role, "roleName">, actor?: Actor): { assignable: boolean; assignableReason: string | null } {
+    const restricted = role.roleName === ROLES.SUPER_ADMIN;
+    const allowed = !restricted || (actor !== undefined && isSuperAdminActor(actor));
+    return { assignable: allowed, assignableReason: allowed ? null : 'Only SUPER_ADMIN can assign this role.' };
   }
 
   /** Why this role can't be deleted from the list, or null when it can be tried. The delete itself still
@@ -214,6 +261,7 @@ export class RoleService {
 
   async getRoleDropdown(
     userCategoryId?: number,
+    actor?: Actor,
   ) {
     const qb = this.roles
       .createQueryBuilder('role')
@@ -223,7 +271,7 @@ export class RoleService {
       qb.andWhere('role.userCategoryId = :userCategoryId', { userCategoryId });
     }
 
-    const roles = await qb.orderBy('role.roleName', 'ASC').getMany();
+    const roles = await qb.orderBy('role.roleName', SORT_ORDER.ASC).getMany();
 
     // The Roles picker on Create / Edit User shows how many users hold each role. Same batched count the Roles
     // list uses for "Assigned Users" — one grouped query for the whole list, never one per role.
@@ -235,14 +283,15 @@ export class RoleService {
       // Additive field — Create User's "Set permissions" step shows this short description when
       // picking a role (AWS IAM-inspired redesign). Deliberately extending this already-reachable-
       // by-this-page dropdown endpoint rather than adding a call to a more restrictively-guarded
-      // one (GET /roles/:id and the role-policies endpoints are effectively SUPER_ADMIN-only today —
-      // see role.controller.ts's own class-level @Roles(ADMIN) comment), so this keeps working for
+      // one (GET /roles/:id needs VIEW_ROLE, which not everyone who can open Create / Edit User holds, and the
+      // role-policies endpoints are SUPER_ADMIN-only), so this keeps working for
       // whichever role the page's own CREATE_USER/EDIT_USER permission is actually granted to.
       description: role.roleDescription ?? null,
       userCategoryId: role.userCategoryId,
       userCategoryLabel: role.userCategory?.label ?? null,
       canBeReportingManager: role.canBeReportingManager,
       assignedUserCount: userCounts.get(role.id) ?? 0,
+      ...this.assignability(role, actor),
     }));
   }
 
@@ -250,8 +299,9 @@ export class RoleService {
    *  User Category, sorted and paged here — the web client sends only the query and renders the page. The
    *  "Filter by Type" options ride along in `meta` so the client never hardcodes which categories exist.
    *  The user count is a correlated subquery exposed as a selected alias (one row per role, and an alias
-   *  is what TypeORM can order a skip/take page by). */
-  async getRolePicker(query: RolePickerQueryDto) {
+   *  is what TypeORM can order a skip/take page by). Each row says whether the signed-in user may assign
+   *  it (`assignable`) — SUPER_ADMIN is shown to everyone but is assignable only by a SUPER_ADMIN. */
+  async getRolePicker(query: RolePickerQueryDto, actor?: Actor) {
     const qb = this.roles
       .createQueryBuilder('role')
       .leftJoinAndSelect('role.userCategory', 'userCategory')
@@ -268,16 +318,16 @@ export class RoleService {
       qb.andWhere('role.userCategoryId = :userCategoryId', { userCategoryId: query.userCategoryId });
     }
 
-    const direction = query.sortOrder === 'DESC' ? 'DESC' : 'ASC';
+    const direction = query.sortOrder === SORT_ORDER.DESC ? SORT_ORDER.DESC : SORT_ORDER.ASC;
     const sortColumn =
       query.sortBy === 'users' ? 'assigned_user_count' : query.sortBy === 'type' ? 'userCategory.label' : 'role.roleName';
     qb.orderBy(sortColumn, direction);
     // Ties fall back to the name so the order never jumps between requests.
-    if (sortColumn !== 'role.roleName') qb.addOrderBy('role.roleName', 'ASC');
+    if (sortColumn !== 'role.roleName') qb.addOrderBy('role.roleName', SORT_ORDER.ASC);
 
     const [page, userCategories] = await Promise.all([
       paginate(qb, query),
-      this.lovService.findByCategory('USER_CATEGORY'),
+      this.lovService.findByCategory(LOV_CATEGORY.USER_CATEGORY),
     ]);
 
     const userCounts = await this.userRoleService.getUserCountsByRoleIds(page.items.map((role) => role.id));
@@ -291,6 +341,7 @@ export class RoleService {
         userCategoryLabel: role.userCategory?.label ?? null,
         canBeReportingManager: role.canBeReportingManager,
         assignedUserCount: userCounts.get(role.id) ?? 0,
+        ...this.assignability(role, actor),
       })),
       pagination: page.pagination,
       meta: { typeOptions: this.toCategoryOptions(userCategories) },
@@ -306,7 +357,7 @@ export class RoleService {
       ])
       .orderBy(
         "role.roleName",
-        "ASC",
+        SORT_ORDER.ASC,
       )
       .getMany();
 
@@ -317,7 +368,7 @@ export class RoleService {
   }
 
   async getFilterMetadata() {
-    const userCategories = await this.lovService.findByCategory('USER_CATEGORY');
+    const userCategories = await this.lovService.findByCategory(LOV_CATEGORY.USER_CATEGORY);
 
     return {
       userCategories: userCategories.map((lv) => ({ id: lv.id, name: lv.label })),
@@ -335,7 +386,7 @@ export class RoleService {
 
     if (!role) {
       throw new NotFoundException(
-        'Role not found',
+        ERROR_MESSAGES.ROLE_NOT_FOUND,
       );
     }
 
@@ -368,7 +419,7 @@ export class RoleService {
     // redundant, if this read ever switched to a query builder).
     const role = await this.roles.findOne({ where: { id } });
     if (!role) {
-      throw new NotFoundException('Role not found');
+      throw new NotFoundException(ERROR_MESSAGES.ROLE_NOT_FOUND);
     }
 
     const assignedUsers = await this.userRoleService.getUsersByRoleId(id);
@@ -391,25 +442,35 @@ export class RoleService {
   async update(
     id: number,
     dto: UpdateRoleDto,
-    actorId?: number,
+    actor: Actor,
   ) {
     const role =
       await this.findOne(id);
+    // The name that will be stored: trimmed (defence in depth — the DTO already trims requests).
+    const requestedName = dto.roleName?.trim();
 
-    // Same rationale as the SUPER_ADMIN guard in remove() just above, and in
-    // RolePermissionsService.updateRolePermissions — this is a SEPARATE route (PATCH /roles/:id,
-    // reachable independently of the Edit Role screen's own save flow) that would otherwise let
-    // SUPER_ADMIN's roleName be changed with no protection at all, stranding RolesGuard's bypass and
-    // every ensureAdminPolicyGrants/ensureAdminGrants/ensureSuperAdminGrant reconciliation query —
-    // all of which match this role by this exact literal string.
+    // The reserved system role (SUPER_ADMIN — the only predefined role) is matched BY NAME throughout the system —
+    // RolesGuard's bypass and the ensureAdminPolicyGrants/ensureAdminGrants reconciliation queries — and
+    // PATCH /roles/:id is a route reachable independently of the Edit Role screen's own save flow. So its name can
+    // never change, and (because EDIT_ROLE is a delegable permission) only a SUPER_ADMIN may edit it at all.
+    if (isReservedRoleName(role.roleName)) {
+      if (!isSuperAdminActor(actor)) {
+        throw new ForbiddenException(`${role.roleName} is a system role — only SUPER_ADMIN can edit it.`);
+      }
+      if (requestedName !== undefined && requestedName !== role.roleName) {
+        throw new ConflictException(
+          `${role.roleName}'s role name is relied on throughout the system and cannot be changed.`,
+        );
+      }
+    }
+    // ...and no other role may be renamed INTO the reserved name (or a look-alike of it): RolesGuard's bypass and the
+    // boot-time reconciliation recognise SUPER_ADMIN by name, so that rename would be a privilege escalation.
     if (
-      role.roleName === ROLES.SUPER_ADMIN &&
-      dto.roleName !== undefined &&
-      dto.roleName !== ROLES.SUPER_ADMIN
+      requestedName !== undefined &&
+      isReservedRoleName(requestedName) &&
+      canonicalRoleName(requestedName) !== canonicalRoleName(role.roleName)
     ) {
-      throw new ConflictException(
-        "SUPER_ADMIN's role name is relied on throughout the system and cannot be changed.",
-      );
+      throw new ForbiddenException(`"${requestedName}" is a reserved system role name.`);
     }
 
     const oldValue = {
@@ -420,7 +481,7 @@ export class RoleService {
       await this.roles.findOne({
         where: {
           roleName:
-            dto.roleName ??
+            requestedName ??
             role.roleName,
         },
       });
@@ -430,12 +491,12 @@ export class RoleService {
       exists.id !== role.id
     ) {
       throw new ConflictException(
-        'Role already exists',
+        ERROR_MESSAGES.ROLE_ALREADY_EXISTS,
       );
     }
 
     role.roleName =
-      dto.roleName ??
+      requestedName ??
       role.roleName;
 
     role.roleDescription =
@@ -450,16 +511,19 @@ export class RoleService {
       dto.canBeReportingManager ??
       role.canBeReportingManager;
 
-    const saved =
-      await this.roles.save(role);
+    const saved = await this.dataSource.transaction(async (manager) => {
+      // Free the new name if a deleted role still holds it at the unique index.
+      await releaseSoftDeletedUnique(manager, Role, 'roleName', role.roleName, { exceptId: id });
+      return manager.getRepository(Role).save(role);
+    });
 
     await this.audit.record({
-      moduleName: 'roles',
+      moduleName: AUDIT_MODULE.ROLES,
       entityId: id,
-      action: 'UPDATE',
+      action: AUDIT_ACTION.UPDATE,
       oldValue,
       newValue: saved,
-      performedBy: actorId,
+      performedBy: actorUserId(actor),
     });
 
     return saved;
@@ -491,13 +555,14 @@ export class RoleService {
 
     // SUPER_ADMIN is the system's one true root role — RolesGuard bypasses every @Roles(...) check
     // for it by this exact name (common/guards/roles.guard.ts), and ensureAdminPolicyGrants/
-    // ensureAdminGrants re-grant it every active action on every boot by this exact name too. Deleting
+    // ensureAdminGrants re-grant it every active action it may hold on every boot by this exact name too. Deleting
     // it (even with zero assigned users, e.g. right after reassigning the bootstrap admin elsewhere)
     // would permanently remove the one role those mechanisms depend on existing, with nothing left to
     // reconcile into on the next restart. None of the checks below would have caught this on their own.
-    if (role.roleName === ROLES.SUPER_ADMIN) {
+    // It is the ONLY predefined role, hence the only reserved one.
+    if (isReservedRoleName(role.roleName)) {
       throw new ConflictException(
-        'SUPER_ADMIN is a system-managed role and cannot be deleted.',
+        `${role.roleName} is a system-managed role and cannot be deleted.`,
       );
     }
 
@@ -542,13 +607,16 @@ export class RoleService {
     await this.dataSource.transaction(async (manager) => {
       await manager.query(`DELETE FROM role_policies WHERE roleId = ?`, [id]);
       await manager.query(`DELETE FROM role_permissions WHERE roleId = ?`, [id]);
+      // The role's OWN inline policies (and, through the FK cascade, their statements) belong to it alone:
+      // left behind they would be orphaned rows pointing at a deleted role.
+      await manager.query(`DELETE FROM role_inline_policies WHERE roleId = ?`, [id]);
       await manager.getRepository(Role).softRemove(role);
     });
 
     await this.audit.record({
-      moduleName: 'roles',
+      moduleName: AUDIT_MODULE.ROLES,
       entityId: id,
-      action: 'DELETE',
+      action: AUDIT_ACTION.DELETE,
       oldValue: role,
       performedBy: actorId,
     });

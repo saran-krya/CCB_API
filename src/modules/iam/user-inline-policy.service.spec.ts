@@ -24,7 +24,7 @@ describe('UserInlinePolicyService', () => {
   let policiesRepo: { find: jest.Mock; findOne: jest.Mock; findOneOrFail: jest.Mock; save: jest.Mock; create: jest.Mock; update: jest.Mock; delete: jest.Mock };
   let statementsRepo: { save: jest.Mock; create: jest.Mock; delete: jest.Mock };
   let usersRepo: { findOne: jest.Mock };
-  let iam: { validateStatements: jest.Mock };
+  let iam: { validateStatements: jest.Mock; assertNoBusinessApprovalForSuperAdmin: jest.Mock };
   let audit: { record: jest.Mock };
   let dataSource: { transaction: jest.Mock };
   let manager: { getRepository: jest.Mock };
@@ -45,7 +45,10 @@ describe('UserInlinePolicyService', () => {
       delete: jest.fn().mockResolvedValue({ affected: 1 }),
     };
     usersRepo = { findOne: jest.fn().mockResolvedValue({ id: TARGET }) };
-    iam = { validateStatements: jest.fn().mockResolvedValue([{ resourceId: 10, actions: ['TARIFF_VIEW'] }]) };
+    iam = {
+      validateStatements: jest.fn().mockResolvedValue([{ resourceId: 10, actions: ['TARIFF_VIEW'] }]),
+      assertNoBusinessApprovalForSuperAdmin: jest.fn().mockResolvedValue(undefined),
+    };
     audit = { record: jest.fn().mockResolvedValue(undefined) };
     manager = {
       getRepository: jest.fn((entity) => {
@@ -106,6 +109,17 @@ describe('UserInlinePolicyService', () => {
       await expect(service.create(TARGET, DTO, ACTOR)).rejects.toThrow(new BadRequestException('Unknown action code "NOPE"'));
 
       expect(iam.validateStatements).toHaveBeenCalledWith(DTO.statements);
+      expect(dataSource.transaction).not.toHaveBeenCalled();
+      expect(policiesRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('refuses (and saves nothing) when the statements would give a business-approval code to a user who holds SUPER_ADMIN', async () => {
+      iam.validateStatements.mockResolvedValue([{ resourceId: 10, actions: ['TARIFF_APPROVE'] }]);
+      iam.assertNoBusinessApprovalForSuperAdmin.mockRejectedValue(new BadRequestException('SUPER_ADMIN is a system-administration role'));
+
+      await expect(service.create(TARGET, DTO, ACTOR)).rejects.toThrow(BadRequestException);
+
+      expect(iam.assertNoBusinessApprovalForSuperAdmin).toHaveBeenCalledWith(['TARIFF_APPROVE'], { userId: TARGET });
       expect(dataSource.transaction).not.toHaveBeenCalled();
       expect(policiesRepo.save).not.toHaveBeenCalled();
     });
@@ -322,6 +336,16 @@ describe('UserInlinePolicyService', () => {
       await expect(service.update(TARGET, 100, NEW_DTO, ACTOR)).rejects.toThrow(new BadRequestException('Unknown action code "NOPE"'));
 
       expect(iam.validateStatements).toHaveBeenCalledWith(NEW_DTO.statements);
+      expect(dataSource.transaction).not.toHaveBeenCalled();
+    });
+
+    it('refuses (and saves nothing) when the new statements would give a business-approval code to a user who holds SUPER_ADMIN', async () => {
+      iam.validateStatements.mockResolvedValue([{ resourceId: 20, actions: ['BILLING_CYCLE_APPROVE'] }]);
+      iam.assertNoBusinessApprovalForSuperAdmin.mockRejectedValue(new BadRequestException('SUPER_ADMIN is a system-administration role'));
+
+      await expect(service.update(TARGET, 100, NEW_DTO, ACTOR)).rejects.toThrow(BadRequestException);
+
+      expect(iam.assertNoBusinessApprovalForSuperAdmin).toHaveBeenCalledWith(['BILLING_CYCLE_APPROVE'], { userId: TARGET });
       expect(dataSource.transaction).not.toHaveBeenCalled();
     });
 

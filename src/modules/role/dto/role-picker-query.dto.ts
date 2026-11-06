@@ -1,24 +1,26 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import { IsIn, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
+import { DEFAULT_PAGE, MIN_PAGE, MIN_LIMIT, MAX_LIMIT } from '../../../common/constants/pagination.constants';
+import { SORT_ORDER_VALUES, SORT_ORDER, SortOrder } from '../../../common/constants/sort.constants';
 
 export const ROLE_PICKER_SORT_COLUMNS = ['name', 'type', 'users'] as const;
 export type RolePickerSortColumn = (typeof ROLE_PICKER_SORT_COLUMNS)[number];
 
 /** Query for the Roles picker on Create / Edit User (GET /roles/picker). */
 export class RolePickerQueryDto {
-  @ApiPropertyOptional({ default: 1, minimum: 1 })
+  @ApiPropertyOptional({ default: DEFAULT_PAGE, minimum: MIN_PAGE })
   @Type(() => Number)
   @IsInt()
-  @Min(1)
+  @Min(MIN_PAGE)
   @IsOptional()
-  page = 1;
+  page = DEFAULT_PAGE;
 
-  @ApiPropertyOptional({ default: 5, minimum: 1, maximum: 100 })
+  @ApiPropertyOptional({ default: 5, minimum: MIN_LIMIT, maximum: MAX_LIMIT })
   @Type(() => Number)
   @IsInt()
-  @Min(1)
-  @Max(100)
+  @Min(MIN_LIMIT)
+  @Max(MAX_LIMIT)
   @IsOptional()
   limit = 5;
 
@@ -39,8 +41,8 @@ export class RolePickerQueryDto {
   @IsIn(ROLE_PICKER_SORT_COLUMNS)
   sortBy: RolePickerSortColumn = 'name';
 
-  @ApiPropertyOptional({ enum: ['ASC', 'DESC'], default: 'ASC' })
+  @ApiPropertyOptional({ enum: SORT_ORDER_VALUES, default: SORT_ORDER.ASC })
   @IsOptional()
-  @IsIn(['ASC', 'DESC'])
-  sortOrder: 'ASC' | 'DESC' = 'ASC';
+  @IsIn(SORT_ORDER_VALUES)
+  sortOrder: SortOrder = SORT_ORDER.ASC;
 }

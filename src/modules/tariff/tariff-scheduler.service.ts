@@ -5,6 +5,7 @@ import { Repository } from 'typeorm';
 import { AuditService } from '../../audit/audit.service';
 import { TariffStatus, TariffVersion } from './entities/tariff-version.entity';
 import { TARIFF_AUDIT_MODULE_NAME, TariffAuditAction } from './tariff.constants';
+import { ISO_DATE_LENGTH } from '../../common/constants/time.constants';
 
 @Injectable()
 export class TariffSchedulerService {
@@ -22,7 +23,7 @@ export class TariffSchedulerService {
   }
 
   async autoDeprecateSupersededVersions(): Promise<number> {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = new Date().toISOString().slice(0, ISO_DATE_LENGTH);
 
     const children = await this.versions
       .createQueryBuilder('child')
@@ -56,7 +57,7 @@ export class TariffSchedulerService {
   }
 
   async autoExpirePastEffectiveTo(): Promise<number> {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = new Date().toISOString().slice(0, ISO_DATE_LENGTH);
 
     const expiring = await this.versions
       .createQueryBuilder('version')

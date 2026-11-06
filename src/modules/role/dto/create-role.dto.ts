@@ -4,6 +4,7 @@ import {
   PartialType,
 } from '@nestjs/swagger';
 
+import { Transform } from 'class-transformer';
 import {
   IsBoolean,
   IsNumber,
@@ -13,10 +14,14 @@ import {
   MinLength,
 } from 'class-validator';
 
+/** Surrounding whitespace is never part of a name: a name and the same name with trailing spaces must not be two different roles. */
+const trimString = ({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim() : value);
+
 export class CreateRoleDto {
   @ApiProperty({
-    example: 'ADMIN',
+    example: 'EXAMPLE_ROLE',
   })
+  @Transform(trimString)
   @IsString()
   @MinLength(2)
   @MaxLength(80)
@@ -24,7 +29,7 @@ export class CreateRoleDto {
 
   @ApiPropertyOptional({
     example:
-      'System Administrator Role',
+      'Example role description',
   })
   @IsOptional()
   @IsString()

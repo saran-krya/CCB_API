@@ -1,5 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { CustomerAccountStatus } from '../../modules/customer/entities/customer.entity';
+import { PrincipalType } from '../../common/constants/auth.constants';
 
 class BootstrapRoleDto {
   @ApiProperty()
@@ -108,7 +109,7 @@ class BootstrapSessionConfigDto {
  */
 export class BootstrapResponseDto {
   @ApiProperty({ enum: ['staff', 'customer'] })
-  type!: 'staff' | 'customer';
+  type!: PrincipalType;
 
   @ApiPropertyOptional({ type: BootstrapProfileDto, description: 'Populated only when type is "staff"' })
   profile?: BootstrapProfileDto;

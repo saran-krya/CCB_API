@@ -1,7 +1,8 @@
-import { Body, Controller, Get, Param, Put } from '@nestjs/common';
+import { Body, Controller, Get, Param, ParseIntPipe, Put } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiParam, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Permission } from '../../common/decorators/permission.decorator';
+import { Authenticated } from '../../common/decorators/authenticated.decorator';
 import { AuthenticatedUser } from '../../auth/interfaces/authenticated-user.interface';
 import { UpdateApprovalLevelsDto } from './dto/approval-level.dto';
 import { SetApproversDto } from './dto/set-approvers.dto';
@@ -9,6 +10,7 @@ import { WorkflowType } from './dto/workflow.dto';
 import { WorkflowService } from './workflow.service';
 import { WorkflowDefinitionService } from './workflow-definition.service';
 import { WorkflowOrchestrationService } from './workflow-orchestration.service';
+import { ACTION_CODES } from '../../common/constants/action-codes.constants';
 
 // Matches CCB_Template's Business Admin -> Workflow Management -> Approval Workflows tab exactly:
 // a rail of processes (Tariff, Bill Run, Billing Cycle) and, per process, the real approval
@@ -26,23 +28,23 @@ export class WorkflowController {
   ) {}
 
   @Get('approval-flow/:workflowType')
-  @Permission('WORKFLOW_VIEW')
-  @ApiOperation({ summary: 'The real, single-step approval flow for a workflow type (real approver roles, no SLA/escalation — neither exists in this codebase)' })
+  @Permission(ACTION_CODES.WORKFLOW_VIEW)
+  @ApiOperation({ summary: 'The real, single-step approval flow for a workflow type: the roles whose policies currently grant its approve permission (never SUPER_ADMIN), no SLA/escalation' })
   @ApiParam({ name: 'workflowType', enum: WorkflowType })
   getApprovalFlow(@Param('workflowType') workflowType: WorkflowType) {
     return this.workflow.getApprovalFlow(workflowType);
   }
 
   @Put('approval-flow/:workflowType/approvers')
-  @Permission('WORKFLOW_MANAGE_APPROVERS')
-  @ApiOperation({ summary: 'Sets the complete list of roles that may approve this workflow type — a real RBAC write, excluded from the SUPER_ADMIN/ADMIN auto-grant (requires an explicit grant, see ADMIN_GRANT_EXCLUDED_ACTION_CODES)' })
+  @Permission(ACTION_CODES.WORKFLOW_MANAGE_APPROVERS)
+  @ApiOperation({ summary: '[RETIRED — always answers 410] Approvers are no longer set by writing role permissions: grant the approve permission to a role through a policy, then choose the role at a level of PUT definitions/:workflowType' })
   @ApiParam({ name: 'workflowType', enum: WorkflowType })
   setApprovers(@Param('workflowType') workflowType: WorkflowType, @Body() dto: SetApproversDto) {
     return this.workflow.setApprovers(workflowType, dto.roleIds);
   }
 
   @Get('approval-policy/:workflowType')
-  @Permission('WORKFLOW_VIEW')
+  @Permission(ACTION_CODES.WORKFLOW_VIEW)
   @ApiOperation({ summary: '[LEGACY — superseded by GET definitions/:workflowType] The old advisory approval POLICY — kept read-only for back-compat, not written to by any current UI' })
   @ApiParam({ name: 'workflowType', enum: WorkflowType })
   getApprovalPolicy(@Param('workflowType') workflowType: WorkflowType) {
@@ -50,7 +52,7 @@ export class WorkflowController {
   }
 
   @Put('approval-policy/:workflowType')
-  @Permission('WORKFLOW_MANAGE_APPROVERS')
+  @Permission(ACTION_CODES.WORKFLOW_MANAGE_APPROVERS)
   @ApiOperation({ summary: '[LEGACY — superseded by PUT definitions/:workflowType] Replaces the old advisory approval POLICY — writes nothing to role_permissions, and no longer drives anything' })
   @ApiParam({ name: 'workflowType', enum: WorkflowType })
   updateApprovalPolicy(@Param('workflowType') workflowType: WorkflowType, @Body() dto: UpdateApprovalLevelsDto) {
@@ -58,7 +60,7 @@ export class WorkflowController {
   }
 
   @Get('definitions/:workflowType')
-  @Permission('WORKFLOW_VIEW')
+  @Permission(ACTION_CODES.WORKFLOW_VIEW)
   @ApiOperation({ summary: 'The current ACTIVE workflow definition (versioned, enforced) for a workflow type' })
   @ApiParam({ name: 'workflowType', enum: WorkflowType })
   getActiveDefinition(@Param('workflowType') workflowType: WorkflowType) {
@@ -66,15 +68,15 @@ export class WorkflowController {
   }
 
   @Get('definitions/:workflowType/eligible-approver-roles')
-  @Permission('WORKFLOW_VIEW')
-  @ApiOperation({ summary: 'Roles currently eligible to be configured as an approver for this workflow type — i.e. roles that CURRENTLY hold the real domain approve permission. Same predicate publishDefinition enforces at save time; backs the Approver Role dropdown so it never shows an ineligible role.' })
+  @Permission(ACTION_CODES.WORKFLOW_VIEW)
+  @ApiOperation({ summary: 'Roles currently eligible to be configured as an approver for this workflow type — i.e. roles whose policies CURRENTLY grant the domain approve permission; SUPER_ADMIN is never eligible. Same predicate publishDefinition enforces at save time; backs the Approver Role dropdown so it never shows an ineligible role.' })
   @ApiParam({ name: 'workflowType', enum: WorkflowType })
   getEligibleApproverRoles(@Param('workflowType') workflowType: WorkflowType) {
     return this.definitions.getEligibleApproverRoles(workflowType);
   }
 
   @Get('definitions/:workflowType/history')
-  @Permission('WORKFLOW_VIEW')
+  @Permission(ACTION_CODES.WORKFLOW_VIEW)
   @ApiOperation({ summary: 'Every version ever published for a workflow type, newest first' })
   @ApiParam({ name: 'workflowType', enum: WorkflowType })
   getDefinitionHistory(@Param('workflowType') workflowType: WorkflowType) {
@@ -82,7 +84,7 @@ export class WorkflowController {
   }
 
   @Put('definitions/:workflowType')
-  @Permission('WORKFLOW_MANAGE_APPROVERS')
+  @Permission(ACTION_CODES.WORKFLOW_MANAGE_APPROVERS)
   @ApiOperation({ summary: 'Publishes a NEW version of the workflow definition — never mutates a prior version; in-flight instances keep using the version they started under' })
   @ApiParam({ name: 'workflowType', enum: WorkflowType })
   publishDefinition(
@@ -100,22 +102,24 @@ export class WorkflowController {
   // assertCanViewRuntime's own domain-action-code check (TARIFF_VIEW/BILL_RUN_VIEW/
   // VIEW_BILLING_CYCLE or that type's approve code — see RUNTIME_VIEW_ACTION_CODES's own doc
   // comment) — still a real, enforced 403 for an unauthorized user, just not the generic
-  // workflow-config permission. The route still requires a valid authenticated session: JwtAuthGuard
-  // is a separate global guard applied regardless of @Permission.
+  // workflow-config permission. @Authenticated records that the route-level rule is intentionally
+  // "any signed-in staff session" because that per-type check is made inside the handler.
   @Get('instances/:workflowType/:businessObjectId')
+  @Authenticated()
   @ApiOperation({ summary: "The live/most-recent workflow instance for one business object — current level, SLA status, full step history. Authorized by the caller's real domain view/approve access for that workflowType, not WORKFLOW_VIEW." })
   @ApiParam({ name: 'workflowType', enum: WorkflowType })
   @ApiParam({ name: 'businessObjectId', type: Number })
   async getInstance(
     @Param('workflowType') workflowType: WorkflowType,
-    @Param('businessObjectId') businessObjectId: string,
+    @Param('businessObjectId', ParseIntPipe) businessObjectId: number,
     @CurrentUser() user?: AuthenticatedUser,
   ) {
     await this.orchestration.assertCanViewRuntime(workflowType, user?.sub);
-    return this.orchestration.getInstanceView(workflowType, Number(businessObjectId));
+    return this.orchestration.getInstanceView(workflowType, businessObjectId);
   }
 
   @Get('instances/:workflowType')
+  @Authenticated()
   @ApiOperation({ summary: "Every in-flight (WAITING_FOR_APPROVAL) instance for a workflow type — read-only queue visibility, no action lives here. Authorized by the caller's real domain view/approve access for that workflowType, not WORKFLOW_VIEW." })
   @ApiParam({ name: 'workflowType', enum: WorkflowType })
   async listInFlightInstances(@Param('workflowType') workflowType: WorkflowType, @CurrentUser() user?: AuthenticatedUser) {

@@ -8,10 +8,11 @@ import { CreatePolicyDto, UpdatePolicyDto } from './dto/policy.dto';
 import { RoleInlinePolicy } from './entities/role-inline-policy.entity';
 import { RoleInlinePolicyStatement } from './entities/role-inline-policy-statement.entity';
 import { IamService } from './iam.service';
+import { ERROR_MESSAGES } from '../../common/constants/error-messages.constants';
+import { AUDIT_MODULE } from '../../audit/audit.constants';
+import { LOCK_MODE, MYSQL_ERROR_CODE } from '../../common/constants/database.constants';
+import { WITH_STATEMENTS, STATEMENTS_IN_SAVED_ORDER, POLICY_EFFECT } from './iam.constants';
 
-const WITH_STATEMENTS = { statements: { resource: true } } as const;
-// Statements come back in the order they were saved, so an edit screen always lists them the same way.
-const STATEMENTS_IN_SAVED_ORDER = { id: 'ASC', statements: { id: 'ASC' } } as const;
 const DUPLICATE_NAME_MESSAGE = 'This role already has an inline policy with this name';
 
 const toAuditStatements = (statements: RoleInlinePolicyStatement[] = []) =>
@@ -64,7 +65,7 @@ export class RoleInlinePolicyService {
       relations: WITH_STATEMENTS,
       order: STATEMENTS_IN_SAVED_ORDER,
     });
-    if (!policy) throw new NotFoundException('Inline policy not found');
+    if (!policy) throw new NotFoundException(ERROR_MESSAGES.INLINE_POLICY_NOT_FOUND);
     return policy;
   }
 
@@ -73,12 +74,13 @@ export class RoleInlinePolicyService {
     await this.assertNotOwnRole(roleId, actorId);
 
     const name = dto.name.trim();
-    if (!name) throw new BadRequestException('Policy name is required');
+    if (!name) throw new BadRequestException(ERROR_MESSAGES.POLICY_NAME_REQUIRED);
 
     const duplicate = await this.inlinePolicies.findOne({ where: { roleId, name } });
     if (duplicate) throw new ConflictException(DUPLICATE_NAME_MESSAGE);
 
     const resolved = await this.iam.validateStatements(dto.statements);
+    await this.iam.assertNoBusinessApprovalForSuperAdmin(resolved.flatMap((s) => s.actions), { roleIds: [roleId] });
 
     try {
       return await this.dataSource.transaction(async (manager) => {
@@ -88,13 +90,13 @@ export class RoleInlinePolicyService {
         const policy = await policyRepo.save(policyRepo.create({ roleId, name, description: dto.description }));
         await statementRepo.save(
           resolved.map((s) =>
-            statementRepo.create({ policyId: policy.id, resourceId: s.resourceId, effect: 'Allow', actions: s.actions }),
+            statementRepo.create({ policyId: policy.id, resourceId: s.resourceId, effect: POLICY_EFFECT.ALLOW, actions: s.actions }),
           ),
         );
 
         await this.audit.record(
           {
-            moduleName: 'role_inline_policies',
+            moduleName: AUDIT_MODULE.ROLE_INLINE_POLICIES,
             entityId: roleId,
             action: 'CREATE_ROLE_INLINE_POLICY',
             newValue: { policyId: policy.id, name, statements: dto.statements },
@@ -124,10 +126,10 @@ export class RoleInlinePolicyService {
     await this.assertNotOwnRole(roleId, actorId);
 
     const name = dto.name.trim();
-    if (!name) throw new BadRequestException('Policy name is required');
+    if (!name) throw new BadRequestException(ERROR_MESSAGES.POLICY_NAME_REQUIRED);
 
     const existing = await this.inlinePolicies.findOne({ where: { id: policyId, roleId }, relations: WITH_STATEMENTS });
-    if (!existing) throw new NotFoundException('Inline policy not found');
+    if (!existing) throw new NotFoundException(ERROR_MESSAGES.INLINE_POLICY_NOT_FOUND);
 
     if (name !== existing.name) {
       const duplicate = await this.inlinePolicies.findOne({ where: { roleId, name } });
@@ -138,6 +140,7 @@ export class RoleInlinePolicyService {
     }
 
     const resolved = await this.iam.validateStatements(dto.statements);
+    await this.iam.assertNoBusinessApprovalForSuperAdmin(resolved.flatMap((s) => s.actions), { roleIds: [roleId] });
     const description = dto.description?.trim() || null;
 
     try {
@@ -147,21 +150,31 @@ export class RoleInlinePolicyService {
 
         // Serialize concurrent edits of this policy, and re-check it still exists: a delete may have
         // won the race since the read above.
-        const locked = await policyRepo.findOne({ where: { id: policyId, roleId }, lock: { mode: 'pessimistic_write' } });
-        if (!locked) throw new NotFoundException('Inline policy not found');
+        const locked = await policyRepo.findOne({ where: { id: policyId, roleId }, lock: { mode: LOCK_MODE.PESSIMISTIC_WRITE } });
+        if (!locked) throw new NotFoundException(ERROR_MESSAGES.INLINE_POLICY_NOT_FOUND);
 
         // update() (not save()) so updated_at moves even when only the statements changed.
         await policyRepo.update({ id: policyId }, { name, description });
         await statementRepo.delete({ policyId });
         await statementRepo.save(
           resolved.map((s) =>
-            statementRepo.create({ policyId, resourceId: s.resourceId, effect: 'Allow', actions: s.actions }),
+            statementRepo.create({ policyId, resourceId: s.resourceId, effect: POLICY_EFFECT.ALLOW, actions: s.actions }),
           ),
+        );
+
+        // Dropping an approve code here can leave this role — the configured approver of an ACTIVE workflow level —
+        // without it. Refuse (409) and roll this edit back.
+        const keptCodes = new Set(resolved.flatMap((s) => s.actions));
+        await this.iam.assertApproverEligibilityKept(
+          manager,
+          [roleId],
+          (existing.statements ?? []).flatMap((s) => s.actions ?? []).filter((code) => !keptCodes.has(code)),
+          'This inline policy edit',
         );
 
         await this.audit.record(
           {
-            moduleName: 'role_inline_policies',
+            moduleName: AUDIT_MODULE.ROLE_INLINE_POLICIES,
             entityId: roleId,
             action: 'UPDATE_ROLE_INLINE_POLICY',
             oldValue: {
@@ -194,14 +207,23 @@ export class RoleInlinePolicyService {
     await this.dataSource.transaction(async (manager) => {
       const policyRepo = manager.getRepository(RoleInlinePolicy);
       const policy = await policyRepo.findOne({ where: { id: policyId, roleId }, relations: WITH_STATEMENTS });
-      if (!policy) throw new NotFoundException('Inline policy not found');
+      if (!policy) throw new NotFoundException(ERROR_MESSAGES.INLINE_POLICY_NOT_FOUND);
 
       await manager.getRepository(RoleInlinePolicyStatement).delete({ policyId });
       await policyRepo.delete({ id: policyId });
 
+      // Deleting it can leave this role — the configured approver of an ACTIVE workflow level — without an approve
+      // code. Refuse (409) and roll the delete back.
+      await this.iam.assertApproverEligibilityKept(
+        manager,
+        [roleId],
+        (policy.statements ?? []).flatMap((s) => s.actions ?? []),
+        'Deleting this inline policy',
+      );
+
       await this.audit.record(
         {
-          moduleName: 'role_inline_policies',
+          moduleName: AUDIT_MODULE.ROLE_INLINE_POLICIES,
           entityId: roleId,
           action: 'DELETE_ROLE_INLINE_POLICY',
           oldValue: { policyId, name: policy.name, statements: toAuditStatements(policy.statements) },
@@ -216,7 +238,7 @@ export class RoleInlinePolicyService {
 
   private rethrowDuplicateName(error: unknown): void {
     const code = (error as { code?: string })?.code ?? (error as { driverError?: { code?: string } })?.driverError?.code;
-    if (code === 'ER_DUP_ENTRY') throw new ConflictException(DUPLICATE_NAME_MESSAGE);
+    if (code === MYSQL_ERROR_CODE.DUP_ENTRY) throw new ConflictException(DUPLICATE_NAME_MESSAGE);
   }
 
   /** The Role-level equivalent of "not your own account": refuses the write if the acting user
@@ -233,6 +255,6 @@ export class RoleInlinePolicyService {
 
   private async assertRoleExists(roleId: number): Promise<void> {
     const role = await this.roles.findOne({ where: { id: roleId }, select: { id: true } });
-    if (!role) throw new NotFoundException('Role not found');
+    if (!role) throw new NotFoundException(ERROR_MESSAGES.ROLE_NOT_FOUND);
   }
 }

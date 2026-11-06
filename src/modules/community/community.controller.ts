@@ -27,6 +27,7 @@ import {
   UpdateCommunityStatusDto,
 } from './dto/create-community.dto';
 import { CommunityDetailDto, CommunityListDto } from './dto/community-response.dto';
+import { ACTION_CODES } from '../../common/constants/action-codes.constants';
 
 @ApiBearerAuth()
 @ApiTags('Communities')
@@ -35,7 +36,7 @@ export class CommunityController {
   constructor(private readonly communities: CommunityService) {}
 
   @Post()
-  @Permission('CREATE_COMMUNITY')
+  @Permission(ACTION_CODES.CREATE_COMMUNITY)
   @ApiOperation({ summary: 'Create a community' })
   create(
     @Body() dto: CreateCommunityDto,
@@ -45,7 +46,7 @@ export class CommunityController {
   }
 
   @Get('stats')
-  @Permission('VIEW_COMMUNITY')
+  @Permission(ACTION_CODES.VIEW_COMMUNITY)
   @ApiOperation({ summary: 'Get global community stats' })
   getStats() {
     return this.communities.getStats();
@@ -58,7 +59,7 @@ export class CommunityController {
   // DELETE_COMMUNITY only) — mirrors the same OR-list pattern already used by Property/Unit's
   // GET :id routes for exactly this "read-only cross-module support" case.
   @Get()
-  @Permission('VIEW_COMMUNITY', 'CREATE_REGISTRATION_REQUEST', 'EDIT_REGISTRATION_REQUEST', 'TARIFF_CREATE', 'TARIFF_EDIT')
+  @Permission(ACTION_CODES.VIEW_COMMUNITY, ACTION_CODES.CREATE_REGISTRATION_REQUEST, ACTION_CODES.EDIT_REGISTRATION_REQUEST, ACTION_CODES.TARIFF_CREATE, ACTION_CODES.TARIFF_EDIT)
   @ApiOperation({ summary: 'List all communities with pagination and filters' })
   @ApiOkResponse({ type: CommunityListDto, isArray: true, description: 'Paginated list of communities' })
   findAll(@Query() query: CommunityQueryDto) {
@@ -66,7 +67,7 @@ export class CommunityController {
   }
 
   @Get(':id')
-  @Permission('VIEW_COMMUNITY')
+  @Permission(ACTION_CODES.VIEW_COMMUNITY)
   @ApiOperation({ summary: 'Get community detail with stats and properties' })
   @ApiOkResponse({ type: CommunityDetailDto })
   @ApiParam({ name: 'id', type: Number })
@@ -75,7 +76,7 @@ export class CommunityController {
   }
 
   @Patch(':id')
-  @Permission('EDIT_COMMUNITY')
+  @Permission(ACTION_CODES.EDIT_COMMUNITY)
   @ApiOperation({ summary: 'Update community' })
   @ApiParam({ name: 'id', type: Number })
   update(
@@ -87,7 +88,7 @@ export class CommunityController {
   }
 
   @Patch(':id/status')
-  @Permission('COMMUNITY_STATUS')
+  @Permission(ACTION_CODES.COMMUNITY_STATUS)
   @ApiOperation({ summary: 'Update community status' })
   @ApiParam({ name: 'id', type: Number })
   updateStatus(
@@ -99,7 +100,7 @@ export class CommunityController {
   }
 
   @Delete(':id')
-  @Permission('DELETE_COMMUNITY')
+  @Permission(ACTION_CODES.DELETE_COMMUNITY)
   @ApiOperation({ summary: 'Soft-delete a community' })
   @ApiParam({ name: 'id', type: Number })
   remove(

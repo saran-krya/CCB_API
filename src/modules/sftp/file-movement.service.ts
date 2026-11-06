@@ -4,6 +4,8 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { SftpService } from './sftp.service';
 import { SftpIngestionLog } from './entities/sftp-ingestion-log.entity';
+import { ERROR_MESSAGES } from '../../common/constants/error-messages.constants';
+import { ENV_KEY } from '../../common/constants/env.constants';
 
 export interface FileMovementResult {
   success: boolean;
@@ -36,7 +38,7 @@ export class FileMovementService {
   }
 
   private async move(fileName: string, fileId: number, bucket: 'processed' | 'failed' | 'duplicate'): Promise<FileMovementResult> {
-    const remotePath = this.config.getOrThrow<string>('SFTP_REMOTE_PATH');
+    const remotePath = this.config.getOrThrow<string>(ENV_KEY.SFTP_REMOTE_PATH);
     
     const baseDir = remotePath.replace(/\/+$/, '').replace(/\/[^/]+$/, '');
 
@@ -62,7 +64,7 @@ export class FileMovementService {
       this.logger.log(`Moved "${fileName}" to ${movedToFolder} (log #${fileId})`);
       return { success: true, fileName, movedToFolder };
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Unknown error';
+      const message = err instanceof Error ? err.message : ERROR_MESSAGES.UNKNOWN_ERROR;
       this.logger.error(`Failed to move "${fileName}" to ${bucket} (log #${fileId}): ${message}`);
       return { success: false, fileName, movedToFolder: null, error: message };
     } finally {

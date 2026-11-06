@@ -7,10 +7,11 @@ import { CreatePolicyDto, UpdatePolicyDto } from './dto/policy.dto';
 import { UserInlinePolicy } from './entities/user-inline-policy.entity';
 import { UserInlinePolicyStatement } from './entities/user-inline-policy-statement.entity';
 import { IamService } from './iam.service';
+import { ERROR_MESSAGES } from '../../common/constants/error-messages.constants';
+import { AUDIT_MODULE } from '../../audit/audit.constants';
+import { LOCK_MODE, MYSQL_ERROR_CODE } from '../../common/constants/database.constants';
+import { WITH_STATEMENTS, STATEMENTS_IN_SAVED_ORDER, POLICY_EFFECT } from './iam.constants';
 
-const WITH_STATEMENTS = { statements: { resource: true } } as const;
-// Statements come back in the order they were saved, so an edit screen always lists them the same way.
-const STATEMENTS_IN_SAVED_ORDER = { id: 'ASC', statements: { id: 'ASC' } } as const;
 const DUPLICATE_NAME_MESSAGE = 'This user already has an inline policy with this name';
 
 const toAuditStatements = (statements: UserInlinePolicyStatement[] = []) =>
@@ -55,7 +56,7 @@ export class UserInlinePolicyService {
       relations: WITH_STATEMENTS,
       order: STATEMENTS_IN_SAVED_ORDER,
     });
-    if (!policy) throw new NotFoundException('Inline policy not found');
+    if (!policy) throw new NotFoundException(ERROR_MESSAGES.INLINE_POLICY_NOT_FOUND);
     return policy;
   }
 
@@ -64,12 +65,13 @@ export class UserInlinePolicyService {
     await this.assertUserExists(userId);
 
     const name = dto.name.trim();
-    if (!name) throw new BadRequestException('Policy name is required');
+    if (!name) throw new BadRequestException(ERROR_MESSAGES.POLICY_NAME_REQUIRED);
 
     const duplicate = await this.inlinePolicies.findOne({ where: { userId, name } });
     if (duplicate) throw new ConflictException(DUPLICATE_NAME_MESSAGE);
 
     const resolved = await this.iam.validateStatements(dto.statements);
+    await this.iam.assertNoBusinessApprovalForSuperAdmin(resolved.flatMap((s) => s.actions), { userId });
 
     try {
       return await this.dataSource.transaction(async (manager) => {
@@ -79,13 +81,13 @@ export class UserInlinePolicyService {
         const policy = await policyRepo.save(policyRepo.create({ userId, name, description: dto.description }));
         await statementRepo.save(
           resolved.map((s) =>
-            statementRepo.create({ policyId: policy.id, resourceId: s.resourceId, effect: 'Allow', actions: s.actions }),
+            statementRepo.create({ policyId: policy.id, resourceId: s.resourceId, effect: POLICY_EFFECT.ALLOW, actions: s.actions }),
           ),
         );
 
         await this.audit.record(
           {
-            moduleName: 'user_inline_policies',
+            moduleName: AUDIT_MODULE.USER_INLINE_POLICIES,
             entityId: userId,
             action: 'CREATE_INLINE_POLICY',
             newValue: { policyId: policy.id, name, statements: dto.statements },
@@ -115,10 +117,10 @@ export class UserInlinePolicyService {
     await this.assertUserExists(userId);
 
     const name = dto.name.trim();
-    if (!name) throw new BadRequestException('Policy name is required');
+    if (!name) throw new BadRequestException(ERROR_MESSAGES.POLICY_NAME_REQUIRED);
 
     const existing = await this.inlinePolicies.findOne({ where: { id: policyId, userId }, relations: WITH_STATEMENTS });
-    if (!existing) throw new NotFoundException('Inline policy not found');
+    if (!existing) throw new NotFoundException(ERROR_MESSAGES.INLINE_POLICY_NOT_FOUND);
 
     if (name !== existing.name) {
       const duplicate = await this.inlinePolicies.findOne({ where: { userId, name } });
@@ -129,6 +131,7 @@ export class UserInlinePolicyService {
     }
 
     const resolved = await this.iam.validateStatements(dto.statements);
+    await this.iam.assertNoBusinessApprovalForSuperAdmin(resolved.flatMap((s) => s.actions), { userId });
     const description = dto.description?.trim() || null;
 
     try {
@@ -138,21 +141,21 @@ export class UserInlinePolicyService {
 
         // Serialize concurrent edits of this policy, and re-check it still exists: a delete may have won
         // the race since the read above.
-        const locked = await policyRepo.findOne({ where: { id: policyId, userId }, lock: { mode: 'pessimistic_write' } });
-        if (!locked) throw new NotFoundException('Inline policy not found');
+        const locked = await policyRepo.findOne({ where: { id: policyId, userId }, lock: { mode: LOCK_MODE.PESSIMISTIC_WRITE } });
+        if (!locked) throw new NotFoundException(ERROR_MESSAGES.INLINE_POLICY_NOT_FOUND);
 
         // update() (not save()) so updated_at moves even when only the statements changed.
         await policyRepo.update({ id: policyId }, { name, description });
         await statementRepo.delete({ policyId });
         await statementRepo.save(
           resolved.map((s) =>
-            statementRepo.create({ policyId, resourceId: s.resourceId, effect: 'Allow', actions: s.actions }),
+            statementRepo.create({ policyId, resourceId: s.resourceId, effect: POLICY_EFFECT.ALLOW, actions: s.actions }),
           ),
         );
 
         await this.audit.record(
           {
-            moduleName: 'user_inline_policies',
+            moduleName: AUDIT_MODULE.USER_INLINE_POLICIES,
             entityId: userId,
             action: 'UPDATE_INLINE_POLICY',
             oldValue: {
@@ -184,14 +187,14 @@ export class UserInlinePolicyService {
     await this.dataSource.transaction(async (manager) => {
       const policyRepo = manager.getRepository(UserInlinePolicy);
       const policy = await policyRepo.findOne({ where: { id: policyId, userId }, relations: WITH_STATEMENTS });
-      if (!policy) throw new NotFoundException('Inline policy not found');
+      if (!policy) throw new NotFoundException(ERROR_MESSAGES.INLINE_POLICY_NOT_FOUND);
 
       await manager.getRepository(UserInlinePolicyStatement).delete({ policyId });
       await policyRepo.delete({ id: policyId });
 
       await this.audit.record(
         {
-          moduleName: 'user_inline_policies',
+          moduleName: AUDIT_MODULE.USER_INLINE_POLICIES,
           entityId: userId,
           action: 'DELETE_INLINE_POLICY',
           oldValue: { policyId, name: policy.name, statements: toAuditStatements(policy.statements) },
@@ -206,7 +209,7 @@ export class UserInlinePolicyService {
 
   private rethrowDuplicateName(error: unknown): void {
     const code = (error as { code?: string })?.code ?? (error as { driverError?: { code?: string } })?.driverError?.code;
-    if (code === 'ER_DUP_ENTRY') throw new ConflictException(DUPLICATE_NAME_MESSAGE);
+    if (code === MYSQL_ERROR_CODE.DUP_ENTRY) throw new ConflictException(DUPLICATE_NAME_MESSAGE);
   }
 
   private assertNotOwnAccount(userId: number, actorId?: number): void {
@@ -217,6 +220,6 @@ export class UserInlinePolicyService {
 
   private async assertUserExists(userId: number): Promise<void> {
     const user = await this.users.findOne({ where: { id: userId }, select: { id: true } });
-    if (!user) throw new NotFoundException('User not found');
+    if (!user) throw new NotFoundException(ERROR_MESSAGES.USER_NOT_FOUND);
   }
 }

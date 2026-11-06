@@ -17,6 +17,9 @@ import {
 } from './dto/create-property.dto';
 import { PropertyDetailDto, PropertyListDto } from './dto/property-response.dto';
 import { Property, PropertyStatus, PropertyType } from './entities/property.entity';
+import { ERROR_MESSAGES } from '../../common/constants/error-messages.constants';
+import { AUDIT_MODULE, AUDIT_ACTION } from '../../audit/audit.constants';
+import { SORT_ORDER } from '../../common/constants/sort.constants';
 
 @Injectable()
 export class PropertyService {
@@ -32,7 +35,7 @@ export class PropertyService {
 
   async create(dto: CreatePropertyDto, actorId?: number) {
     const existing = await this.properties.findOne({ where: { code: dto.code } });
-    if (existing) throw new ConflictException('Property code already exists');
+    if (existing) throw new ConflictException(ERROR_MESSAGES.PROPERTY_CODE_ALREADY_EXISTS);
 
     const community = await this.communities.findOneEntity(dto.communityId);
 
@@ -49,9 +52,9 @@ export class PropertyService {
       await manager.save(Property, saved);
 
       await this.audit.record({
-        moduleName: 'properties',
+        moduleName: AUDIT_MODULE.PROPERTIES,
         entityId: saved.id,
-        action: 'CREATE',
+        action: AUDIT_ACTION.CREATE,
         newValue: { name: saved.name, code: saved.code, status: saved.status, communityId: saved.community?.id },
         performedBy: actorId,
       });
@@ -71,7 +74,7 @@ export class PropertyService {
       .loadRelationCountAndMap('p.totalUnits', 'p.units', 'u', (sub) =>
         sub.where('u.deleted_at IS NULL'),
       )
-      .orderBy(`p.${sortBy ?? 'createdAt'}`, sortOrder ?? 'DESC');
+      .orderBy(`p.${sortBy ?? 'createdAt'}`, sortOrder ?? SORT_ORDER.DESC);
 
     if (search) {
       qb.andWhere('(p.name LIKE :s OR p.code LIKE :s OR p.businessCode LIKE :s OR p.location LIKE :s)', {
@@ -104,7 +107,7 @@ export class PropertyService {
       where: { id },
       relations: { community: true },
     });
-    if (!property) throw new NotFoundException('Property not found');
+    if (!property) throw new NotFoundException(ERROR_MESSAGES.PROPERTY_NOT_FOUND);
 
     const [units, statsRows] = await Promise.all([
       this.units.find({
@@ -114,7 +117,7 @@ export class PropertyService {
           unitSize: true, occupancyStatus: true, status: true,
           bedrooms: true, bathrooms: true, monthlyRent: true,
         },
-        order: { floorNumber: 'ASC', unitNumber: 'ASC' },
+        order: { floorNumber: SORT_ORDER.ASC, unitNumber: SORT_ORDER.ASC },
       }),
       this.dataSource.query<any[]>(
         `
@@ -181,11 +184,11 @@ export class PropertyService {
       where: { id },
       relations: { community: true },
     });
-    if (!property) throw new NotFoundException('Property not found');
+    if (!property) throw new NotFoundException(ERROR_MESSAGES.PROPERTY_NOT_FOUND);
 
     if (dto.code && dto.code !== property.code) {
       const exists = await this.properties.findOne({ where: { code: dto.code } });
-      if (exists) throw new ConflictException('Property code already exists');
+      if (exists) throw new ConflictException(ERROR_MESSAGES.PROPERTY_CODE_ALREADY_EXISTS);
     }
 
     if (dto.communityId && dto.communityId !== property.community?.id) {
@@ -197,9 +200,9 @@ export class PropertyService {
     const saved = await this.properties.save(property);
 
     await this.audit.record({
-      moduleName: 'properties',
+      moduleName: AUDIT_MODULE.PROPERTIES,
       entityId: id,
-      action: 'UPDATE',
+      action: AUDIT_ACTION.UPDATE,
       oldValue,
       newValue: { name: saved.name, code: saved.code, status: saved.status },
       performedBy: actorId,
@@ -210,16 +213,16 @@ export class PropertyService {
 
   async updateStatus(id: number, dto: UpdatePropertyStatusDto, actorId?: number) {
     const property = await this.properties.findOne({ where: { id } });
-    if (!property) throw new NotFoundException('Property not found');
+    if (!property) throw new NotFoundException(ERROR_MESSAGES.PROPERTY_NOT_FOUND);
 
     const oldStatus = property.status;
     property.status = dto.status;
     const saved = await this.properties.save(property);
 
     await this.audit.record({
-      moduleName: 'properties',
+      moduleName: AUDIT_MODULE.PROPERTIES,
       entityId: id,
-      action: 'UPDATE',
+      action: AUDIT_ACTION.UPDATE,
       oldValue: { status: oldStatus },
       newValue: { status: saved.status },
       performedBy: actorId,
@@ -230,14 +233,14 @@ export class PropertyService {
 
   async remove(id: number, actorId?: number) {
     const property = await this.properties.findOne({ where: { id } });
-    if (!property) throw new NotFoundException('Property not found');
+    if (!property) throw new NotFoundException(ERROR_MESSAGES.PROPERTY_NOT_FOUND);
 
     await this.properties.softRemove(property);
 
     await this.audit.record({
-      moduleName: 'properties',
+      moduleName: AUDIT_MODULE.PROPERTIES,
       entityId: id,
-      action: 'DELETE',
+      action: AUDIT_ACTION.DELETE,
       oldValue: { name: property.name, code: property.code, status: property.status },
       performedBy: actorId,
     });
@@ -247,7 +250,7 @@ export class PropertyService {
 
   async findOneEntity(id: number): Promise<Property> {
     const property = await this.properties.findOne({ where: { id } });
-    if (!property) throw new NotFoundException('Property not found');
+    if (!property) throw new NotFoundException(ERROR_MESSAGES.PROPERTY_NOT_FOUND);
     return property;
   }
 }

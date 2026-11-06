@@ -28,6 +28,7 @@ import {
   NewVersionBillingCycleDto,
   RejectBillingCycleDto,
 } from './dto/billing-cycle.dto';
+import { ACTION_CODES } from '../../common/constants/action-codes.constants';
 
 @ApiBearerAuth()
 @ApiTags('Billing Cycles')
@@ -39,21 +40,21 @@ export class BillingCycleController {
   ) {}
 
   @Get('stats')
-  @Permission('VIEW_BILLING_CYCLE')
+  @Permission(ACTION_CODES.VIEW_BILLING_CYCLE)
   @ApiOperation({ summary: 'Get billing cycle dashboard stats' })
   getStats() {
     return this.billingCycles.getStats();
   }
 
   @Get('metaFilters')
-  @Permission('VIEW_BILLING_CYCLE')
+  @Permission(ACTION_CODES.VIEW_BILLING_CYCLE)
   @ApiOperation({ summary: 'Get filter metadata for the billing cycle list UI' })
   getFilterMetadata() {
     return this.billingCycles.getFilterMetadata();
   }
 
   @Get()
-  @Permission('VIEW_BILLING_CYCLE')
+  @Permission(ACTION_CODES.VIEW_BILLING_CYCLE)
   @ApiOperation({ summary: 'List billing cycles with pagination and filters' })
   findAll(@Query() query: BillingCycleQueryDto) {
     return this.billingCycles.findAll(query);
@@ -63,7 +64,7 @@ export class BillingCycleController {
   // per-unit billing cycle display needs this same read-only lookup as reference data, not to
   // manage Billing Cycle as a module. Does NOT grant create/edit/approve.
   @Get('property/:propertyId')
-  @Permission('VIEW_BILLING_CYCLE', 'CREATE_REGISTRATION_REQUEST', 'EDIT_REGISTRATION_REQUEST')
+  @Permission(ACTION_CODES.VIEW_BILLING_CYCLE, ACTION_CODES.CREATE_REGISTRATION_REQUEST, ACTION_CODES.EDIT_REGISTRATION_REQUEST)
   @ApiOperation({ summary: "Get the property's currently-governing billing cycle" })
   @ApiParam({ name: 'propertyId', type: Number })
   findByProperty(@Param('propertyId', ParseIntPipe) propertyId: number) {
@@ -71,7 +72,7 @@ export class BillingCycleController {
   }
 
   @Get(':id')
-  @Permission('VIEW_BILLING_CYCLE')
+  @Permission(ACTION_CODES.VIEW_BILLING_CYCLE)
   @ApiOperation({ summary: 'Get billing cycle by ID' })
   @ApiParam({ name: 'id', type: Number })
   findOne(@Param('id', ParseIntPipe) id: number) {
@@ -79,7 +80,7 @@ export class BillingCycleController {
   }
 
   @Post()
-  @Permission('CREATE_BILLING_CYCLE')
+  @Permission(ACTION_CODES.CREATE_BILLING_CYCLE)
   @ApiOperation({ summary: 'Create the first billing cycle for a property' })
   create(
     @Body() dto: CreateBillingCycleDto,
@@ -90,13 +91,13 @@ export class BillingCycleController {
 
   // Direct Edit (PATCH :id) was intentionally removed — decided NOT to support editing an existing
   // billing cycle version directly. Configuration changes now only happen through the New Version /
-  // Clone workflow (create -> modify -> submit -> Finance approval -> effective-date activation),
+  // Clone workflow (create -> modify -> submit -> approval -> effective-date activation),
   // matching the same maker-checker discipline every other approval flow in this app already uses.
   // See billing-cycle.service.ts's own removal note for where update()/UpdateBillingCycleDto used
   // to live.
 
   @Post(':id/new-version')
-  @Permission('BILLING_CYCLE_NEW_VERSION')
+  @Permission(ACTION_CODES.BILLING_CYCLE_NEW_VERSION)
   @ApiOperation({ summary: "Clone a property's billing cycle into a new pending version with a changed reading window" })
   @ApiParam({ name: 'id', type: Number })
   newVersion(
@@ -108,16 +109,16 @@ export class BillingCycleController {
   }
 
   @Patch(':id/approve')
-  @Permission('BILLING_CYCLE_APPROVE')
-  @ApiOperation({ summary: 'Approve a pending billing cycle version (Business Admin or Finance grant)' })
+  @Permission(ACTION_CODES.BILLING_CYCLE_APPROVE)
+  @ApiOperation({ summary: 'Approve a pending billing cycle version (requires BILLING_CYCLE_APPROVE)' })
   @ApiParam({ name: 'id', type: Number })
   approve(@Param('id', ParseIntPipe) id: number, @CurrentUser() user?: AuthenticatedUser) {
     return this.billingCycles.approve(id, user?.sub);
   }
 
   @Patch(':id/reject')
-  @Permission('BILLING_CYCLE_REJECT')
-  @ApiOperation({ summary: 'Reject a pending billing cycle version (Business Admin or Finance grant)' })
+  @Permission(ACTION_CODES.BILLING_CYCLE_REJECT)
+  @ApiOperation({ summary: 'Reject a pending billing cycle version (requires BILLING_CYCLE_REJECT)' })
   @ApiParam({ name: 'id', type: Number })
   reject(
     @Param('id', ParseIntPipe) id: number,
@@ -128,15 +129,15 @@ export class BillingCycleController {
   }
 
   @Patch(':id/resubmit')
-  @Permission('BILLING_CYCLE_RESUBMIT')
-  @ApiOperation({ summary: 'Resubmit a rejected billing cycle version back into the Finance approval queue' })
+  @Permission(ACTION_CODES.BILLING_CYCLE_RESUBMIT)
+  @ApiOperation({ summary: 'Resubmit a rejected billing cycle version back into the approval queue' })
   @ApiParam({ name: 'id', type: Number })
   resubmit(@Param('id', ParseIntPipe) id: number, @CurrentUser() user?: AuthenticatedUser) {
     return this.billingCycles.resubmit(id, user?.sub);
   }
 
   @Patch(':id/deprecate')
-  @Permission('BILLING_CYCLE_DEPRECATE')
+  @Permission(ACTION_CODES.BILLING_CYCLE_DEPRECATE)
   @ApiOperation({ summary: 'Deprecate a billing cycle version (Super Admin only)' })
   @ApiParam({ name: 'id', type: Number })
   deprecate(

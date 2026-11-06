@@ -13,8 +13,14 @@ import { CustomerService } from '../customer/customer.service';
 import { AuditService } from '../../audit/audit.service';
 import { BUSINESS_CODE_PREFIXES, generateBusinessCode } from '../../common/utils/business-code.util';
 import { BillQueryDto, CancelBillDto } from './dto/billing-management.dto';
+import { AUDIT_MODULE } from '../../audit/audit.constants';
+import { SORT_ORDER } from '../../common/constants/sort.constants';
+import { ERROR_MESSAGES } from '../../common/constants/error-messages.constants';
+import { ISO_DATE_LENGTH } from '../../common/constants/time.constants';
+import { LOCK_MODE } from '../../common/constants/database.constants';
+import { DEFAULT_LIMIT } from '../../common/constants/pagination.constants';
 
-const BILLING_MANAGEMENT_AUDIT_MODULE = 'BILLING_MANAGEMENT';
+const BILLING_MANAGEMENT_AUDIT_MODULE = AUDIT_MODULE.BILLING_MANAGEMENT;
 
 // This service is deliberately NOT responsible for Bill Run creation, submission, approval,
 // rejection, or return-for-correction — that entire workflow lives exclusively in BillRunService /
@@ -39,7 +45,7 @@ export class BillingManagementService {
 
   async findAll(query: BillQueryDto) {
     const page = query.page ?? 1;
-    const limit = query.limit ?? 20;
+    const limit = query.limit ?? DEFAULT_LIMIT;
     const qb = this.bills
       .createQueryBuilder('b')
       .leftJoinAndSelect('b.property', 'property')
@@ -62,7 +68,7 @@ export class BillingManagementService {
     }
 
     const sortBy = query.sortBy ?? 'generatedAt';
-    const sortOrder = query.sortOrder ?? 'DESC';
+    const sortOrder = query.sortOrder ?? SORT_ORDER.DESC;
     qb.orderBy(`b.${sortBy}`, sortOrder);
 
     const [items, total] = await qb
@@ -81,8 +87,8 @@ export class BillingManagementService {
       where: { id },
       relations: { property: { community: true }, unit: true, customer: true, billRun: true, tariffVersion: true, generatedBy: true, issuedBy: true, cancelledBy: true },
     });
-    if (!bill) throw new NotFoundException('Bill not found');
-    const lineItems = await this.lineItems.find({ where: { billId: id }, order: { displayOrder: 'ASC' } });
+    if (!bill) throw new NotFoundException(ERROR_MESSAGES.BILL_NOT_FOUND);
+    const lineItems = await this.lineItems.find({ where: { billId: id }, order: { displayOrder: SORT_ORDER.ASC } });
     return { ...this.toResponseShape(bill), lineItems };
   }
 
@@ -111,7 +117,7 @@ export class BillingManagementService {
     }
 
     // Overdue is derived, never stored — count separately using the same rule getDisplayStatus() uses.
-    const today = new Date().toISOString().slice(0, 10);
+    const today = new Date().toISOString().slice(0, ISO_DATE_LENGTH);
     const overdueQb = this.bills
       .createQueryBuilder('b')
       .where('b.status = :status', { status: BillStatus.ISSUED })
@@ -146,7 +152,7 @@ export class BillingManagementService {
   // the same property.
   async generateBillsForBillRun(billRunId: number, actorId?: number) {
     const billRun = await this.billRuns.findOne({ where: { id: billRunId } });
-    if (!billRun) throw new NotFoundException('Bill run not found');
+    if (!billRun) throw new NotFoundException(ERROR_MESSAGES.BILL_RUN_NOT_FOUND);
     if (billRun.status !== BillRunStatus.APPROVED) {
       throw new BadRequestException('Bills can only be generated for an APPROVED bill run');
     }
@@ -196,7 +202,7 @@ export class BillingManagementService {
         const bill = await this.generateOneBill(billRun, unit, tariffResult, actorId);
         generated.push(bill);
       } catch (err) {
-        const reason = err instanceof Error ? err.message : 'Unknown error';
+        const reason = err instanceof Error ? err.message : ERROR_MESSAGES.UNKNOWN_ERROR;
         this.logger.warn(`Bill generation failed for unit ${unit.id} (bill run ${billRunId}): ${reason}`);
         failed.push({ unitId: unit.id, reason });
       }
@@ -238,7 +244,7 @@ export class BillingManagementService {
       // protection; this lock plus the DB UNIQUE index are what actually prevent a race.
       const existing = await manager
         .createQueryBuilder(Bill, 'b')
-        .setLock('pessimistic_write')
+        .setLock(LOCK_MODE.PESSIMISTIC_WRITE)
         .where('b.bill_run_id = :billRunId', { billRunId: billRun.id })
         .andWhere('b.unit_id = :unitId', { unitId: unit.id })
         .getOne();
@@ -259,7 +265,7 @@ export class BillingManagementService {
       if (consumptionKwh < 0) throw new BadRequestException(`Negative consumption (${consumptionKwh} kWh) for unit ${unit.id} — blocked, not billed as zero`);
 
       const tiers = tariffVersion.rateType === TariffRateType.TIERED
-        ? await this.tariffTiers.find({ where: { version: { id: tariffVersion.id } }, order: { tierOrder: 'ASC' } })
+        ? await this.tariffTiers.find({ where: { version: { id: tariffVersion.id } }, order: { tierOrder: SORT_ORDER.ASC } })
         : [];
 
       const calc = this.calculateCharges(consumptionKwh, tariffVersion, tiers);
@@ -287,7 +293,7 @@ export class BillingManagementService {
         // A generated Bill IS the customer invoice — there is no separate manual "Issue" review
         // step in this architecture (Bill Run Request/Register is the only approval gate, and it
         // already happened before generateBillsForBillRun runs at all). Issued at generation time,
-        // by whichever actor triggered generation (the Finance approver, via BillRunService.approve()).
+        // by whichever actor triggered generation (the approver, via BillRunService.approve()).
         status: BillStatus.ISSUED,
         generatedAt: new Date(),
         generatedById: actorId ?? null,
@@ -319,7 +325,7 @@ export class BillingManagementService {
       .createQueryBuilder('r')
       .where('r.unit_id = :unitId', { unitId })
       .andWhere('r.reading_date BETWEEN :periodStart AND :periodEnd', { periodStart, periodEnd })
-      .orderBy('r.reading_date', 'DESC')
+      .orderBy('r.reading_date', SORT_ORDER.DESC)
       .getMany();
 
     if (readings.length === 0) return null;
@@ -424,10 +430,10 @@ export class BillingManagementService {
       // for the first to commit, then see the now-CANCELLED status and correctly reject.
       const bill = await manager
         .createQueryBuilder(Bill, 'b')
-        .setLock('pessimistic_write')
+        .setLock(LOCK_MODE.PESSIMISTIC_WRITE)
         .where('b.id = :id', { id })
         .getOne();
-      if (!bill) throw new NotFoundException('Bill not found');
+      if (!bill) throw new NotFoundException(ERROR_MESSAGES.BILL_NOT_FOUND);
       if (bill.status === BillStatus.CANCELLED) {
         // Same convention as WorkflowOrchestrationService's own already-processed guard — this is
         // a state conflict (someone else already cancelled it, or the client is retrying a request
@@ -454,7 +460,7 @@ export class BillingManagementService {
   // logic. Mirrors the real precedent this design is based on (no cron/daily job).
   getDisplayStatus(bill: Pick<Bill, 'status' | 'billDueDate'>): string {
     if (bill.status !== BillStatus.ISSUED) return bill.status;
-    const today = new Date().toISOString().slice(0, 10);
+    const today = new Date().toISOString().slice(0, ISO_DATE_LENGTH);
     return bill.billDueDate < today ? 'overdue' : bill.status;
   }
 

@@ -28,7 +28,7 @@ export enum RegistrationChannel {
  * ONE approve/reject decision (RegistrationRequestService.approve()/.reject(), still shared with the
  * Registration Approval queue — never duplicated) already happens; there is nothing left to submit
  * "for approval" to beyond that, and nothing to loop back from. The lifecycle is now: Submitted ->
- * Approve/Reject decision -> (if approved) Security Deposit -> Customer Pays -> Supervisor Verifies
+ * Approve/Reject decision -> (if approved) Security Deposit -> Customer Pays -> Deposit Verified
  * -> Account Created/Activated automatically, with no manual step after verification.
  *
  * RESIDENT_COMMENTS_SUBMITTED was declared but never assigned anywhere in the service layer —

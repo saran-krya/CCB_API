@@ -5,6 +5,7 @@ import { PermissionGuard } from '../../common/guards/permission.guard';
 import { PERMISSION_KEY } from '../../common/decorators/permission.decorator';
 import { RolePermissionsService } from '../role-permissions/role-permissions.service';
 import { RegistrationRequestController } from './registration-request.controller';
+import { rolePermissionsMock } from '../../../test/helpers/role-permissions.mock';
 
 // Isolated tests for the RBAC remediation split, now fully exclusive (Phase 3b):
 // REGISTRATION_APPROVAL_APPROVE used to also gate 4 deposit-handling routes
@@ -41,7 +42,7 @@ describe('RegistrationRequestController deposit-permission split', () => {
     const moduleRef = await Test.createTestingModule({
       providers: [
         PermissionGuard,
-        { provide: RolePermissionsService, useValue: { rolesHaveAction } },
+        { provide: RolePermissionsService, useValue: rolePermissionsMock(rolesHaveAction) },
       ],
     }).compile();
 

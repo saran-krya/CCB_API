@@ -17,6 +17,8 @@ import {
   UpdateScreenDto,
 } from './dto/create-screen.dto';
 import { SCREENS } from '../../bootstrap/seed-data';
+import { ERROR_MESSAGES } from '../../common/constants/error-messages.constants';
+import { SORT_ORDER } from '../../common/constants/sort.constants';
 
 @Injectable()
 export class ScreensService {
@@ -42,7 +44,7 @@ export class ScreensService {
 
     if (dto.subModuleId && dto.pModuleId) {
       throw new BadRequestException(
-        'A screen cannot belong to both a SubModule and a PModule. Provide only one.',
+        ERROR_MESSAGES.SCREEN_PARENT_CONFLICT,
       );
     }
 
@@ -50,14 +52,14 @@ export class ScreensService {
       const subModule = await this.subModuleRepository.findOne({
         where: { id: dto.subModuleId },
       });
-      if (!subModule) throw new NotFoundException('Sub module not found');
+      if (!subModule) throw new NotFoundException(ERROR_MESSAGES.SUB_MODULE_NOT_FOUND);
     }
 
     if (dto.pModuleId) {
       const pModule = await this.pModuleRepository.findOne({
         where: { id: dto.pModuleId },
       });
-      if (!pModule) throw new NotFoundException('Module not found');
+      if (!pModule) throw new NotFoundException(ERROR_MESSAGES.MODULE_NOT_FOUND);
     }
 
     const screen = this.screenRepository.create(dto);
@@ -82,7 +84,7 @@ export class ScreensService {
         subModule: { id: true, name: true },
         pModule: { id: true, moduleName: true },
       },
-      order: { displayOrder: 'ASC' },
+      order: { displayOrder: SORT_ORDER.ASC },
     });
   }
 
@@ -92,7 +94,7 @@ export class ScreensService {
       relations: ['subModule', 'pModule'],
     });
 
-    if (!screen) throw new NotFoundException('Screen not found');
+    if (!screen) throw new NotFoundException(ERROR_MESSAGES.SCREEN_NOT_FOUND);
     return screen;
   }
 
@@ -101,7 +103,7 @@ export class ScreensService {
 
     if (dto.subModuleId && dto.pModuleId) {
       throw new BadRequestException(
-        'A screen cannot belong to both a SubModule and a PModule. Provide only one.',
+        ERROR_MESSAGES.SCREEN_PARENT_CONFLICT,
       );
     }
 
@@ -109,14 +111,14 @@ export class ScreensService {
       const subModule = await this.subModuleRepository.findOne({
         where: { id: dto.subModuleId },
       });
-      if (!subModule) throw new NotFoundException('Sub module not found');
+      if (!subModule) throw new NotFoundException(ERROR_MESSAGES.SUB_MODULE_NOT_FOUND);
     }
 
     if (dto.pModuleId && dto.pModuleId !== screen.pModuleId) {
       const pModule = await this.pModuleRepository.findOne({
         where: { id: dto.pModuleId },
       });
-      if (!pModule) throw new NotFoundException('Module not found');
+      if (!pModule) throw new NotFoundException(ERROR_MESSAGES.MODULE_NOT_FOUND);
     }
 
     Object.assign(screen, dto);

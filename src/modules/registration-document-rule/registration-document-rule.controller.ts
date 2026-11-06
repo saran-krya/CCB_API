@@ -20,6 +20,7 @@ import {
   UpdateRegistrationDocumentRuleDto,
 } from './dto/registration-document-rule.dto';
 import { RegistrationDocumentRuleService } from './registration-document-rule.service';
+import { ACTION_CODES } from '../../common/constants/action-codes.constants';
 
 @ApiBearerAuth()
 @ApiTags('Registration Document Rules')
@@ -28,7 +29,7 @@ export class RegistrationDocumentRuleController {
   constructor(private readonly rules: RegistrationDocumentRuleService) {}
 
   @Post()
-  @Permission('EDIT_REGISTRATION_DOCUMENT_RULES')
+  @Permission(ACTION_CODES.EDIT_REGISTRATION_DOCUMENT_RULES)
   @ApiOperation({ summary: 'Create a registration document rule' })
   create(
     @Body() dto: CreateRegistrationDocumentRuleDto,
@@ -38,21 +39,21 @@ export class RegistrationDocumentRuleController {
   }
 
   @Get()
-  @Permission('VIEW_REGISTRATION_DOCUMENT_RULES')
+  @Permission(ACTION_CODES.VIEW_REGISTRATION_DOCUMENT_RULES)
   @ApiOperation({ summary: 'List registration document rules' })
   findAll(@Query() query: RegistrationDocumentRuleQueryDto) {
     return this.rules.findAll(query);
   }
 
   @Get('applicable')
-  @Permission('VIEW_REGISTRATION_DOCUMENT_RULES', 'VIEW_REGISTRATION_REQUESTS', 'CREATE_REGISTRATION_REQUEST')
+  @Permission(ACTION_CODES.VIEW_REGISTRATION_DOCUMENT_RULES, ACTION_CODES.VIEW_REGISTRATION_REQUESTS, ACTION_CODES.CREATE_REGISTRATION_REQUEST)
   @ApiOperation({ summary: 'Resolve the applicable document rules for a resident/account/contact-type profile' })
   getApplicable(@Query() query: ApplicableDocumentRuleQueryDto) {
     return this.rules.getApplicableRules(query);
   }
 
   @Get(':id')
-  @Permission('VIEW_REGISTRATION_DOCUMENT_RULES')
+  @Permission(ACTION_CODES.VIEW_REGISTRATION_DOCUMENT_RULES)
   @ApiOperation({ summary: 'Get a registration document rule' })
   @ApiParam({ name: 'id', type: Number })
   findOne(@Param('id', ParseIntPipe) id: number) {
@@ -60,7 +61,7 @@ export class RegistrationDocumentRuleController {
   }
 
   @Patch(':id')
-  @Permission('EDIT_REGISTRATION_DOCUMENT_RULES')
+  @Permission(ACTION_CODES.EDIT_REGISTRATION_DOCUMENT_RULES)
   @ApiOperation({ summary: 'Update a registration document rule' })
   @ApiParam({ name: 'id', type: Number })
   update(
@@ -72,7 +73,7 @@ export class RegistrationDocumentRuleController {
   }
 
   @Delete(':id')
-  @Permission('EDIT_REGISTRATION_DOCUMENT_RULES')
+  @Permission(ACTION_CODES.EDIT_REGISTRATION_DOCUMENT_RULES)
   @ApiOperation({ summary: 'Soft-delete a registration document rule' })
   @ApiParam({ name: 'id', type: Number })
   remove(

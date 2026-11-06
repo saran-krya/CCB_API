@@ -9,10 +9,13 @@ import { LovService } from '../lov/lov.service';
 import { CreateFieldInspectionRequestDto } from './dto/field-inspection.dto';
 import { BUSINESS_CODE_PREFIXES, generateBusinessCode } from '../../common/utils/business-code.util';
 import { UserRoleService } from '../user-role/user-role.service';
+import { LOV_CATEGORY } from '../lov/lov.constants';
+import { SORT_ORDER } from '../../common/constants/sort.constants';
+import { ERROR_MESSAGES } from '../../common/constants/error-messages.constants';
 
-const LOV_TYPE_CATEGORY = 'FIELD_INSPECTION_TYPE';
-const LOV_PRIORITY_CATEGORY = 'FIELD_INSPECTION_PRIORITY';
-const LOV_NOTIFY_CATEGORY = 'FIELD_INSPECTION_NOTIFY_ROLE';
+const LOV_TYPE_CATEGORY = LOV_CATEGORY.FIELD_INSPECTION_TYPE;
+const LOV_PRIORITY_CATEGORY = LOV_CATEGORY.FIELD_INSPECTION_PRIORITY;
+const LOV_NOTIFY_CATEGORY = LOV_CATEGORY.FIELD_INSPECTION_NOTIFY_ROLE;
 
 @Injectable()
 export class FieldInspectionService {
@@ -46,7 +49,7 @@ export class FieldInspectionService {
       .where('r.property_id = :propertyId', { propertyId })
       .andWhere('r.validation_status = :status', { status: ReadingValidationStatus.ANOMALY })
       .andWhere('r.approval_status = :approval', { approval: ReadingApprovalStatus.PENDING })
-      .orderBy('r.reading_date', 'DESC');
+      .orderBy('r.reading_date', SORT_ORDER.DESC);
 
     if (excludeIds.length > 0) {
       qb.andWhere('r.id NOT IN (:...excludeIds)', { excludeIds });
@@ -75,14 +78,14 @@ export class FieldInspectionService {
     const requests = await this.requests.find({
       where: propertyId ? { propertyId } : {},
       relations: { property: true, assignedTo: true, requestedBy: true, readings: true },
-      order: { requestedOn: 'DESC' },
+      order: { requestedOn: SORT_ORDER.DESC },
     });
     return requests.map((r) => this.toResponseShape(r));
   }
 
   async create(dto: CreateFieldInspectionRequestDto, requestedById?: number) {
     const property = await this.properties.findOne({ where: { id: dto.propertyId } });
-    if (!property) throw new NotFoundException('Property not found');
+    if (!property) throw new NotFoundException(ERROR_MESSAGES.PROPERTY_NOT_FOUND);
 
     const [typeOptions, priorityOptions, notifyOptions] = await Promise.all([
       this.lov.findByCategory(LOV_TYPE_CATEGORY),

@@ -30,6 +30,7 @@ import {
   UploadRegistrationDocumentDto,
 } from './dto/registration-request.dto';
 import { RegistrationRequestService } from './registration-request.service';
+import { ACTION_CODES } from '../../common/constants/action-codes.constants';
 
 @ApiBearerAuth()
 @ApiTags('Registration Requests')
@@ -44,7 +45,7 @@ export class RegistrationRequestController {
   // Registration Requests queue as a feature. Does NOT grant approve/reject/edit — those stay on
   // their own action endpoints, untouched.
   @Get()
-  @Permission('VIEW_REGISTRATION_REQUESTS', 'VIEW_CUSTOMER')
+  @Permission(ACTION_CODES.VIEW_REGISTRATION_REQUESTS, ACTION_CODES.VIEW_CUSTOMER)
   @ApiOperation({ summary: 'List registration requests' })
   findAll(@Query() query: RegistrationRequestQueryDto) {
     return this.requests.findAll(query);
@@ -53,7 +54,7 @@ export class RegistrationRequestController {
   // Also VIEW_CUSTOMER: same reasoning as findAll above — the by-id fetch that follows resolving
   // the request id from the list call.
   @Get(':id')
-  @Permission('VIEW_REGISTRATION_REQUESTS', 'VIEW_CUSTOMER')
+  @Permission(ACTION_CODES.VIEW_REGISTRATION_REQUESTS, ACTION_CODES.VIEW_CUSTOMER)
   @ApiOperation({ summary: 'Get registration request detail' })
   @ApiParam({ name: 'id', type: Number })
   findOne(@Param('id', ParseIntPipe) id: number) {
@@ -61,7 +62,7 @@ export class RegistrationRequestController {
   }
 
   @Get(':id/deposit-preview')
-  @Permission('VIEW_REGISTRATION_REQUESTS')
+  @Permission(ACTION_CODES.VIEW_REGISTRATION_REQUESTS)
   @ApiOperation({ summary: 'Preview the per-unit deposit/activation-fee components without raising a demand' })
   @ApiParam({ name: 'id', type: Number })
   previewDeposit(@Param('id', ParseIntPipe) id: number) {
@@ -69,7 +70,7 @@ export class RegistrationRequestController {
   }
 
   @Get(':id/applicable-document-rules')
-  @Permission('VIEW_REGISTRATION_REQUESTS', 'CREATE_REGISTRATION_REQUEST')
+  @Permission(ACTION_CODES.VIEW_REGISTRATION_REQUESTS, ACTION_CODES.CREATE_REGISTRATION_REQUEST)
   @ApiOperation({ summary: 'Resolve which registration documents apply to this request\'s applicant profile' })
   @ApiParam({ name: 'id', type: Number })
   getApplicableDocumentRules(@Param('id', ParseIntPipe) id: number) {
@@ -77,7 +78,7 @@ export class RegistrationRequestController {
   }
 
   @Post('draft')
-  @Permission('CREATE_REGISTRATION_REQUEST')
+  @Permission(ACTION_CODES.CREATE_REGISTRATION_REQUEST)
   @ApiOperation({ summary: 'Create a Path-B (CS-initiated) registration draft' })
   createDraft(
     @Body() dto: CreateRegistrationRequestDraftDto,
@@ -88,7 +89,7 @@ export class RegistrationRequestController {
   }
 
   @Patch(':id/draft')
-  @Permission('CREATE_REGISTRATION_REQUEST')
+  @Permission(ACTION_CODES.CREATE_REGISTRATION_REQUEST)
   @ApiOperation({ summary: 'Edit a Draft registration request' })
   @ApiParam({ name: 'id', type: Number })
   updateDraft(
@@ -101,7 +102,7 @@ export class RegistrationRequestController {
   }
 
   @Post(':id/send-to-resident')
-  @Permission('CREATE_REGISTRATION_REQUEST')
+  @Permission(ACTION_CODES.CREATE_REGISTRATION_REQUEST)
   @ApiOperation({ summary: 'Path B: share a Draft with the resident for review' })
   @ApiParam({ name: 'id', type: Number })
   sendToResident(
@@ -113,7 +114,7 @@ export class RegistrationRequestController {
   }
 
   @Post(':id/submit-for-review')
-  @Permission('CREATE_REGISTRATION_REQUEST')
+  @Permission(ACTION_CODES.CREATE_REGISTRATION_REQUEST)
   @ApiOperation({ summary: 'Submit the applicant\'s initial submission for CS review' })
   @ApiParam({ name: 'id', type: Number })
   submitForReview(
@@ -125,7 +126,7 @@ export class RegistrationRequestController {
   }
 
   @Post(':id/return-to-resident')
-  @Permission('EDIT_REGISTRATION_REQUEST')
+  @Permission(ACTION_CODES.EDIT_REGISTRATION_REQUEST)
   @ApiOperation({ summary: 'Loop 1: CS returns the request to the resident for correction' })
   @ApiParam({ name: 'id', type: Number })
   returnToResident(
@@ -137,7 +138,7 @@ export class RegistrationRequestController {
   }
 
   @Post(':id/request-deposit')
-  @Permission('EDIT_REGISTRATION_REQUEST', 'REGISTRATION_APPROVAL_DEPOSIT_MANAGE')
+  @Permission(ACTION_CODES.EDIT_REGISTRATION_REQUEST, ACTION_CODES.REGISTRATION_APPROVAL_DEPOSIT_MANAGE)
   @ApiOperation({ summary: 'Manually re-raise the deposit demand for an already-approved request (approve() already does this automatically the moment the Customer is created)' })
   @ApiParam({ name: 'id', type: Number })
   requestDeposit(
@@ -149,7 +150,7 @@ export class RegistrationRequestController {
   }
 
   @Post(':id/record-deposit-payment')
-  @Permission('EDIT_REGISTRATION_REQUEST', 'CREATE_REGISTRATION_REQUEST', 'REGISTRATION_APPROVAL_DEPOSIT_MANAGE')
+  @Permission(ACTION_CODES.EDIT_REGISTRATION_REQUEST, ACTION_CODES.CREATE_REGISTRATION_REQUEST, ACTION_CODES.REGISTRATION_APPROVAL_DEPOSIT_MANAGE)
   @ApiOperation({ summary: 'Record the deposit payment (and receipt) — post-approval only' })
   @ApiParam({ name: 'id', type: Number })
   recordDepositPayment(
@@ -161,8 +162,8 @@ export class RegistrationRequestController {
   }
 
   @Post(':id/verify-deposit')
-  @Permission('EDIT_REGISTRATION_REQUEST', 'REGISTRATION_APPROVAL_DEPOSIT_MANAGE')
-  @ApiOperation({ summary: 'CS Supervisor verifies the recorded deposit payment, activating the (already-approved) account' })
+  @Permission(ACTION_CODES.EDIT_REGISTRATION_REQUEST, ACTION_CODES.REGISTRATION_APPROVAL_DEPOSIT_MANAGE)
+  @ApiOperation({ summary: 'Verifies the recorded deposit payment, activating the (already-approved) account' })
   @ApiParam({ name: 'id', type: Number })
   verifyDeposit(
     @Param('id', ParseIntPipe) id: number,
@@ -173,7 +174,7 @@ export class RegistrationRequestController {
   }
 
   @Post(':id/return-receipt')
-  @Permission('EDIT_REGISTRATION_REQUEST', 'REGISTRATION_APPROVAL_DEPOSIT_MANAGE')
+  @Permission(ACTION_CODES.EDIT_REGISTRATION_REQUEST, ACTION_CODES.REGISTRATION_APPROVAL_DEPOSIT_MANAGE)
   @ApiOperation({ summary: 'Return an unsatisfactory payment receipt to the resident for correction' })
   @ApiParam({ name: 'id', type: Number })
   returnReceiptForCorrection(
@@ -185,7 +186,7 @@ export class RegistrationRequestController {
   }
 
   @Post(':id/approve')
-  @Permission('APPROVE_REGISTRATION_REQUEST')
+  @Permission(ACTION_CODES.APPROVE_REGISTRATION_REQUEST)
   @ApiOperation({ summary: 'Approve the registration request, creating the Customer record' })
   @ApiParam({ name: 'id', type: Number })
   approve(
@@ -197,7 +198,7 @@ export class RegistrationRequestController {
   }
 
   @Post(':id/reject')
-  @Permission('REJECT_REGISTRATION_REQUEST')
+  @Permission(ACTION_CODES.REJECT_REGISTRATION_REQUEST)
   @ApiOperation({ summary: 'Reject the registration request' })
   @ApiParam({ name: 'id', type: Number })
   reject(
@@ -209,7 +210,7 @@ export class RegistrationRequestController {
   }
 
   @Post(':id/documents')
-  @Permission('CREATE_REGISTRATION_REQUEST', 'EDIT_REGISTRATION_REQUEST')
+  @Permission(ACTION_CODES.CREATE_REGISTRATION_REQUEST, ACTION_CODES.EDIT_REGISTRATION_REQUEST)
   @ApiOperation({ summary: 'Upload/replace a registration document' })
   @ApiParam({ name: 'id', type: Number })
   uploadDocument(
@@ -221,7 +222,7 @@ export class RegistrationRequestController {
   }
 
   @Delete(':id/documents/:docType')
-  @Permission('CREATE_REGISTRATION_REQUEST', 'EDIT_REGISTRATION_REQUEST')
+  @Permission(ACTION_CODES.CREATE_REGISTRATION_REQUEST, ACTION_CODES.EDIT_REGISTRATION_REQUEST)
   @ApiOperation({ summary: 'Remove a single uploaded document — the unit stays selected' })
   @ApiParam({ name: 'id', type: Number })
   @ApiParam({ name: 'docType', type: String })
@@ -234,7 +235,7 @@ export class RegistrationRequestController {
   }
 
   @Patch(':id/documents/:docType/extracted-fields/:fieldName/verified')
-  @Permission('CREATE_REGISTRATION_REQUEST', 'EDIT_REGISTRATION_REQUEST')
+  @Permission(ACTION_CODES.CREATE_REGISTRATION_REQUEST, ACTION_CODES.EDIT_REGISTRATION_REQUEST)
   @ApiOperation({ summary: 'Toggle an extracted field\'s verified attestation' })
   @ApiParam({ name: 'id', type: Number })
   @ApiParam({ name: 'docType', type: String })
@@ -249,7 +250,7 @@ export class RegistrationRequestController {
   }
 
   @Put(':id/documents/:docType/extracted-fields')
-  @Permission('CREATE_REGISTRATION_REQUEST', 'EDIT_REGISTRATION_REQUEST')
+  @Permission(ACTION_CODES.CREATE_REGISTRATION_REQUEST, ACTION_CODES.EDIT_REGISTRATION_REQUEST)
   @ApiOperation({ summary: 'Persist a document\'s extracted fields — OCR, simulated, or manual-entry results alike' })
   @ApiParam({ name: 'id', type: Number })
   @ApiParam({ name: 'docType', type: String })
@@ -262,7 +263,7 @@ export class RegistrationRequestController {
   }
 
   @Patch(':id/documents/:docType/extracted-fields/verified')
-  @Permission('CREATE_REGISTRATION_REQUEST', 'EDIT_REGISTRATION_REQUEST')
+  @Permission(ACTION_CODES.CREATE_REGISTRATION_REQUEST, ACTION_CODES.EDIT_REGISTRATION_REQUEST)
   @ApiOperation({ summary: 'Verify (or un-verify) every extracted field on a document in one atomic write' })
   @ApiParam({ name: 'id', type: Number })
   @ApiParam({ name: 'docType', type: String })
@@ -275,7 +276,7 @@ export class RegistrationRequestController {
   }
 
   @Patch(':id/documents/:docType/extracted-fields/:fieldName/value')
-  @Permission('CREATE_REGISTRATION_REQUEST', 'EDIT_REGISTRATION_REQUEST')
+  @Permission(ACTION_CODES.CREATE_REGISTRATION_REQUEST, ACTION_CODES.EDIT_REGISTRATION_REQUEST)
   @ApiOperation({ summary: 'Edit a single extracted field\'s value — manual data entry, or correcting a poor OCR read' })
   @ApiParam({ name: 'id', type: Number })
   @ApiParam({ name: 'docType', type: String })

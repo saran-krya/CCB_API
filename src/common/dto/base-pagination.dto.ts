@@ -1,22 +1,24 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import { IsIn, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
+import { DEFAULT_PAGE, MIN_PAGE, DEFAULT_LIMIT, MIN_LIMIT, MAX_LIMIT } from '../constants/pagination.constants';
+import { SORT_ORDER_VALUES, SORT_ORDER, SortOrder } from '../constants/sort.constants';
 
 export class BasePaginationDto {
-  @ApiPropertyOptional({ default: 1, minimum: 1 })
+  @ApiPropertyOptional({ default: DEFAULT_PAGE, minimum: MIN_PAGE })
   @Type(() => Number)
   @IsInt()
-  @Min(1)
+  @Min(MIN_PAGE)
   @IsOptional()
-  page = 1;
+  page = DEFAULT_PAGE;
 
-  @ApiPropertyOptional({ default: 20, minimum: 1, maximum: 100 })
+  @ApiPropertyOptional({ default: DEFAULT_LIMIT, minimum: MIN_LIMIT, maximum: MAX_LIMIT })
   @Type(() => Number)
   @IsInt()
-  @Min(1)
-  @Max(100)
+  @Min(MIN_LIMIT)
+  @Max(MAX_LIMIT)
   @IsOptional()
-  limit = 20;
+  limit = DEFAULT_LIMIT;
 
   @ApiPropertyOptional({ description: 'Global search keyword' })
   @IsString()
@@ -28,8 +30,8 @@ export class BasePaginationDto {
   @IsString()
   sortBy?: string;
 
-  @ApiPropertyOptional({ enum: ['ASC', 'DESC'], default: 'DESC' })
+  @ApiPropertyOptional({ enum: SORT_ORDER_VALUES, default: SORT_ORDER.DESC })
   @IsOptional()
-  @IsIn(['ASC', 'DESC'])
-  sortOrder?: 'ASC' | 'DESC' = 'DESC';
+  @IsIn(SORT_ORDER_VALUES)
+  sortOrder?: SortOrder = SORT_ORDER.DESC;
 }

@@ -20,6 +20,9 @@ import {
 import { UnitDetailDto, UnitListDto } from './dto/unit-response.dto';
 import { OccupancyStatus, Unit, UnitStatus } from './entities/unit.entity';
 import { MyMeterDetailDto } from '../meter/dto/my-meter-detail.dto';
+import { ERROR_MESSAGES } from '../../common/constants/error-messages.constants';
+import { AUDIT_MODULE, AUDIT_ACTION } from '../../audit/audit.constants';
+import { SORT_ORDER } from '../../common/constants/sort.constants';
 
 @Injectable()
 export class UnitService {
@@ -40,7 +43,7 @@ export class UnitService {
       where: { unitNumber: dto.unitNumber, property: { id: dto.propertyId } },
     });
     if (existing) {
-      throw new ConflictException('Unit number already exists in this property');
+      throw new ConflictException(ERROR_MESSAGES.UNIT_NUMBER_ALREADY_EXISTS);
     }
 
     return this.dataSource.transaction(async (manager) => {
@@ -57,9 +60,9 @@ export class UnitService {
       await manager.save(Unit, saved);
 
       await this.audit.record({
-        moduleName: 'units',
+        moduleName: AUDIT_MODULE.UNITS,
         entityId: saved.id,
-        action: 'CREATE',
+        action: AUDIT_ACTION.CREATE,
         newValue: {
           unitNumber: saved.unitNumber,
           floorNumber: saved.floorNumber,
@@ -85,7 +88,7 @@ export class UnitService {
       .addSelect(['property.id', 'property.name'])
       .leftJoin('property.community', 'community')
       .addSelect(['community.id', 'community.name'])
-      .orderBy(`u.${sortBy ?? 'createdAt'}`, sortOrder ?? 'DESC');
+      .orderBy(`u.${sortBy ?? 'createdAt'}`, sortOrder ?? SORT_ORDER.DESC);
 
     if (search) {
       qb.andWhere('(u.unitNumber LIKE :s OR u.businessCode LIKE :s OR u.ownerId LIKE :s OR u.tenantId LIKE :s)', {
@@ -122,7 +125,7 @@ export class UnitService {
       where: { id },
       relations: { property: { community: true }, subMeter: { masterMeter: true } },
     });
-    if (!unit) throw new NotFoundException('Unit not found');
+    if (!unit) throw new NotFoundException(ERROR_MESSAGES.UNIT_NOT_FOUND);
     // Composed here (not left to a separate GET /customers call from the caller) specifically so
     // the Communities feature's own unit drill-through page never needs VIEW_CUSTOMER at all — see
     // CustomerService.findByUnitId's own doc comment for the full reasoning.
@@ -173,7 +176,7 @@ export class UnitService {
       where: { id: unitId },
       relations: { subMeter: { masterMeter: true } },
     });
-    if (!unit) throw new NotFoundException('Unit not found');
+    if (!unit) throw new NotFoundException(ERROR_MESSAGES.UNIT_NOT_FOUND);
 
     return {
       unitId: unit.id,
@@ -229,7 +232,7 @@ export class UnitService {
       where: { id },
       relations: { property: true },
     });
-    if (!unit) throw new NotFoundException('Unit not found');
+    if (!unit) throw new NotFoundException(ERROR_MESSAGES.UNIT_NOT_FOUND);
 
     if (dto.propertyId && dto.propertyId !== unit.property?.id) {
       unit.property = await this.properties.findOneEntity(dto.propertyId);
@@ -242,7 +245,7 @@ export class UnitService {
         where: { unitNumber: dto.unitNumber, property: { id: targetPropertyId } },
       });
       if (exists && exists.id !== id) {
-        throw new ConflictException('Unit number already exists in this property');
+        throw new ConflictException(ERROR_MESSAGES.UNIT_NUMBER_ALREADY_EXISTS);
       }
     }
 
@@ -258,9 +261,9 @@ export class UnitService {
     const saved = await this.units.save(unit);
 
     await this.audit.record({
-      moduleName: 'units',
+      moduleName: AUDIT_MODULE.UNITS,
       entityId: id,
-      action: 'UPDATE',
+      action: AUDIT_ACTION.UPDATE,
       oldValue,
       newValue: {
         unitNumber: saved.unitNumber,
@@ -277,16 +280,16 @@ export class UnitService {
 
   async updateOccupancy(id: number, dto: UpdateOccupancyDto, actorId?: number) {
     const unit = await this.units.findOne({ where: { id } });
-    if (!unit) throw new NotFoundException('Unit not found');
+    if (!unit) throw new NotFoundException(ERROR_MESSAGES.UNIT_NOT_FOUND);
 
     const oldOccupancy = unit.occupancyStatus;
     unit.occupancyStatus = dto.occupancyStatus;
     const saved = await this.units.save(unit);
 
     await this.audit.record({
-      moduleName: 'units',
+      moduleName: AUDIT_MODULE.UNITS,
       entityId: id,
-      action: 'UPDATE',
+      action: AUDIT_ACTION.UPDATE,
       oldValue: { occupancyStatus: oldOccupancy },
       newValue: { occupancyStatus: saved.occupancyStatus },
       performedBy: actorId,
@@ -297,20 +300,20 @@ export class UnitService {
 
   async findOneEntity(id: number): Promise<Unit> {
     const unit = await this.units.findOne({ where: { id } });
-    if (!unit) throw new NotFoundException('Unit not found');
+    if (!unit) throw new NotFoundException(ERROR_MESSAGES.UNIT_NOT_FOUND);
     return unit;
   }
 
   async remove(id: number, actorId?: number) {
     const unit = await this.units.findOne({ where: { id } });
-    if (!unit) throw new NotFoundException('Unit not found');
+    if (!unit) throw new NotFoundException(ERROR_MESSAGES.UNIT_NOT_FOUND);
 
     await this.units.softRemove(unit);
 
     await this.audit.record({
-      moduleName: 'units',
+      moduleName: AUDIT_MODULE.UNITS,
       entityId: id,
-      action: 'DELETE',
+      action: AUDIT_ACTION.DELETE,
       oldValue: {
         unitNumber: unit.unitNumber,
         unitType: unit.unitType,

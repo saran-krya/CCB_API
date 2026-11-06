@@ -16,6 +16,9 @@ import {
 } from './dto/create-community.dto';
 import { CommunityDetailDto, CommunityListDto } from './dto/community-response.dto';
 import { Community, CommunityStatus } from './entities/community.entity';
+import { AUDIT_MODULE, AUDIT_ACTION } from '../../audit/audit.constants';
+import { SORT_ORDER } from '../../common/constants/sort.constants';
+import { ERROR_MESSAGES } from '../../common/constants/error-messages.constants';
 
 @Injectable()
 export class CommunityService {
@@ -86,9 +89,9 @@ export class CommunityService {
       await Promise.all(
         saved.map((c) =>
           this.audit.record({
-            moduleName: 'communities',
+            moduleName: AUDIT_MODULE.COMMUNITIES,
             entityId: c.id,
-            action: 'CREATE',
+            action: AUDIT_ACTION.CREATE,
             newValue: { name: c.name, code: c.code, status: c.status },
             performedBy: actorId,
           }),
@@ -111,7 +114,7 @@ export class CommunityService {
       .loadRelationCountAndMap('c.totalProperties', 'c.properties', 'p', (sub) =>
         sub.where('p.deleted_at IS NULL'),
       )
-      .orderBy(`c.${sortBy ?? 'createdAt'}`, sortOrder ?? 'DESC');
+      .orderBy(`c.${sortBy ?? 'createdAt'}`, sortOrder ?? SORT_ORDER.DESC);
 
     if (search) {
       qb.andWhere(
@@ -157,13 +160,13 @@ export class CommunityService {
 
   async findOne(id: number): Promise<CommunityDetailDto> {
     const community = await this.communities.findOne({ where: { id } });
-    if (!community) throw new NotFoundException('Community not found');
+    if (!community) throw new NotFoundException(ERROR_MESSAGES.COMMUNITY_NOT_FOUND);
 
     const [properties, statsRows] = await Promise.all([
       this.properties.find({
         where: { community: { id } },
         select: { id: true, name: true, code: true, propertyType: true, numberOfFloors: true, status: true },
-        order: { createdAt: 'DESC' },
+        order: { createdAt: SORT_ORDER.DESC },
       }),
       this.dataSource.query<any[]>(
         `
@@ -246,9 +249,9 @@ export class CommunityService {
     const saved = await this.communities.save(community);
 
     await this.audit.record({
-      moduleName: 'communities',
+      moduleName: AUDIT_MODULE.COMMUNITIES,
       entityId: id,
-      action: 'UPDATE',
+      action: AUDIT_ACTION.UPDATE,
       oldValue,
       newValue: { name: saved.name, code: saved.code, status: saved.status },
       performedBy: actorId,
@@ -264,9 +267,9 @@ export class CommunityService {
     const saved = await this.communities.save(community);
 
     await this.audit.record({
-      moduleName: 'communities',
+      moduleName: AUDIT_MODULE.COMMUNITIES,
       entityId: id,
-      action: 'UPDATE',
+      action: AUDIT_ACTION.UPDATE,
       oldValue: { status: oldStatus },
       newValue: { status: saved.status },
       performedBy: actorId,
@@ -280,9 +283,9 @@ export class CommunityService {
     await this.communities.softRemove(community);
 
     await this.audit.record({
-      moduleName: 'communities',
+      moduleName: AUDIT_MODULE.COMMUNITIES,
       entityId: id,
-      action: 'DELETE',
+      action: AUDIT_ACTION.DELETE,
       oldValue: { name: community.name, code: community.code, status: community.status },
       performedBy: actorId,
     });
@@ -292,7 +295,7 @@ export class CommunityService {
 
   async findOneEntity(id: number): Promise<Community> {
     const community = await this.communities.findOne({ where: { id } });
-    if (!community) throw new NotFoundException('Community not found');
+    if (!community) throw new NotFoundException(ERROR_MESSAGES.COMMUNITY_NOT_FOUND);
     return community;
   }
 }

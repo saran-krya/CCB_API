@@ -5,6 +5,7 @@ import { IS_PUBLIC_KEY } from '../decorators/public.decorator';
 import { AuthPrincipal } from '../../auth/interfaces/authenticated-user.interface';
 import { RegistrationRequestService } from '../../modules/registration-request/registration-request.service';
 import { computePortalAccess } from '../../modules/registration-request/entities/registration-request.entity';
+import { PRINCIPAL_TYPE } from '../constants/auth.constants';
 
 /**
  * The Customer-portal counterpart to RolesGuard/PermissionGuard — same global-guard shape, same
@@ -54,7 +55,7 @@ export class CustomerAccessGuard implements CanActivate {
     const request = context.switchToHttp().getRequest<{ user?: AuthPrincipal }>();
     const user = request.user;
 
-    if (!user || user.type !== 'customer') {
+    if (!user || user.type !== PRINCIPAL_TYPE.CUSTOMER) {
       return true;
     }
 

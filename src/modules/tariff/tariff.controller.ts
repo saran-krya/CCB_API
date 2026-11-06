@@ -14,6 +14,7 @@ import {
 } from './dto/tariff.dto';
 import { TariffSchedulerService } from './tariff-scheduler.service';
 import { TariffService } from './tariff.service';
+import { ACTION_CODES } from '../../common/constants/action-codes.constants';
 
 
 @ApiBearerAuth()
@@ -26,35 +27,35 @@ export class TariffController {
   ) {}
 
   @Get('stats')
-  @Permission('TARIFF_VIEW')
+  @Permission(ACTION_CODES.TARIFF_VIEW)
   @ApiOperation({ summary: 'Get tariff dashboard stats' })
   getStats() {
     return this.tariffs.getStats();
   }
 
   @Get('metaFilters')
-  @Permission('TARIFF_VIEW')
+  @Permission(ACTION_CODES.TARIFF_VIEW)
   @ApiOperation({ summary: 'Get filter metadata for the tariff list and create-form UI' })
   getFilterMetadata() {
     return this.tariffs.getFilterMetadata();
   }
 
   @Get('check-conflict')
-  @Permission('TARIFF_CREATE', 'TARIFF_EDIT')
+  @Permission(ACTION_CODES.TARIFF_CREATE, ACTION_CODES.TARIFF_EDIT)
   @ApiOperation({ summary: 'Check whether a proposed tariff scope/date range conflicts with an existing tariff' })
   checkConflict(@Query() query: TariffConflictQueryDto) {
     return this.tariffs.checkConflict(query);
   }
 
   @Get()
-  @Permission('TARIFF_VIEW')
+  @Permission(ACTION_CODES.TARIFF_VIEW)
   @ApiOperation({ summary: 'List tariffs with pagination, search, sort and filters' })
   findAll(@Query() query: TariffQueryDto) {
     return this.tariffs.findAll(query);
   }
 
   @Get(':id')
-  @Permission('TARIFF_VIEW')
+  @Permission(ACTION_CODES.TARIFF_VIEW)
   @ApiOperation({ summary: 'Get tariff detail by ID' })
   @ApiParam({ name: 'id', type: Number })
   findOne(@Param('id', ParseIntPipe) id: number) {
@@ -62,7 +63,7 @@ export class TariffController {
   }
 
   @Get(':id/versions')
-  @Permission('TARIFF_VIEW')
+  @Permission(ACTION_CODES.TARIFF_VIEW)
   @ApiOperation({ summary: "Get every version of this tariff's lineage, oldest first" })
   @ApiParam({ name: 'id', type: Number })
   getVersionHistory(@Param('id', ParseIntPipe) id: number) {
@@ -70,15 +71,15 @@ export class TariffController {
   }
 
   @Post()
-  @Permission('TARIFF_CREATE')
+  @Permission(ACTION_CODES.TARIFF_CREATE)
   @ApiOperation({ summary: 'Create a tariff (submitted for approval)' })
   create(@Body() dto: CreateTariffDto, @CurrentUser() user?: AuthenticatedUser) {
     return this.tariffs.create(dto, user?.sub);
   }
 
   @Patch(':id')
-  @Permission('TARIFF_EDIT')
-  @ApiOperation({ summary: 'Update a draft, corrected, rejected, inactive, or active tariff (pending is locked until Finance decides)' })
+  @Permission(ACTION_CODES.TARIFF_EDIT)
+  @ApiOperation({ summary: 'Update a draft, corrected, rejected, inactive, or active tariff (pending is locked until it is approved or rejected)' })
   @ApiParam({ name: 'id', type: Number })
   update(
     @Param('id', ParseIntPipe) id: number,
@@ -89,15 +90,15 @@ export class TariffController {
   }
 
   @Patch(':id/submit')
-  @Permission('TARIFF_SUBMIT')
-  @ApiOperation({ summary: 'Submit a draft, corrected, or rejected tariff for Finance approval' })
+  @Permission(ACTION_CODES.TARIFF_SUBMIT)
+  @ApiOperation({ summary: 'Submit a draft, corrected, or rejected tariff for approval' })
   @ApiParam({ name: 'id', type: Number })
   submit(@Param('id', ParseIntPipe) id: number, @CurrentUser() user?: AuthenticatedUser) {
     return this.tariffs.submit(id, user?.sub);
   }
 
   @Patch(':id/approve')
-  @Permission('TARIFF_APPROVE')
+  @Permission(ACTION_CODES.TARIFF_APPROVE)
   @ApiOperation({ summary: 'Approve a pending tariff' })
   @ApiParam({ name: 'id', type: Number })
   approve(@Param('id', ParseIntPipe) id: number, @CurrentUser() user?: AuthenticatedUser) {
@@ -105,7 +106,7 @@ export class TariffController {
   }
 
   @Patch(':id/reject')
-  @Permission('TARIFF_REJECT')
+  @Permission(ACTION_CODES.TARIFF_REJECT)
   @ApiOperation({ summary: 'Reject a pending tariff' })
   @ApiParam({ name: 'id', type: Number })
   reject(
@@ -117,7 +118,7 @@ export class TariffController {
   }
 
   @Patch(':id/deactivate')
-  @Permission('TARIFF_DEACTIVATE')
+  @Permission(ACTION_CODES.TARIFF_DEACTIVATE)
   @ApiOperation({ summary: 'Deactivate an active tariff' })
   @ApiParam({ name: 'id', type: Number })
   deactivate(@Param('id', ParseIntPipe) id: number, @CurrentUser() user?: AuthenticatedUser) {
@@ -125,7 +126,7 @@ export class TariffController {
   }
 
   @Patch(':id/reactivate')
-  @Permission('TARIFF_REACTIVATE')
+  @Permission(ACTION_CODES.TARIFF_REACTIVATE)
   @ApiOperation({ summary: 'Reactivate an inactive tariff back to active' })
   @ApiParam({ name: 'id', type: Number })
   reactivate(@Param('id', ParseIntPipe) id: number, @CurrentUser() user?: AuthenticatedUser) {
@@ -133,7 +134,7 @@ export class TariffController {
   }
 
   @Patch(':id/deprecate')
-  @Permission('TARIFF_DEPRECATE')
+  @Permission(ACTION_CODES.TARIFF_DEPRECATE)
   @ApiOperation({ summary: 'Manually deprecate an active tariff (Super Admin only)' })
   @ApiParam({ name: 'id', type: Number })
   deprecate(@Param('id', ParseIntPipe) id: number, @CurrentUser() user?: AuthenticatedUser) {
@@ -141,7 +142,7 @@ export class TariffController {
   }
 
   @Post(':id/new-version')
-  @Permission('TARIFF_NEW_VERSION')
+  @Permission(ACTION_CODES.TARIFF_NEW_VERSION)
   @ApiOperation({ summary: 'Clone an active tariff into a new editable draft version' })
   @ApiParam({ name: 'id', type: Number })
   newVersion(@Param('id', ParseIntPipe) id: number, @CurrentUser() user?: AuthenticatedUser) {

@@ -17,6 +17,9 @@ import { Unit } from '../unit/entities/unit.entity';
 import { Property } from '../property/entities/property.entity';
 import { Community } from '../community/entities/community.entity';
 import { parseReadingDateFromFilename } from './filename.util';
+import { ISO_DATE_LENGTH } from '../../common/constants/time.constants';
+import { MYSQL_ERROR_CODE } from '../../common/constants/database.constants';
+import { HASH_ALGORITHM, HEX_ENCODING } from '../../common/constants/crypto.constants';
 
 function toAnomalyCode(error: RowValidationError): ReadingAnomalyCode {
   switch (error.field) {
@@ -300,7 +303,7 @@ export class IngestionService {
           const meterId = row.meter_id?.trim() ?? '';
           const hierarchy = meterId ? hierarchyByMeterId.get(meterId) : undefined;
 
-          const resolvedReadingDate = row.reading_date?.trim() || processingStartedAt.toISOString().slice(0, 10);
+          const resolvedReadingDate = row.reading_date?.trim() || processingStartedAt.toISOString().slice(0, ISO_DATE_LENGTH);
 
           if (hierarchy) {
             const pairKey = `${hierarchy.subMeterId}::${resolvedReadingDate}`;
@@ -416,16 +419,16 @@ export class IngestionService {
   // recognized either by TypeORM's wrapped driver error code or by its message text.
   private isDuplicateKeyError(err: unknown): boolean {
     const message = err instanceof Error ? err.message : String(err);
-    return /duplicate entry/i.test(message) || (err as { code?: string })?.code === 'ER_DUP_ENTRY';
+    return /duplicate entry/i.test(message) || (err as { code?: string })?.code === MYSQL_ERROR_CODE.DUP_ENTRY;
   }
 
   private hashFile(localPath: string): Promise<string> {
     return new Promise((resolve, reject) => {
-      const hash = createHash('sha256');
+      const hash = createHash(HASH_ALGORITHM);
       createReadStream(localPath)
         .on('error', reject)
         .on('data', (chunk) => hash.update(chunk))
-        .on('end', () => resolve(hash.digest('hex')));
+        .on('end', () => resolve(hash.digest(HEX_ENCODING)));
     });
   }
 }

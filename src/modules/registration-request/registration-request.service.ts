@@ -70,6 +70,12 @@ import { RegistrationCustomerDetail } from './entities/registration-customer-det
 import { RegistrationCompanyDetail } from './entities/registration-company-detail.entity';
 import { RegistrationVersionSnapshot } from './entities/registration-version-snapshot.entity';
 import { RegistrationWorkflowAction, RegistrationWorkflowHistoryEntry } from './entities/registration-workflow-history.entity';
+import { ATTRIBUTE_KEY } from '../attribute/attribute.constants';
+import { LOV_CATEGORY } from '../lov/lov.constants';
+import { SORT_ORDER } from '../../common/constants/sort.constants';
+import { ERROR_MESSAGES } from '../../common/constants/error-messages.constants';
+import { ISO_DATE_LENGTH } from '../../common/constants/time.constants';
+import { AUDIT_MODULE, AUDIT_ACTION } from '../../audit/audit.constants';
 
 // The one workflow status a submitted-but-not-yet-decided request sits in — gates returnToResident
 // (send it back to the resident for correction) and is the sole entry in APPROVABLE_FROM_STATUSES
@@ -80,7 +86,7 @@ import { RegistrationWorkflowAction, RegistrationWorkflowHistoryEntry } from './
 // left to loop back from and nothing else this list ever needs to include.
 const CS_REVIEW_STATUSES = [RegistrationRequestStatus.PENDING_CS_REVIEW];
 
-// The Registration Approval screen's own queue — every status a Customer Service Supervisor still
+// The Registration Approval screen's own queue — every status a registration approver still
 // has work to do on, whether that's an approve/reject decision or a post-approval deposit
 // verification. Kept as its own named list (even though its workflow-status half is currently
 // identical to CS_REVIEW_STATUSES) since conceptually it answers a different question — "what does
@@ -90,8 +96,8 @@ const CS_REVIEW_STATUSES = [RegistrationRequestStatus.PENDING_CS_REVIEW];
 // Two independent conditions OR'd together — never merged into one list of `status` values, since
 // they're two different fields now: (a) still awaiting an approve/reject decision (workflow status
 // gate only), or (b) already Approved but the deposit sub-process isn't done yet (depositStatus
-// gate — REQUESTED/PAID_PENDING_VERIFICATION are both still live Supervisor work: awaiting the
-// customer's payment, or awaiting the Supervisor's own verification of it). Without (b), an Approved
+// gate — REQUESTED/PAID_PENDING_VERIFICATION are both still live approver work: awaiting the
+// customer's payment, or awaiting the approver's own verification of it). Without (b), an Approved
 // request with a live deposit in flight would fall through both this queue AND the Approved tab's
 // exact-status match and become invisible on the list entirely — reachable only by a direct URL.
 const REGISTRATION_APPROVAL_QUEUE_STATUSES = [RegistrationRequestStatus.PENDING_CS_REVIEW];
@@ -179,35 +185,35 @@ interface CompanyDynamicFieldRequirement {
 // separate COMPANY_DYNAMIC_FIELD_REQUIREMENTS list below, since they now read from
 // request.companyDetail instead of request.customerDetails.
 const DYNAMIC_FIELD_REQUIREMENTS: DynamicFieldRequirement[] = [
-  { field: 'email', attributeKey: 'REGISTRATION_EMAIL_MANDATORY', label: 'Email' },
-  { field: 'mobile', attributeKey: 'REGISTRATION_MOBILE_MANDATORY', label: 'Mobile' },
+  { field: 'email', attributeKey: ATTRIBUTE_KEY.REGISTRATION_EMAIL_MANDATORY, label: 'Email' },
+  { field: 'mobile', attributeKey: ATTRIBUTE_KEY.REGISTRATION_MOBILE_MANDATORY, label: 'Mobile' },
 ];
 
 // Company/Trade-License/TRN mandatory-field checks — same admin-configurable Attribute pattern as
 // DYNAMIC_FIELD_REQUIREMENTS above, checked against request.companyDetail instead.
 const COMPANY_DYNAMIC_FIELD_REQUIREMENTS: CompanyDynamicFieldRequirement[] = [
   {
-    field: 'tradeLicenseNumber', attributeKey: 'REGISTRATION_TRADE_LICENSE_NUMBER_MANDATORY', label: 'Trade License Number',
+    field: 'tradeLicenseNumber', attributeKey: ATTRIBUTE_KEY.REGISTRATION_TRADE_LICENSE_NUMBER_MANDATORY, label: 'Trade License Number',
     appliesTo: (r) => r.accountType === RegistrationAccountType.CORPORATE,
   },
   {
-    field: 'managerName', attributeKey: 'REGISTRATION_MANAGER_NAME_MANDATORY', label: 'Manager Name',
+    field: 'managerName', attributeKey: ATTRIBUTE_KEY.REGISTRATION_MANAGER_NAME_MANDATORY, label: 'Manager Name',
     appliesTo: (r) => r.accountType === RegistrationAccountType.CORPORATE,
   },
   {
-    field: 'taxableEntityName', attributeKey: 'REGISTRATION_TAXABLE_ENTITY_NAME_MANDATORY', label: 'Taxable Entity Name',
+    field: 'taxableEntityName', attributeKey: ATTRIBUTE_KEY.REGISTRATION_TAXABLE_ENTITY_NAME_MANDATORY, label: 'Taxable Entity Name',
     appliesTo: (r) => r.accountType === RegistrationAccountType.CORPORATE,
   },
   {
-    field: 'trn', attributeKey: 'REGISTRATION_TRN_MANDATORY', label: 'TRN',
+    field: 'trn', attributeKey: ATTRIBUTE_KEY.REGISTRATION_TRN_MANDATORY, label: 'TRN',
     appliesTo: (r) => r.accountType === RegistrationAccountType.CORPORATE,
   },
   {
-    field: 'effectiveRegistrationDate', attributeKey: 'REGISTRATION_EFFECTIVE_REGISTRATION_DATE_MANDATORY', label: 'Effective Registration Date',
+    field: 'effectiveRegistrationDate', attributeKey: ATTRIBUTE_KEY.REGISTRATION_EFFECTIVE_REGISTRATION_DATE_MANDATORY, label: 'Effective Registration Date',
     appliesTo: (r) => r.accountType === RegistrationAccountType.CORPORATE,
   },
   {
-    field: 'issuingAuthority', attributeKey: 'REGISTRATION_ISSUING_AUTHORITY_MANDATORY', label: 'Issuing Authority',
+    field: 'issuingAuthority', attributeKey: ATTRIBUTE_KEY.REGISTRATION_ISSUING_AUTHORITY_MANDATORY, label: 'Issuing Authority',
     appliesTo: (r) => r.accountType === RegistrationAccountType.CORPORATE,
   },
 ];
@@ -465,7 +471,7 @@ export class RegistrationRequestService {
    *  assertValidRejectionReason pattern. A direct API call sending an unconfigured type must fail
    *  here, not silently persist a value the LOV admin screen doesn't recognize. */
   private async assertValidPaymentMethodTypes(types: string[]): Promise<void> {
-    const validValues = await this.lovService.findByCategory('PAYMENT_METHOD_TYPE');
+    const validValues = await this.lovService.findByCategory(LOV_CATEGORY.PAYMENT_METHOD_TYPE);
     const validCodes = new Set(validValues.map((v) => v.code));
     const invalid = [...new Set(types)].filter((t) => !validCodes.has(t));
     if (invalid.length) {
@@ -486,7 +492,7 @@ export class RegistrationRequestService {
       .leftJoinAndSelect('r.companyDetail', 'cod')
       .leftJoinAndSelect('r.selectedUnitEntries', 'units')
       .leftJoin('r.customer', 'customer')
-      .orderBy(`r.${sortBy ?? 'createdAt'}`, sortOrder ?? 'DESC');
+      .orderBy(`r.${sortBy ?? 'createdAt'}`, sortOrder ?? SORT_ORDER.DESC);
 
     // Registration Requests' own default view (no `status`/`csQueue` — i.e. no explicit status
     // scope requested) never shows an already-approved request — once a request is approved it
@@ -505,7 +511,7 @@ export class RegistrationRequestService {
     }
 
     if (status) qb.andWhere('r.status = :status', { status });
-    // Registration Approval queue (reviewed by the Customer Service Supervisor role) — every
+    // Registration Approval queue (reviewed by registration approvers) — every
     // request awaiting an approve/reject decision, never drafts. Mutually exclusive with `status`
     // in practice (the frontend never sends both).
     if (csQueue) {
@@ -548,7 +554,7 @@ export class RegistrationRequestService {
         depositEntry: true,
       },
     });
-    if (!request) throw new NotFoundException('Registration request not found');
+    if (!request) throw new NotFoundException(ERROR_MESSAGES.REGISTRATION_REQUEST_NOT_FOUND);
     request.workflowHistory?.sort((a, b) => a.actionAt.getTime() - b.actionAt.getTime());
     request.versions?.sort((a, b) => a.id - b.id);
     const flat = toFlatResponse(request);
@@ -589,7 +595,7 @@ export class RegistrationRequestService {
 
   private async findOneEntity(id: number): Promise<RegistrationRequest> {
     const request = await this.requests.findOne({ where: { id }, relations: this.findOneEntityRelations });
-    if (!request) throw new NotFoundException('Registration request not found');
+    if (!request) throw new NotFoundException(ERROR_MESSAGES.REGISTRATION_REQUEST_NOT_FOUND);
     return request;
   }
 
@@ -599,7 +605,7 @@ export class RegistrationRequestService {
    *  separate connection against the not-yet-committed write. */
   private async findOneEntityInTransaction(manager: DataSource['manager'], id: number): Promise<RegistrationRequest> {
     const request = await manager.findOne(RegistrationRequest, { where: { id }, relations: this.findOneEntityRelations });
-    if (!request) throw new NotFoundException('Registration request not found');
+    if (!request) throw new NotFoundException(ERROR_MESSAGES.REGISTRATION_REQUEST_NOT_FOUND);
     return request;
   }
 
@@ -616,7 +622,7 @@ export class RegistrationRequestService {
         ...(dto.termsAccepted ? { termsAcceptedAt: new Date(), termsAcceptedIp: ip ?? null } : {}),
         channel: dto.channel ?? RegistrationChannel.CS,
         status: RegistrationRequestStatus.DRAFT,
-        submittedDate: new Date().toISOString().slice(0, 10),
+        submittedDate: new Date().toISOString().slice(0, ISO_DATE_LENGTH),
       });
       const saved = await manager.save(RegistrationRequest, entity);
       saved.businessCode = `REG-${String(saved.id).padStart(4, '0')}`;
@@ -632,9 +638,9 @@ export class RegistrationRequestService {
       await this.appendVersionSnapshot(manager, saved, 'Draft Created', actorId);
 
       await this.audit.record({
-        moduleName: 'registration-requests',
+        moduleName: AUDIT_MODULE.REGISTRATION_REQUESTS,
         entityId: saved.id,
-        action: 'CREATE',
+        action: AUDIT_ACTION.CREATE,
         newValue: { status: saved.status, channel: saved.channel },
         performedBy: actorId,
       }, manager);
@@ -837,7 +843,7 @@ export class RegistrationRequestService {
     // person-name field for both account types (see RegistrationCustomerDetail's own doc comment)
     // — a Corporate request's Contact Person/Manager on License/Authorized Representative uses
     // the exact same field an Individual applicant does, never a separate contactPersonName check.
-    if (await this.attributeService.isMandatory('REGISTRATION_NAME_MANDATORY')) {
+    if (await this.attributeService.isMandatory(ATTRIBUTE_KEY.REGISTRATION_NAME_MANDATORY)) {
       // lastName is deliberately NOT required here — a single-word legal name (e.g. from an
       // Emirates ID with no separate family name) legitimately produces an empty lastName, and
       // that must not block submission. Mirrors the same rule already enforced on the wizard's
@@ -985,9 +991,9 @@ export class RegistrationRequestService {
     // Tenants but not Owners" or vice versa.
     const securityDepositMandatory =
       request.residentType === RegistrationResidentType.OWNER
-        ? await this.attributeService.isMandatory('SECURITY_DEPOSIT_MANDATORY_OWNER')
-        : await this.attributeService.isMandatory('SECURITY_DEPOSIT_MANDATORY_TENANT');
-    const activationFeeMandatory = await this.attributeService.isMandatory('ACTIVATION_FEE_MANDATORY');
+        ? await this.attributeService.isMandatory(ATTRIBUTE_KEY.SECURITY_DEPOSIT_MANDATORY_OWNER)
+        : await this.attributeService.isMandatory(ATTRIBUTE_KEY.SECURITY_DEPOSIT_MANDATORY_TENANT);
+    const activationFeeMandatory = await this.attributeService.isMandatory(ATTRIBUTE_KEY.ACTIVATION_FEE_MANDATORY);
 
     // Leaseout-vs-occupied Owner is a PRICING distinction only (which tariff amount applies below)
     // — never a required/not-required distinction, which is decided by residentType alone above.
@@ -1079,7 +1085,7 @@ export class RegistrationRequestService {
   }
 
   /**
-   * The deposit gate now runs AFTER Supervisor Approval, never before — the Customer account
+   * The deposit gate now runs AFTER approval, never before — the Customer account
    * already exists by the time this is called. Shared by `approve()` (the automatic, unconditional
    * check that fires immediately once a Customer is created) and `requestDeposit()` (a manual
    * re-trigger for an already-approved request, e.g. re-raising a reversed demand). Runs and saves
@@ -1300,7 +1306,7 @@ export class RegistrationRequestService {
       // THE flip from INACTIVE to ACTIVE for a Customer whose deposit WAS required — the
       // "Not Required" case already activated immediately at CustomerService.activate() time (see
       // that method's own doc comment); this is the other half of the same corrected rule
-      // (Supervisor Approved must NOT mean fully Active — only a verified-or-not-required deposit
+      // (Approved must NOT mean fully Active — only a verified-or-not-required deposit
       // does). Same transaction/manager as everything else here, never a separate commit — deposit
       // Verified and account Active must reach the DB atomically together.
       await this.customerService.activateFromDepositVerification(request.customer!.id, manager);
@@ -1311,7 +1317,7 @@ export class RegistrationRequestService {
   }
 
   /**
-   * The Supervisor's "cancel/reject the payment" verification action. Previously this only reset
+   * The approver's "cancel/reject the payment" verification action. Previously this only reset
    * `depositStatus` back to REQUESTED without touching the demand the customer had just paid
    * against — that demand stayed stuck at `Paid` forever, so the next `recordDepositPayment` call
    * (which only ever looks for a demand with `status === RAISED`, per that method's own doc
@@ -1374,7 +1380,7 @@ export class RegistrationRequestService {
   private readonly APPROVABLE_FROM_STATUSES: RegistrationRequestStatus[] = [...CS_REVIEW_STATUSES];
 
   /**
-   * Business flow (spec): Pending CS Review -> Supervisor Approves -> Customer Account Created ->
+   * Business flow (spec): Pending Review -> Approver Approves -> Customer Account Created ->
    * Security Deposit Required? -> Yes: Deposit Demand Created (awaiting payment/verification) ->
    * No: account ready for the (follow-up) activation invite immediately.
    *
@@ -1449,7 +1455,7 @@ export class RegistrationRequestService {
 
       await this.appendHistory(manager, saved, RegistrationWorkflowAction.BUSINESS_APPROVED, actorId, dto.comments ?? null);
 
-      // Security Deposit happens ONLY after Supervisor Approval — checked here, immediately after
+      // Security Deposit happens ONLY after approval — checked here, immediately after
       // the Customer row exists, never before. Skipped entirely if a demand was already verified
       // pre-approval (the legacy path above) — that request already went through this decision (and
       // already sent whatever activation email applied back then), so `sendActivationEmail` stays
@@ -1464,9 +1470,9 @@ export class RegistrationRequestService {
       }
 
       await this.audit.record({
-        moduleName: 'registration-requests',
+        moduleName: AUDIT_MODULE.REGISTRATION_REQUESTS,
         entityId: saved.id,
-        action: 'APPROVE',
+        action: AUDIT_ACTION.APPROVE,
         newValue: { customerId: customer.id },
         performedBy: actorId,
       }, manager);
@@ -1666,7 +1672,7 @@ export class RegistrationRequestService {
     }
 
     doc.status = RegistrationDocumentStatus.VALID;
-    doc.uploadedDate = new Date().toISOString().slice(0, 10);
+    doc.uploadedDate = new Date().toISOString().slice(0, ISO_DATE_LENGTH);
     doc.fileRef = dto.fileRef;
     doc.fileData = dto.fileData ?? null;
 
@@ -1683,7 +1689,7 @@ export class RegistrationRequestService {
     const doc = (request.documents ?? []).find(
       (d) => d.type === docType && (d.unitId ?? null) === (unitId ?? null),
     );
-    if (!doc) throw new NotFoundException('Document not found on this registration request');
+    if (!doc) throw new NotFoundException(ERROR_MESSAGES.REGISTRATION_DOCUMENT_NOT_FOUND);
 
     await this.documents.remove(doc);
   }
@@ -1698,11 +1704,11 @@ export class RegistrationRequestService {
     const doc = (request.documents ?? []).find(
       (d) => d.type === docType && (d.unitId ?? null) === (dto.unitId ?? null),
     );
-    if (!doc) throw new NotFoundException('Document not found on this registration request');
+    if (!doc) throw new NotFoundException(ERROR_MESSAGES.REGISTRATION_DOCUMENT_NOT_FOUND);
 
     const fields = doc.extractedFields ?? [];
     const field = fields.find((f) => f.fieldName === fieldName);
-    if (!field) throw new NotFoundException('Extracted field not found on this document');
+    if (!field) throw new NotFoundException(ERROR_MESSAGES.EXTRACTED_FIELD_NOT_FOUND);
 
     field.verified = dto.verified;
     doc.extractedFields = fields;
@@ -1725,7 +1731,7 @@ export class RegistrationRequestService {
     const doc = (request.documents ?? []).find(
       (d) => d.type === docType && (d.unitId ?? null) === (dto.unitId ?? null),
     );
-    if (!doc) throw new NotFoundException('Document not found on this registration request');
+    if (!doc) throw new NotFoundException(ERROR_MESSAGES.REGISTRATION_DOCUMENT_NOT_FOUND);
 
     const fields = doc.extractedFields ?? [];
     doc.extractedFields = fields.map((f) => ({ ...f, verified: dto.verified }));
@@ -1743,7 +1749,7 @@ export class RegistrationRequestService {
     const doc = (request.documents ?? []).find(
       (d) => d.type === docType && (d.unitId ?? null) === (dto.unitId ?? null),
     );
-    if (!doc) throw new NotFoundException('Document not found on this registration request');
+    if (!doc) throw new NotFoundException(ERROR_MESSAGES.REGISTRATION_DOCUMENT_NOT_FOUND);
 
     doc.extractedFields = dto.fields.map((f) => ({
       fieldName: f.fieldName,
@@ -1769,11 +1775,11 @@ export class RegistrationRequestService {
     const doc = (request.documents ?? []).find(
       (d) => d.type === docType && (d.unitId ?? null) === (dto.unitId ?? null),
     );
-    if (!doc) throw new NotFoundException('Document not found on this registration request');
+    if (!doc) throw new NotFoundException(ERROR_MESSAGES.REGISTRATION_DOCUMENT_NOT_FOUND);
 
     const fields = doc.extractedFields ?? [];
     const field = fields.find((f) => f.fieldName === fieldName);
-    if (!field) throw new NotFoundException('Extracted field not found on this document');
+    if (!field) throw new NotFoundException(ERROR_MESSAGES.EXTRACTED_FIELD_NOT_FOUND);
 
     field.extractedValue = dto.extractedValue ?? null;
     field.verified = false;

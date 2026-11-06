@@ -2,15 +2,19 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as nodemailer from 'nodemailer';
 import { MailMessage, MailTemplate, MailTemplateResult } from './mail.interfaces';
+import { ENV_KEY } from '../common/constants/env.constants';
 
 @Injectable()
 export class MailService {
   private readonly logger = new Logger(MailService.name);
   private transporter: nodemailer.Transporter | null = null;
+  /** The SMTP connection/credentials check for the current transporter: started by the first send, shared by every send after it,
+   *  cleared on any failure (see verifyOnce). */
+  private verification: Promise<void> | null = null;
   private readonly fromAddress: string;
 
   constructor(private readonly config: ConfigService) {
-    this.fromAddress = this.config.get<string>('SMTP_FROM') ?? this.config.get<string>('SMTP_USER') ?? '';
+    this.fromAddress = this.config.get<string>('SMTP_FROM') ?? this.config.get<string>(ENV_KEY.SMTP_USER) ?? '';
   }
 
   /**
@@ -25,7 +29,7 @@ export class MailService {
 
     const host = this.config.get<string>('SMTP_HOST')?.trim();
     const port = this.config.get<string>('SMTP_PORT')?.trim();
-    const user = this.config.get<string>('SMTP_USER')?.trim();
+    const user = this.config.get<string>(ENV_KEY.SMTP_USER)?.trim();
     const password = this.config.get<string>('SMTP_PASSWORD');
 
     if (!host || !port || !user || !password) {
@@ -61,10 +65,16 @@ export class MailService {
    * itself (e.g. SendAsDenied when SMTP_USER isn't permitted to send as SMTP_FROM) — that failure
    * surfaces from sendMail, not verify(), so it is reported here with the server's own response
    * text/code rather than a generic message.
+   *
+   * This funnel carries customer and account mail (activation links, the security-deposit link) as well as staff notices, so NO
+   * preference or switch is applied here: a notification setting must never be able to stop a customer from activating their
+   * account. A staff notification asks NotificationPolicyService whether it may be sent BEFORE it calls in.
+   *
+   * The SMTP connection and credentials are verified once per transporter rather than before every message (verifyOnce).
    */
   async send(message: MailMessage): Promise<{ sent: boolean; error?: string }> {
     const maskedTo = maskEmail(message.to);
-    this.logger.log(`[SMTP] Attempting to send activation email to: ${maskedTo}`);
+    this.logger.log(`[SMTP] Attempting to send ${message.purpose ?? 'email'} to: ${maskedTo}`);
 
     let transporter: nodemailer.Transporter;
     try {
@@ -77,8 +87,7 @@ export class MailService {
     }
 
     try {
-      await transporter.verify();
-      this.logger.log('[SMTP] SMTP connection/auth successful');
+      await this.verifyOnce(transporter);
     } catch (err) {
       const error = describeSmtpError(err);
       this.logger.error('[SMTP] Email sending failed');
@@ -97,11 +106,34 @@ export class MailService {
       this.logger.log(`[SMTP] Email sent successfully - messageId: ${info.messageId}`);
       return { sent: true };
     } catch (err) {
+      // The connection or credentials this transporter was verified with may no longer hold: check them again before the next message.
+      this.verification = null;
       const error = describeSmtpError(err);
       this.logger.error('[SMTP] Email sending failed');
       this.logger.error(`[SMTP] Error: ${error}`);
       return { sent: false, error };
     }
+  }
+
+  /**
+   * Checks the SMTP connection and credentials ONCE per transporter instead of before every message: the first send starts the
+   * check, concurrent and later sends share its result, and any failure — of the check itself, or of a later sendMail — clears
+   * it so the next message checks again (a rejected login or an unreachable server is reported as such, never hidden behind a
+   * stale "verified"). Failure behaviour is unchanged: a failed check means nothing is sent and the error is returned.
+   */
+  private verifyOnce(transporter: nodemailer.Transporter): Promise<void> {
+    if (!this.verification) {
+      this.verification = transporter.verify().then(
+        () => {
+          this.logger.log('[SMTP] SMTP connection/auth successful');
+        },
+        (err: unknown) => {
+          this.verification = null;
+          throw err;
+        },
+      );
+    }
+    return this.verification;
   }
 
   /** Renders a template with its variables, then sends it — the one call site most callers need. */

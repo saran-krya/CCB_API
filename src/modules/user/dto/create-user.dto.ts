@@ -8,7 +8,6 @@ import {
 import {
   ArrayNotEmpty,
   ArrayUnique,
-  Matches,
   IsArray,
   IsBoolean,
   IsEmail,
@@ -17,8 +16,19 @@ import {
   IsString,
   MaxLength,
   Min,
-  MinLength,
 } from "class-validator";
+
+import {
+  IsStrongPassword,
+  PASSWORD_MAX_BYTES,
+  PASSWORD_MIN_LENGTH,
+  PASSWORD_POLICY_MESSAGE,
+} from "../../../common/validators/strong-password.validator";
+import {
+  IsMobileNumber,
+  IsPersonName,
+  Trim,
+} from "../../../common/validators/person-fields.validator";
 
 export class CreateUserDto {
   @ApiProperty({
@@ -38,32 +48,32 @@ export class CreateUserDto {
   @IsOptional()
   reportingManagerId?: number;
 
+  // First and last name share ONE rule with the user's own profile DTO (UpdateOwnProfileDto): trimmed, a real string, not
+  // blank, at most 100 characters — see person-fields.validator. The middle name may be blank (it means "none").
   @ApiProperty({
     example: "Fernando",
   })
-  @IsString()
-  @MaxLength(100)
+  @IsPersonName()
   firstName!: string;
 
   @ApiPropertyOptional({
     example: "A",
   })
-  @IsString()
   @IsOptional()
-  @MaxLength(100)
+  @IsPersonName({ allowBlank: true })
   middleName?: string;
 
   @ApiProperty({
     example: "Jamil",
   })
-  @IsString()
-  @MaxLength(100)
+  @IsPersonName()
   lastName!: string;
 
   @ApiPropertyOptional({
     example:
       "Senior Billing Executive",
   })
+  @Trim()
   @IsString()
   @IsOptional()
   @MaxLength(150)
@@ -78,22 +88,16 @@ export class CreateUserDto {
     example: "+971501234567",
   })
   @IsOptional()
-  @IsString()
-  @Matches(
-    /^\+\d{8,15}$/,
-    {
-      message:
-        "Mobile number must be in international format. Example: +971501234567",
-    },
-  )
+  @IsMobileNumber()
   mobile?: string;
 
   @ApiPropertyOptional({
-    minLength: 8,
+    minLength: PASSWORD_MIN_LENGTH,
+    maxLength: PASSWORD_MAX_BYTES,
+    description: PASSWORD_POLICY_MESSAGE,
   })
-  @IsString()
   @IsOptional()
-  @MinLength(8)
+  @IsStrongPassword()
   password?: string;
 
   @ApiPropertyOptional({
@@ -106,6 +110,7 @@ export class CreateUserDto {
   @ApiPropertyOptional({
     example: "EMP001",
   })
+  @Trim()
   @IsString()
   @IsOptional()
   @MaxLength(50)
@@ -121,8 +126,11 @@ export class CreateUserDto {
 
 }
 
-// No role field at all: roles are changed only through POST/DELETE /users/:id/roles, the one path
-// that enforces the self-change, last-role and last-SUPER_ADMIN rules (see UserService.update).
+// No role field and no password field. Roles are changed only through POST/DELETE /users/:id/roles, the
+// one path that enforces the privilege, self-change, last-role and last-SUPER_ADMIN rules; a password is
+// changed only through the dedicated change-password / admin-reset flows (which verify the current
+// password or the actor's authority, apply the password policy and revoke sessions). With the global
+// forbidNonWhitelisted pipe, a request carrying either field is answered with a 400 (see UserService.update).
 export class UpdateUserDto extends PartialType(
-  OmitType(CreateUserDto, ["roleIds"] as const),
+  OmitType(CreateUserDto, ["roleIds", "password"] as const),
 ) { }

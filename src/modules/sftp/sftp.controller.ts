@@ -6,6 +6,7 @@ import { ValidationService } from './validation.service';
 import { IngestionService } from './ingestion.service';
 import { SftpCronService } from './sftp-cron.service';
 import { TriggerSource } from './entities/trigger-source.enum';
+import { ACTION_CODES } from '../../common/constants/action-codes.constants';
 
 @ApiBearerAuth()
 @ApiTags('SFTP')
@@ -19,14 +20,14 @@ export class SftpController {
   ) {}
 
   @Get('test')
-  @Permission('SFTP_MONITOR_VIEW')
+  @Permission(ACTION_CODES.SFTP_MONITOR_VIEW)
   @ApiOperation({ summary: 'Connect to the configured SFTP server and list files in SFTP_REMOTE_PATH' })
   test() {
     return this.sftp.listFiles();
   }
 
   @Get('download/:fileName')
-  @Permission('SFTP_MONITOR_VIEW')
+  @Permission(ACTION_CODES.SFTP_MONITOR_VIEW)
   @ApiOperation({ summary: 'Download a named file from SFTP_REMOTE_PATH into storage/sftp/temp' })
   @ApiParam({ name: 'fileName', type: String, example: 'DTU_DTU-RIV-01_20260720.csv' })
   download(@Param('fileName') fileName: string) {
@@ -34,7 +35,7 @@ export class SftpController {
   }
 
   @Get('parse/:fileName')
-  @Permission('SFTP_MONITOR_VIEW')
+  @Permission(ACTION_CODES.SFTP_MONITOR_VIEW)
   @ApiOperation({ summary: 'Download a .csv or .xlsx from SFTP_REMOTE_PATH and parse it into JSON rows' })
   @ApiParam({ name: 'fileName', type: String, example: 'DTU_DTU-RIV-01_20260720.csv' })
   async parse(@Param('fileName') fileName: string) {
@@ -44,7 +45,7 @@ export class SftpController {
 
 
   @Post('validate/:fileName')
-  @Permission('SFTP_MONITOR_VIEW')
+  @Permission(ACTION_CODES.SFTP_MONITOR_VIEW)
   @ApiOperation({ summary: 'Download, parse, and validate a .csv or .xlsx from SFTP_REMOTE_PATH — returns a report only, writes nothing' })
   @ApiParam({ name: 'fileName', type: String, example: 'DTU_DTU-RIV-01_20260720.csv' })
   async validate(@Param('fileName') fileName: string) {
@@ -71,7 +72,7 @@ export class SftpController {
   // separate SFTP_MONITOR_TRIGGER action, not SFTP_MONITOR_VIEW, after a confirmed incident where
   // read-only monitoring access alone was enough to trigger a real production write. See
   // SFTP_MONITOR_TRIGGER's own seed-data.ts comment.
-  @Permission('SFTP_MONITOR_TRIGGER')
+  @Permission(ACTION_CODES.SFTP_MONITOR_TRIGGER)
   @ApiOperation({ summary: '[Dev] Manually ingest a single named file — download, parse, validate, hash, and persist. Explicit single-file retrigger: bypasses the already-processed skip, always runs the file through in full.' })
   @ApiParam({ name: 'fileName', type: String, example: 'DTU_DTU-RIV-01_20260720.csv' })
   async testIngest(@Param('fileName') fileName: string) {
@@ -88,7 +89,7 @@ export class SftpController {
   @Post('run-now')
   // Same reasoning as test-ingest above — this triggers the full ingestion job (real writes) and
   // must not be authorized by read-only monitoring access alone.
-  @Permission('SFTP_MONITOR_TRIGGER')
+  @Permission(ACTION_CODES.SFTP_MONITOR_TRIGGER)
   async runNow() {
     return this.cron.runOnce(TriggerSource.MANUAL);
   }

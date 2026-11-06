@@ -14,6 +14,7 @@ import {
   ResolvedFileLocation,
   toSftpFileListResponseDto,
 } from './dto/sftp-file-list-response.dto';
+import { SORT_ORDER } from '../../common/constants/sort.constants';
 
 
 const SORTABLE_COLUMNS: Record<string, string> = {
@@ -49,7 +50,7 @@ export class SftpFileListService {
       .createQueryBuilder('log')
       .leftJoinAndSelect('log.property', 'property')
       .leftJoinAndSelect('log.community', 'community')
-      .orderBy(orderCol, sortOrder ?? 'DESC');
+      .orderBy(orderCol, sortOrder ?? SORT_ORDER.DESC);
 
     if (status) qb.andWhere('log.file_status = :status', { status });
     if (communityId) qb.andWhere('community.id = :communityId', { communityId });
@@ -143,7 +144,7 @@ export class SftpFileListService {
   }
 
   async getFilterMetadata() {
-    const communities = await this.communities.find({ select: ['id', 'name'], order: { name: 'ASC' } });
+    const communities = await this.communities.find({ select: ['id', 'name'], order: { name: SORT_ORDER.ASC } });
 
     return {
       communities: communities.map((c) => ({ id: c.id, name: c.name })),

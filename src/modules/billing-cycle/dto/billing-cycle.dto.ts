@@ -13,6 +13,8 @@ import {
 } from 'class-validator';
 import { BasePaginationDto } from '../../../common/dto/base-pagination.dto';
 import { BillingCycleStatus } from '../entities/billing-cycle-version.entity';
+import { DEFAULT_LIMIT, MIN_LIMIT } from '../../../common/constants/pagination.constants';
+import { MAX_DAY_OF_MONTH, MAX_OFFSET_DAYS } from '../billing-cycle.constants';
 
 export class CreateBillingCycleDto {
   @ApiProperty()
@@ -31,38 +33,38 @@ export class CreateBillingCycleDto {
   @IsString()
   frequency!: string;
 
-  @ApiProperty({ minimum: 1, maximum: 31 })
+  @ApiProperty({ minimum: 1, maximum: MAX_DAY_OF_MONTH })
   @IsInt()
   @Min(1)
-  @Max(31)
+  @Max(MAX_DAY_OF_MONTH)
   @Type(() => Number)
   readingStartDay!: number;
 
-  @ApiProperty({ minimum: 1, maximum: 31 })
+  @ApiProperty({ minimum: 1, maximum: MAX_DAY_OF_MONTH })
   @IsInt()
   @Min(1)
-  @Max(31)
+  @Max(MAX_DAY_OF_MONTH)
   @Type(() => Number)
   readingEndDay!: number;
 
-  @ApiProperty({ minimum: 0, maximum: 365 })
+  @ApiProperty({ minimum: 0, maximum: MAX_OFFSET_DAYS })
   @IsInt()
   @Min(0)
-  @Max(365)
+  @Max(MAX_OFFSET_DAYS)
   @Type(() => Number)
   billGenerationDays!: number;
 
-  @ApiProperty({ minimum: 0, maximum: 365 })
+  @ApiProperty({ minimum: 0, maximum: MAX_OFFSET_DAYS })
   @IsInt()
   @Min(0)
-  @Max(365)
+  @Max(MAX_OFFSET_DAYS)
   @Type(() => Number)
   billIssueDays!: number;
 
-  @ApiProperty({ minimum: 1, maximum: 365 })
+  @ApiProperty({ minimum: 1, maximum: MAX_OFFSET_DAYS })
   @IsInt()
   @Min(1)
-  @Max(365)
+  @Max(MAX_OFFSET_DAYS)
   @Type(() => Number)
   billDueDays!: number;
 
@@ -73,17 +75,17 @@ export class CreateBillingCycleDto {
 }
 
 export class NewVersionBillingCycleDto {
-  @ApiProperty({ minimum: 1, maximum: 31 })
+  @ApiProperty({ minimum: 1, maximum: MAX_DAY_OF_MONTH })
   @IsInt()
   @Min(1)
-  @Max(31)
+  @Max(MAX_DAY_OF_MONTH)
   @Type(() => Number)
   readingStartDay!: number;
 
-  @ApiProperty({ minimum: 1, maximum: 31 })
+  @ApiProperty({ minimum: 1, maximum: MAX_DAY_OF_MONTH })
   @IsInt()
   @Min(1)
-  @Max(31)
+  @Max(MAX_DAY_OF_MONTH)
   @Type(() => Number)
   readingEndDay!: number;
 
@@ -131,13 +133,13 @@ export class DeprecateBillingCycleDto {
 }
 
 export class BillingCycleQueryDto extends BasePaginationDto {
-  @ApiPropertyOptional({ default: 20, minimum: 1, maximum: 1000 })
+  @ApiPropertyOptional({ default: DEFAULT_LIMIT, minimum: MIN_LIMIT, maximum: 1000 })
   @IsOptional()
   @IsInt()
-  @Min(1)
+  @Min(MIN_LIMIT)
   @Max(1000)
   @Type(() => Number)
-  override limit = 20;
+  override limit = DEFAULT_LIMIT;
 
   @ApiPropertyOptional()
   @IsOptional()
@@ -168,19 +170,19 @@ export class BillingCycleQueryDto extends BasePaginationDto {
   @IsEnum(BillingCycleStatus)
   status?: BillingCycleStatus;
 
-  @ApiPropertyOptional({ minimum: 1, maximum: 31 })
+  @ApiPropertyOptional({ minimum: 1, maximum: MAX_DAY_OF_MONTH })
   @IsOptional()
   @IsInt()
   @Min(1)
-  @Max(31)
+  @Max(MAX_DAY_OF_MONTH)
   @Type(() => Number)
   readingStartDay?: number;
 
-  @ApiPropertyOptional({ minimum: 1, maximum: 31 })
+  @ApiPropertyOptional({ minimum: 1, maximum: MAX_DAY_OF_MONTH })
   @IsOptional()
   @IsInt()
   @Min(1)
-  @Max(31)
+  @Max(MAX_DAY_OF_MONTH)
   @Type(() => Number)
   readingEndDay?: number;
 }

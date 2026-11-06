@@ -17,6 +17,18 @@ import { Action } from './entities/action.entity';
 import { Screen } from '../screens/entities/screen.entity';
 import { ACTIONS } from '../../bootstrap/seed-data';
 import { AuditService } from '../../audit/audit.service';
+import { ACTION_TO_RESOURCE_CODE } from '../iam/resource-catalog';
+import { ERROR_MESSAGES } from '../../common/constants/error-messages.constants';
+import { AUDIT_MODULE, AUDIT_ACTION } from '../../audit/audit.constants';
+
+/** Permission codes the system itself depends on: every seeded Action (seed-data.ts) plus every code the IAM
+ *  Resource catalog maps. Guards, the sidebar's NAV_PERMISSION_MAP and the Policy editor key off these exact
+ *  codes, so such an action can have its description or ordering edited but can never be renamed,
+ *  deactivated or deleted — doing so would silently break the authorization it backs. */
+const SYSTEM_ACTION_CODES: ReadonlySet<string> = new Set([
+  ...ACTIONS.map((action) => action.code),
+  ...Object.keys(ACTION_TO_RESOURCE_CODE),
+]);
 
 @Injectable()
 export class ActionsService {
@@ -45,7 +57,7 @@ export class ActionsService {
 
       if (!screen) {
         throw new NotFoundException(
-          'Screen not found',
+          ERROR_MESSAGES.SCREEN_NOT_FOUND,
         );
       }
     }
@@ -73,9 +85,9 @@ export class ActionsService {
     const saved = await this.actionRepository.save(action);
 
     await this.audit.record({
-      moduleName: 'actions',
+      moduleName: AUDIT_MODULE.ACTIONS,
       entityId: saved.id,
-      action: 'CREATE',
+      action: AUDIT_ACTION.CREATE,
       newValue: saved,
       performedBy: actorId,
     });
@@ -125,7 +137,7 @@ export class ActionsService {
 
     if (!action) {
       throw new NotFoundException(
-        'Action not found',
+        ERROR_MESSAGES.ACTION_NOT_FOUND,
       );
     }
 
@@ -142,6 +154,15 @@ export class ActionsService {
 
     const oldValue = { ...action };
 
+    if (SYSTEM_ACTION_CODES.has(action.code)) {
+      const renames = (dto.code !== undefined && dto.code !== action.code) || (dto.name !== undefined && dto.name !== action.name);
+      if (renames || dto.isActive === false) {
+        throw new ConflictException(
+          `"${action.code}" is a system permission — it cannot be renamed or deactivated, because authorization depends on it.`,
+        );
+      }
+    }
+
     if (dto.parentActionId != null) {
       if (dto.parentActionId === id) {
         throw new ConflictException('An action cannot be its own parent');
@@ -156,9 +177,9 @@ export class ActionsService {
     );
 
     await this.audit.record({
-      moduleName: 'actions',
+      moduleName: AUDIT_MODULE.ACTIONS,
       entityId: id,
-      action: 'UPDATE',
+      action: AUDIT_ACTION.UPDATE,
       oldValue,
       newValue: saved,
       performedBy: actorId,
@@ -171,14 +192,20 @@ export class ActionsService {
     const action =
       await this.findOne(id);
 
+    if (SYSTEM_ACTION_CODES.has(action.code)) {
+      throw new ConflictException(
+        `"${action.code}" is a system permission and cannot be deleted, because authorization depends on it.`,
+      );
+    }
+
     await this.actionRepository.softRemove(
       action,
     );
 
     await this.audit.record({
-      moduleName: 'actions',
+      moduleName: AUDIT_MODULE.ACTIONS,
       entityId: id,
-      action: 'DELETE',
+      action: AUDIT_ACTION.DELETE,
       oldValue: action,
       performedBy: actorId,
     });

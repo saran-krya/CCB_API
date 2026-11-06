@@ -67,6 +67,12 @@ export class PolicyController {
     return this.policyQuery.attachedRoles(id, query);
   }
 
+  // The roles the policy is NOT attached to (the Attach page) — a literal segment, like "roles/list" above.
+  @Get(':id/roles/available/list')
+  findAvailableRolesPage(@Param('id', ParseIntPipe) id: number, @Query() query: PolicyAttachedRolesQueryDto) {
+    return this.policyQuery.availableRoles(id, query);
+  }
+
   @Get(':id/roles')
   findAttachedRoles(@Param('id', ParseIntPipe) id: number) {
     return this.iam.getRolesForPolicy(id);

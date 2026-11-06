@@ -32,6 +32,10 @@ import { CurrentCustomerResolutionDto, CustomerDetailDto, CustomerListDto, UnitC
 import { CustomerActivationToken } from './entities/customer-activation-token.entity';
 import { Customer, CustomerAccountStatus, CustomerAccountType, ResidentType } from './entities/customer.entity';
 import { Company } from './entities/company.entity';
+import { AUDIT_MODULE, AUDIT_ACTION } from '../../audit/audit.constants';
+import { SORT_ORDER } from '../../common/constants/sort.constants';
+import { ERROR_MESSAGES } from '../../common/constants/error-messages.constants';
+import { PASSWORD_HASH_ROUNDS } from '../../common/constants/auth.constants';
 
 export interface UnitOccupancyResolution {
   open: boolean;
@@ -40,8 +44,6 @@ export interface UnitOccupancyResolution {
   ownerPhone: string | null;
   reason: string;
 }
-
-const PASSWORD_HASH_ROUNDS = 12;
 
 @Injectable()
 export class CustomerService {
@@ -127,9 +129,9 @@ export class CustomerService {
     }
 
     await this.audit.record({
-      moduleName: 'customers',
+      moduleName: AUDIT_MODULE.CUSTOMERS,
       entityId: saved.id,
-      action: 'CREATE',
+      action: AUDIT_ACTION.CREATE,
       newValue: {
         fullName: saved.fullName,
         residentType: saved.residentType,
@@ -154,7 +156,7 @@ export class CustomerService {
       .addSelect(['property.id', 'property.name'])
       .leftJoin('property.community', 'community')
       .addSelect(['community.id', 'community.name'])
-      .orderBy(`c.${sortBy ?? 'createdAt'}`, sortOrder ?? 'DESC');
+      .orderBy(`c.${sortBy ?? 'createdAt'}`, sortOrder ?? SORT_ORDER.DESC);
 
     if (search) {
       qb.andWhere(
@@ -300,7 +302,7 @@ export class CustomerService {
         additionalUnits: true,
       },
     });
-    if (!customer) throw new NotFoundException('Customer not found');
+    if (!customer) throw new NotFoundException(ERROR_MESSAGES.CUSTOMER_NOT_FOUND);
 
     // See CurrentCustomerResolutionDto.ownerMissing's own doc comment for the business rule this
     // reuses as-is (same resolveCurrentCustomer this DTO's dormant field was already computed by
@@ -358,7 +360,7 @@ export class CustomerService {
    */
   async updateMyProfile(customerId: number, dto: UpdateMyProfileDto): Promise<CustomerDetailDto> {
     const customer = await this.customers.findOne({ where: { id: customerId } });
-    if (!customer) throw new NotFoundException('Customer not found');
+    if (!customer) throw new NotFoundException(ERROR_MESSAGES.CUSTOMER_NOT_FOUND);
 
     const oldValue = {
       fullName: customer.fullName,
@@ -374,9 +376,9 @@ export class CustomerService {
     await this.customers.save(customer);
 
     await this.audit.record({
-      moduleName: 'customers',
+      moduleName: AUDIT_MODULE.CUSTOMERS,
       entityId: customerId,
-      action: 'UPDATE',
+      action: AUDIT_ACTION.UPDATE,
       oldValue,
       newValue: dto,
       performedBy: customerId,
@@ -399,14 +401,14 @@ export class CustomerService {
       where: { id: customerId },
       relations: { unit: true, additionalUnits: true },
     });
-    if (!customer) throw new NotFoundException('Customer not found');
+    if (!customer) throw new NotFoundException(ERROR_MESSAGES.CUSTOMER_NOT_FOUND);
     const ids = new Set<number>([customer.unit.id, ...(customer.additionalUnits ?? []).map((u) => u.id)]);
     return [...ids];
   }
 
   async findOneEntity(id: number): Promise<Customer> {
     const customer = await this.customers.findOne({ where: { id } });
-    if (!customer) throw new NotFoundException('Customer not found');
+    if (!customer) throw new NotFoundException(ERROR_MESSAGES.CUSTOMER_NOT_FOUND);
     return customer;
   }
 
@@ -415,7 +417,7 @@ export class CustomerService {
       where: { id },
       relations: { unit: true },
     });
-    if (!customer) throw new NotFoundException('Customer not found');
+    if (!customer) throw new NotFoundException(ERROR_MESSAGES.CUSTOMER_NOT_FOUND);
 
     if (dto.unitId && dto.unitId !== customer.unit?.id) {
       customer.unit = await this.units.findOneEntity(dto.unitId);
@@ -437,9 +439,9 @@ export class CustomerService {
     const saved = await this.customers.save(customer);
 
     await this.audit.record({
-      moduleName: 'customers',
+      moduleName: AUDIT_MODULE.CUSTOMERS,
       entityId: id,
-      action: 'UPDATE',
+      action: AUDIT_ACTION.UPDATE,
       oldValue,
       newValue: {
         fullName: saved.fullName,
@@ -454,14 +456,14 @@ export class CustomerService {
 
   async remove(id: number, actorId?: number) {
     const customer = await this.customers.findOne({ where: { id } });
-    if (!customer) throw new NotFoundException('Customer not found');
+    if (!customer) throw new NotFoundException(ERROR_MESSAGES.CUSTOMER_NOT_FOUND);
 
     await this.customers.softRemove(customer);
 
     await this.audit.record({
-      moduleName: 'customers',
+      moduleName: AUDIT_MODULE.CUSTOMERS,
       entityId: id,
-      action: 'DELETE',
+      action: AUDIT_ACTION.DELETE,
       oldValue: {
         fullName: customer.fullName,
         residentType: customer.residentType,
@@ -567,7 +569,7 @@ export class CustomerService {
    */
   async issueActivationEmail(customerId: number, depositAmount?: number): Promise<{ sent: boolean; error?: string }> {
     const customer = await this.customers.findOne({ where: { id: customerId } });
-    if (!customer) throw new NotFoundException('Customer not found');
+    if (!customer) throw new NotFoundException(ERROR_MESSAGES.CUSTOMER_NOT_FOUND);
     if (!customer.email) {
       this.logger.warn(`Cannot send activation email for customer ${customerId} — no email on file`);
       return { sent: false, error: 'Customer has no email address on file' };
@@ -612,7 +614,7 @@ export class CustomerService {
           });
 
     await this.audit.record({
-      moduleName: 'customers',
+      moduleName: AUDIT_MODULE.CUSTOMERS,
       entityId: customer.id,
       action: 'ACTIVATION_EMAIL_SENT',
       newValue: { sent: result.sent, depositRequired: depositAmount != null },
@@ -631,7 +633,7 @@ export class CustomerService {
       where: { id: customerId },
       relations: { unit: true },
     });
-    if (!customer) throw new NotFoundException('Customer not found');
+    if (!customer) throw new NotFoundException(ERROR_MESSAGES.CUSTOMER_NOT_FOUND);
     if (customer.accountStatus === CustomerAccountStatus.ACTIVE) {
       throw new ConflictException('This customer has already activated their account');
     }
@@ -639,7 +641,7 @@ export class CustomerService {
     const result = await this.issueActivationEmail(customerId, customer.securityDeposit != null ? Number(customer.securityDeposit) : undefined);
 
     await this.audit.record({
-      moduleName: 'customers',
+      moduleName: AUDIT_MODULE.CUSTOMERS,
       entityId: customer.id,
       action: 'ACTIVATION_EMAIL_RESENT',
       newValue: { sent: result.sent },
@@ -703,7 +705,7 @@ export class CustomerService {
       await manager.save(CustomerActivationToken, token);
 
       await this.audit.record({
-        moduleName: 'customers',
+        moduleName: AUDIT_MODULE.CUSTOMERS,
         entityId: token.customer.id,
         action: 'ACTIVATED',
         newValue: { accountStatus: shouldActivateNow ? CustomerAccountStatus.ACTIVE : CustomerAccountStatus.INACTIVE },

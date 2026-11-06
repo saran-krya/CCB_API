@@ -9,17 +9,49 @@ database, and what happens on every run after that. It describes the real behavi
 `src/bootstrap/bootstrap.service.ts` and `src/modules/role-permissions/role-permissions.service.ts`
 — nothing here is approximate.
 
+### Schema creation (migrations) — before any seeding
+
+The schema is created by migrations, never by `synchronize` outside local development (`synchronize` is a startup
+error anywhere but `NODE_ENV=development`). TypeORM applies every pending migration at startup, in timestamp order
+(`DB_MIGRATIONS_RUN=false` turns that off — then run `npm run migration:run` yourself, with
+`DB_MIGRATION_USERNAME` / `DB_MIGRATION_PASSWORD` if DDL needs a separate account).
+
+- **Empty database:** the older migrations are deltas written against a schema that `synchronize` had already
+  created, so on an empty database each one detects the missing tables and skips itself. The last one,
+  `src/migrations/1793800000001-InitialSchemaBaseline.ts`, then builds the complete schema — every table, index,
+  unique key and foreign key, generated from the entities with TypeORM's own schema builder. It deliberately sits
+  AFTER the deltas: at least one of them (`RehomeBillRunScreenToBillingManagement`) queries a table name that no
+  longer exists in the finished schema.
+- **Existing database:** the baseline does nothing as soon as any application table holds a row — it never drops,
+  alters or rewrites anything — so only the genuinely pending migrations are applied and every row is kept. On a
+  database with no data it only adds what is missing, so a run interrupted half-way is completed by the next one.
+- The baseline is a frozen snapshot: never edit it to change the schema — add a new migration.
+- If the API starts against a database with no schema (for example `DB_MIGRATIONS_RUN=false` and no manual run), it
+  stops with an error saying so instead of failing on a missing table.
+
 ### Fresh database (first ever boot)
 
-`BootstrapService.onApplicationBootstrap()` checks whether the `users` table has any rows at all.
-If it is empty, this is treated as a brand-new install and the following happens, inside one
-database transaction:
+Once the schema exists, `BootstrapService.onApplicationBootstrap()` checks whether the `users` table has any
+(non-deleted) rows at all. If it is empty, this is treated as a brand-new install and the following happens, inside
+one database transaction:
 
 1. Every module, sub-module, screen, and action (the full permission tree) is seeded from
-   `src/bootstrap/seed-data.ts`.
-2. The system's fixed set of roles is created — `SUPER_ADMIN`, `FINANCE`, `OPERATIONS`,
-   `CUSTOMER_SUPPORT`, `CUSTOMER_SERVICE_EXECUTIVE`, `CUSTOMER_SERVICE_SUPERVISOR`, `CUSTOMER`.
+   `src/bootstrap/seed-data.ts`; then the list-of-values (LOV) entries and the system attributes.
+2. The one predefined role, `SUPER_ADMIN`, is created. It is the ONLY role the system defines: every other role is
+   created and managed dynamically by `SUPER_ADMIN` through the application (Roles & Permissions) and lives only in
+   the database — nothing is seeded, assumed, reserved or auto-granted for any other role name.
 3. **One Super Admin user is created and assigned the `SUPER_ADMIN` role.**
+4. The Community / Property / Unit master data (8 communities, 67 properties, 111 units) from
+   `src/bootstrap/seed-locations.ts`, which carries the data of `seed-community-property-unit.sql`. The SQL files stay
+   in the repository for reference; `seed-units-random.sql` (random test units) is intentionally not part of
+   initialization.
+
+Every step is find-or-create on the row's natural key (code, name, email, or property + unit number), including
+soft-deleted rows: a database that already holds part of this data is completed, never duplicated or overwritten.
+
+After the transaction commits, the registration document rules are ensured and the IAM synchronization runs (see
+below). If one of those fails, the data is already committed and the next start repeats them through the
+existing-database path.
 
 The admin user's identity comes from three environment variables:
 
@@ -42,60 +74,66 @@ below) and logs a warning to change the default password after first login.
 This is deliberately split into two independent mechanisms. Conflating them would overstate what
 either one does, so both are described separately and accurately:
 
-**1. Real, individual `role_permissions` rows (the vast majority of the app).**
-`RolePermissionsService.ensureAdminGrants()` runs on every application boot — fresh install and
-every subsequent restart — and inserts one concrete `role_permissions` row per (role, action) pair
-for every currently-active action, for the `SUPER_ADMIN` role (and `ADMIN`, if such a role is ever
-created — none is seeded by default). This is genuine grant data: you can query `role_permissions`
-and see a row for every action SUPER_ADMIN holds. Every route guarded by `@Permission(...)` —
-which is most of the API — is enforced purely by checking for these real rows, with no special
-case for any role name.
+**1. SUPER_ADMIN's system policy (every `@Permission(...)` route — the vast majority of the app).**
+Authorization on `@Permission(...)` routes is resolved only from policies: the policies attached to the
+user's roles, those roles' inline policies and the user's own inline policies
+(`IamService.getActionCodesGrantedByPoliciesForRoles`), with no special case for any role name.
+`IamService.ensureAdminPolicyGrants()` runs on every application boot — fresh install and every
+subsequent restart — creates the system-managed `SUPER_ADMIN Policy` if needed, attaches it to the
+`SUPER_ADMIN` role and to no other role (it is the only predefined role; no other role name is looked
+up, assumed or auto-granted), and keeps it holding every currently-active action except the business
+approvals below. This is genuine grant data: you can query `policy_statements` and see exactly what
+SUPER_ADMIN holds. `RolePermissionsService.ensureAdminGrants()` also runs on every boot and inserts one
+legacy `role_permissions` row per (SUPER_ADMIN, action) pair; those rows are the older permission tree and
+do not decide access on `@Permission(...)` routes.
 
-**Eight action codes are deliberately excluded from this automatic grant**, as a segregation-of-duties
-control — even the Super Admin does not get these for free:
-
-- `TARIFF_APPROVE`, `TARIFF_REJECT`
-- `BILLING_CYCLE_APPROVE`, `BILLING_CYCLE_REJECT`, `BILLING_CYCLE_APPROVAL_APPROVE`, `BILLING_CYCLE_APPROVAL_REJECT`
-- `BILL_RUN_APPROVE`
-- `WORKFLOW_MANAGE_APPROVERS`
-
-The first seven gate real financial approve/reject actions; the last one gates who else can be
-granted those approve actions. All eight must be granted explicitly through the Roles &
-Permissions screen (or the Workflow screen's approver assignment), even to Super Admin. The one
-exception: `ensureSuperAdminGrant('WORKFLOW_MANAGE_APPROVERS')` grants that one specific excluded
-code to `SUPER_ADMIN` only (never `ADMIN`) on every boot, so there is always at least one account
-that can configure approvers — it still has none of the other seven excluded codes automatically.
+**Business-transaction approvals are deliberately NOT granted to `SUPER_ADMIN`** — it administers the
+system, it does not decide business records. The approve/reject codes listed in
+`src/modules/iam/business-approval-actions.ts` (tariff, billing cycle, bill run, registration request
+and meter reading) are skipped by this automatic grant, and the permission resolver withholds them from
+any account that holds `SUPER_ADMIN`. They are granted to business roles — which `SUPER_ADMIN` creates
+dynamically — through policies. `WORKFLOW_MANAGE_APPROVERS` (choosing which roles approve) is system
+configuration and is granted to `SUPER_ADMIN` like any other administrative action. See
+[docs/SECURITY_HARDENING.md](docs/SECURITY_HARDENING.md), section 10.
 
 **2. A hardcoded role-name bypass (a small set of routes only).**
 A handful of routes use the older `@Roles(...)` decorator (role-name matching) instead of
-`@Permission(...)` — for example, the Roles & Permissions controller itself is restricted to
-`ROLES.ADMIN` at the class level. For these specific routes, `RolesGuard` contains an explicit
+`@Permission(...)` — for example, the Policy administration controllers are restricted to
+`SUPER_ADMIN` at the class level (the Roles controller is permission-based now). For these specific routes, `RolesGuard` contains an explicit
 code-level bypass: a request from a user whose role name is `SUPER_ADMIN` is always allowed,
 regardless of whether any `role_permissions` row exists. This is not grant data — it is a
 condition in the guard's own code — and it only applies to `@Roles(...)`-protected routes, not to
 the `@Permission(...)`-protected routes described above.
 
-In short: most of what Super Admin can do is backed by real, queryable permission rows; a small,
-specific set of routes trust the `SUPER_ADMIN` role name directly in code.
+In short: most of what Super Admin can do is backed by real, queryable policy rows (its system policy); a
+small, specific set of routes trust the `SUPER_ADMIN` role name directly in code.
 
 ### Re-running bootstrap against an existing database
 
 Every subsequent application start checks the same `users` table count. If it is non-zero, the
-full seed (roles, Super Admin user) is **never run again** — only a set of idempotent backfill
+full seed (roles, Super Admin user, locations) is **never run again** — only the pending migrations (above) and a set of idempotent backfill
 calls run: `ensureCriticalDefaults()` for modules/sub-modules/screens/actions/LOVs/attributes, plus
-the same `ensureAdminGrants()` / `ensureSuperAdminGrant()` calls described above.
+the same `ensureAdminGrants()` call described above and its Policy-model counterpart
+`IamService.ensureAdminPolicyGrants()`.
 
 Every one of those backfill calls checks for an existing row before inserting — `ensureAdminGrants`
-skips any (role, action) pair that already has a grant row; `ensureSuperAdminGrant` and
-`ensureLeafModuleGrants` do the same. None of them ever delete or modify an existing user,
-role, or grant. Running the application against a database that already has data in it is safe to
-do as many times as needed — it only ever adds rows that are missing, never removes or overwrites
-anything that already exists.
+skips any (role, action) pair that already has a grant row; `ensureLeafModuleGrants` does the same.
+None of them ever delete or modify an existing user, role, or grant. The one deliberate exception:
+`ensureAdminPolicyGrants` also removes the business-approval codes from SUPER_ADMIN's own system policy.
+No other role — whatever it is called — is ever touched. Running the application against a database that
+already has data in it is safe to do as many times as needed: it adds the rows that are missing and
+otherwise changes nothing.
 
 ### Setting it up
 
 1. Copy `.env.example` to `.env`.
-2. Set `DEFAULT_ADMIN_PASSWORD` to a real password (do not commit this file).
+2. Set `DEFAULT_ADMIN_PASSWORD` to a real password that meets the password policy (at least 12 characters, at most 72 UTF-8 bytes — bcrypt ignores anything longer — and at least 3 of uppercase / lowercase / number / symbol) and a random `JWT_SECRET` of at least 32 characters (do not commit this file). The admin account must change its password at first sign-in.
 3. Optionally set `DEFAULT_ADMIN_EMAIL` and `DEFAULT_ADMIN_NAME`.
-4. Start the application against an empty database. Bootstrap runs automatically.
+4. Start ONE instance of the application against an empty database (the migrations, then bootstrap, run
+   automatically; do not start several instances at once on a brand-new database — migrations and the first
+   seed are not coordinated between processes).
 5. Log in with the email/password you set, and change the password immediately.
+
+## Security
+
+How authorization, SUPER_ADMIN protection, sessions and configuration are hardened — and the actions only an operator can take (rotating secrets, database accounts, env files) — is in [docs/SECURITY_HARDENING.md](docs/SECURITY_HARDENING.md). Every environment variable is listed in `.env.example`.

@@ -53,6 +53,16 @@ const ACTION_DISPLAY_LABELS: Record<string, string> = {
   REJECT_REGISTRATION_REQUEST: 'Reject',
 };
 
+/** An action's name written as one AWS-style identifier: the words run together, each starting with a capital, and any
+ *  punctuation dropped — "Deprecate Billing Cycle" -> "DeprecateBillingCycle", "Approve / Reject / Return Bill Run" ->
+ *  "ApproveRejectReturnBillRun", "Register Meter (Inventory)" -> "RegisterMeterInventory". Only the first letter of a word is
+ *  touched, so an acronym ("SFTP") keeps its capitals, and a name that is already one word comes back unchanged. */
+export function toCamelCaseName(name: string): string {
+  const words = name.split(/[^A-Za-z0-9]+/).filter(Boolean);
+  if (words.length === 0) return name;
+  return words.map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join('');
+}
+
 export interface ActionPresentation {
   accessLevel: AccessLevel;
   accessLevelLabel: string;
@@ -67,6 +77,7 @@ export function describeAction(code: string, name: string): ActionPresentation {
     accessLevel,
     accessLevelLabel: label,
     accessLevelOrder: order,
-    displayLabel: ACTION_DISPLAY_LABELS[code] ?? name,
+    // The allowlisted short label ("View") where there is one, otherwise the descriptive name as one camel-case identifier.
+    displayLabel: ACTION_DISPLAY_LABELS[code] ?? toCamelCaseName(name),
   };
 }

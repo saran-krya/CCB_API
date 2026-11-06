@@ -9,13 +9,14 @@ import {
   FieldInspectionQueryDto,
   SelectableReadingsQueryDto,
 } from './dto/field-inspection.dto';
+import { ACTION_CODES } from '../../common/constants/action-codes.constants';
 
 // Gated on the same single permission that governs all of Billing Readiness — Request Field
 // Inspection is launched from any of its tabs (Dashboard, Property Billing Readiness), all of which
 // derive visibility from BILLING_READINESS_VIEW alone. This feature has no dedicated action of its
 // own, matching the existing "one action, reused elsewhere" pattern already established for
 // Readings List (METER_VIEW) and Bill Run's own tab.
-const FIELD_INSPECTION_ACCESS = ['BILLING_READINESS_VIEW'];
+const FIELD_INSPECTION_ACCESS = [ACTION_CODES.BILLING_READINESS_VIEW];
 
 @ApiBearerAuth()
 @ApiTags('Field Inspection')

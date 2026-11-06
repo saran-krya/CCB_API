@@ -27,9 +27,12 @@ describe('action presentation', () => {
     expect(write.accessLevelOrder).toBeLessThan(permissions.accessLevelOrder);
   });
 
-  it('shortens only the allowlisted codes and leaves every other name untouched', () => {
+  it('shortens only the allowlisted codes and writes every other name as one camel-case identifier', () => {
     expect(describeAction('TARIFF_VIEW', 'View Tariff Detail').displayLabel).toBe('View');
     expect(describeAction('CREATE_USER', 'Create User').displayLabel).toBe('Create');
-    expect(describeAction('SOME_OTHER_CODE', 'Some Other Thing').displayLabel).toBe('Some Other Thing');
+    expect(describeAction('SOME_OTHER_CODE', 'Some Other Thing').displayLabel).toBe('SomeOtherThing');
+    expect(describeAction('BILLING_CYCLE_DEPRECATE', 'Deprecate Billing Cycle').displayLabel).toBe('DeprecateBillingCycle');
+    expect(describeAction('BILL_RUN_APPROVE', 'Approve / Reject / Return Bill Run').displayLabel).toBe('ApproveRejectReturnBillRun');
+    expect(describeAction('SETTINGS_PROFILE_VIEW', 'ViewProfile').displayLabel).toBe('ViewProfile');
   });
 });

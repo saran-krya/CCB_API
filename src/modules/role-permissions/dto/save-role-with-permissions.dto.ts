@@ -15,7 +15,7 @@ import {
 
 export class SaveRoleWithPermissionsDto {
   @ApiProperty({
-    example: 'ADMIN',
+    example: 'EXAMPLE_ROLE',
   })
   @IsString()
   @MinLength(2)
@@ -24,7 +24,7 @@ export class SaveRoleWithPermissionsDto {
 
   @ApiPropertyOptional({
     example:
-      'System Administrator Role',
+      'Example role description',
   })
   @IsOptional()
   @IsString()

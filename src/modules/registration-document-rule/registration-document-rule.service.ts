@@ -18,6 +18,8 @@ import {
   RegistrationDocumentResident,
   RegistrationDocumentRule,
 } from './entities/registration-document-rule.entity';
+import { AUDIT_MODULE, AUDIT_ACTION } from '../../audit/audit.constants';
+import { SORT_ORDER } from '../../common/constants/sort.constants';
 
 @Injectable()
 export class RegistrationDocumentRuleService {
@@ -78,9 +80,9 @@ export class RegistrationDocumentRuleService {
     const saved = await this.rules.save(rule);
 
     await this.audit.record({
-      moduleName: 'registration-document-rules',
+      moduleName: AUDIT_MODULE.REGISTRATION_DOCUMENT_RULES,
       entityId: saved.id,
-      action: 'CREATE',
+      action: AUDIT_ACTION.CREATE,
       newValue: { documentType: saved.documentType, requirement: saved.requirement },
       performedBy: actorId,
     });
@@ -93,8 +95,8 @@ export class RegistrationDocumentRuleService {
 
     const qb = this.rules
       .createQueryBuilder('r')
-      .orderBy('r.displayOrder', 'ASC')
-      .addOrderBy('r.documentType', 'ASC');
+      .orderBy('r.displayOrder', SORT_ORDER.ASC)
+      .addOrderBy('r.documentType', SORT_ORDER.ASC);
 
     if (documentType) qb.andWhere('r.documentType = :documentType', { documentType });
     if (level) qb.andWhere('r.level = :level', { level });
@@ -120,9 +122,9 @@ export class RegistrationDocumentRuleService {
     const saved = await this.rules.save(rule);
 
     await this.audit.record({
-      moduleName: 'registration-document-rules',
+      moduleName: AUDIT_MODULE.REGISTRATION_DOCUMENT_RULES,
       entityId: id,
-      action: 'UPDATE',
+      action: AUDIT_ACTION.UPDATE,
       oldValue,
       newValue: { requirement: saved.requirement, isActive: saved.isActive },
       performedBy: actorId,
@@ -136,9 +138,9 @@ export class RegistrationDocumentRuleService {
     await this.rules.softRemove(rule);
 
     await this.audit.record({
-      moduleName: 'registration-document-rules',
+      moduleName: AUDIT_MODULE.REGISTRATION_DOCUMENT_RULES,
       entityId: id,
-      action: 'DELETE',
+      action: AUDIT_ACTION.DELETE,
       oldValue: { documentType: rule.documentType },
       performedBy: actorId,
     });
@@ -166,7 +168,7 @@ export class RegistrationDocumentRuleService {
         account: accountType,
         bothAccount: RegistrationDocumentAccountType.BOTH,
       })
-      .orderBy('r.displayOrder', 'ASC');
+      .orderBy('r.displayOrder', SORT_ORDER.ASC);
 
     if (contactType) {
       qb.andWhere('(r.appliesToContactType = :contactType OR r.appliesToContactType = :anyContact)', {

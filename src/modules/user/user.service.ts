@@ -1,12 +1,21 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import * as bcrypt from 'bcryptjs';
-import { In, Repository } from 'typeorm';
+import { EntityManager, In, Repository } from 'typeorm';
+import { ROLES } from '@app/common/constants/global';
 import { AuditService } from '../../audit/audit.service';
+import { RefreshToken } from '../../auth/entities/refresh-token.entity';
+import { AuthenticatedUser } from '../../auth/interfaces/authenticated-user.interface';
+import { ACTION_CODES } from '../../common/constants/action-codes.constants';
 import { paginate } from '../../common/utils/pagination.util';
+import { releaseSoftDeletedUnique } from '../../common/utils/release-soft-deleted-unique';
+import { Actor, actorUserId, isSuperAdminActor, SUPER_ADMIN_ASSIGN_MESSAGE } from '../../common/security/actor';
 import { RoleService } from '../role/role.service';
 import { Role } from '../role/entities/role.entity';
+import { UserInlinePolicy } from '../iam/entities/user-inline-policy.entity';
+import { UserRole } from '../user-role/entities/user-role.entity';
 import { CreateUserDto, UpdateUserDto } from './dto/create-user.dto';
+import { UpdateOwnProfileDto } from './dto/update-own-profile.dto';
 import { UpdatePreferencesDto } from './dto/update-preferences.dto';
 import { UserQueryDto } from './dto/user-query.dto';
 import { User } from './entities/user.entity';
@@ -14,6 +23,11 @@ import { RolePermissionsService } from '../role-permissions/role-permissions.ser
 import { AttributeService } from '../attribute/attribute.service';
 import { LovService } from '../lov/lov.service';
 import { UserRoleService } from '../user-role/user-role.service';
+import { ATTRIBUTE_KEY } from '../attribute/attribute.constants';
+import { AUDIT_MODULE, AUDIT_ACTION } from '../../audit/audit.constants';
+import { SORT_ORDER } from '../../common/constants/sort.constants';
+import { ERROR_MESSAGES } from '../../common/constants/error-messages.constants';
+import { PRINCIPAL_TYPE, PASSWORD_HASH_ROUNDS, ACTOR_KIND } from '../../common/constants/auth.constants';
 
 interface DynamicFieldRequirement {
   // keyof UpdateUserDto, not CreateUserDto: both create and update are checked, and `roleIds` (the
@@ -24,7 +38,7 @@ interface DynamicFieldRequirement {
 }
 
 const DYNAMIC_FIELD_REQUIREMENTS: DynamicFieldRequirement[] = [
-  { field: 'reportingManagerId', attributeKey: 'REPORTING_MANAGER_MANDATORY', label: 'Reporting Manager' },
+  { field: 'reportingManagerId', attributeKey: ATTRIBUTE_KEY.REPORTING_MANAGER_MANDATORY, label: 'Reporting Manager' },
 ];
 
 /** A User plus its current role assignment, attached at query time (never persisted — see the note on
@@ -32,6 +46,32 @@ const DYNAMIC_FIELD_REQUIREMENTS: DynamicFieldRequirement[] = [
  *  them (the PRIMARY), null when there is none, kept for compatibility with callers that predate
  *  multi-role. */
 export type UserWithRoles = User & { role: Role | null; roles: Role[] };
+
+/** What a signed-in request needs to know about its user, resolved on EVERY request by JwtStrategy. */
+export interface UserAuthState {
+  id: number;
+  active: boolean;
+  mustChangePassword: boolean;
+  roles: Array<{ id: number; roleName: string }>;
+}
+
+/** The credential hash must never leave the service layer — not in a response, not in an audit row. */
+const withoutPasswordHash = <T extends { passwordHash?: unknown }>(user: T): Omit<T, 'passwordHash'> => {
+  const { passwordHash: _passwordHash, ...rest } = user;
+  return rest;
+};
+
+/** The users columns a person may change about THEMSELVES (Settings > My Profile) — see UpdateOwnProfileDto. */
+const OWN_PROFILE_FIELDS = ['firstName', 'middleName', 'lastName', 'mobile'] as const;
+type OwnProfileValues = Pick<User, (typeof OWN_PROFILE_FIELDS)[number]>;
+
+/** What PATCH /users/me/profile answers with: the four editable values, an unset optional one as null. */
+const toOwnProfile = (values: OwnProfileValues) => ({
+  firstName: values.firstName,
+  middleName: values.middleName ?? null,
+  lastName: values.lastName,
+  mobile: values.mobile ?? null,
+});
 
 @Injectable()
 export class UserService {
@@ -62,15 +102,21 @@ export class UserService {
     }
   }
 
+  /**
+   * `actor` is the signed-in user creating the account (never trusted from the request body). Only a
+   * SUPER_ADMIN may create an account that holds the SUPER_ADMIN role — CREATE_USER on its own carries no
+   * such authority, so a delegated administrator cannot mint an administrator. Checked before anything
+   * is written, and again authoritatively inside UserRoleService.addRolesToUser in the same transaction.
+   */
   async create(
     dto: CreateUserDto,
-    actorId?: number,
+    actor: Actor,
   ) {
     await this.validateUniqueFields(dto);
     await this.assertDynamicRequiredFields(dto);
 
     // Before anything is written, so one unknown role id can never leave a half-created user behind.
-    await this.assertRolesExist(dto.roleIds);
+    this.assertMayGrant(actor, await this.loadRoles(dto.roleIds));
 
     const reportingManager =
       dto.reportingManagerId
@@ -115,7 +161,7 @@ export class UserService {
       dto.password
         ? await bcrypt.hash(
           dto.password,
-          12,
+          PASSWORD_HASH_ROUNDS,
         )
         : null;
 
@@ -131,22 +177,26 @@ export class UserService {
     // UserRole entity's own doc comment) and the audit rows. A user left without a role could never
     // sign in, and with no role field on UpdateUserDto it could only be repaired through addRoles.
     return this.users.manager.transaction(async (manager) => {
+      // A deleted account must not keep its email/mobile/employee code reserved forever.
+      await this.releaseDeletedHolders(manager, dto);
+
       const saved = await manager.getRepository(User).save(user);
 
-      await this.userRoles.addRolesToUser(saved.id, dto.roleIds, manager, actorId);
+      await this.userRoles.addRolesToUser(saved.id, dto.roleIds, manager, actor);
 
+      const safe = withoutPasswordHash(saved);
       await this.audit.record(
         {
-          moduleName: "users",
+          moduleName: AUDIT_MODULE.USERS,
           entityId: saved.id,
-          action: "CREATE",
-          newValue: saved,
-          performedBy: actorId,
+          action: AUDIT_ACTION.CREATE,
+          newValue: safe,
+          performedBy: actorUserId(actor),
         },
         manager,
       );
 
-      return saved;
+      return safe;
     });
   }
 
@@ -163,15 +213,20 @@ export class UserService {
     // independent AND'd filters (the old search.fullName/search.email/search.mobile/search.role
     // behavior). The role leg is an EXISTS, not a join, for the reason above — and so a match on one
     // role never hides the user's other roles from the response.
-    if (query["search.query"]) {
+    //
+    // The name leg matches the name as it is DISPLAYED — "First Last", or "First Middle Last" when there is a middle name.
+    // CONCAT_WS skips a NULL part and NULLIF(TRIM(..), '') turns a blank one into NULL (the forms store '' for "no middle
+    // name", the seeded admin has NULL), so a plain "John Doe" is never missed because of a doubled space. The term gets the
+    // same single-space form — ends trimmed, inner runs of whitespace collapsed — and a term of only spaces is no search.
+    const term = query["search.query"]?.trim().replace(/\s+/g, " ");
+    if (term) {
       qb.andWhere(
         `(
-          CONCAT(
-            COALESCE(user.firstName, ''),
+          CONCAT_WS(
             ' ',
-            COALESCE(user.middleName, ''),
-            ' ',
-            COALESCE(user.lastName, '')
+            NULLIF(TRIM(user.firstName), ''),
+            NULLIF(TRIM(user.middleName), ''),
+            NULLIF(TRIM(user.lastName), '')
           ) LIKE :term
           OR user.email LIKE :term
           OR user.mobile LIKE :term
@@ -185,7 +240,7 @@ export class UserService {
           )
         )`,
         {
-          term: `%${query["search.query"]}%`,
+          term: `%${term}%`,
         },
       );
     }
@@ -245,9 +300,9 @@ export class UserService {
       ] ?? "user.createdAt";
 
     const sortOrder =
-      query.sortOrder === "ASC"
-        ? "ASC"
-        : "DESC";
+      query.sortOrder === SORT_ORDER.ASC
+        ? SORT_ORDER.ASC
+        : SORT_ORDER.DESC;
 
     qb.orderBy(
       sortColumn,
@@ -314,15 +369,34 @@ export class UserService {
 
 
     if (!user) {
-      throw new NotFoundException("User not found");
+      throw new NotFoundException(ERROR_MESSAGES.USER_NOT_FOUND);
     }
 
     // user_roles is the only source of a user's roles — see UserRole entity's own doc comment.
-    // JwtStrategy.validate reads `roles` from this on every request to build the principal, so it
-    // must stay a single live read, never cached.
+    // Every caller that DECIDES access must treat this as a single live read, never cached.
     const roles = await this.userRoles.getRolesForUser(id);
 
     return Object.assign(user, { role: roles[0] ?? null, roles });
+  }
+
+  /**
+   * What JwtStrategy resolves on EVERY authenticated request: whether the account is still active, whether
+   * a password change is required, and the user's current roles. Two lean queries — the user's three
+   * needed columns and the roles' id/name — instead of findOne's full row, reporting-manager join and
+   * eager role relations. Deliberately uncached: a deactivation, role revocation or password-change flag
+   * must take effect on the very next request, which is exactly what makes revocation immediate.
+   */
+  async findAuthState(id: number): Promise<UserAuthState> {
+    const user = await this.users.findOne({
+      where: { id },
+      select: { id: true, active: true, mustChangePassword: true },
+      loadEagerRelations: false,
+    });
+    if (!user) {
+      throw new NotFoundException(ERROR_MESSAGES.USER_NOT_FOUND);
+    }
+    const roles = await this.userRoles.getRoleRefsForUser(id);
+    return { id: user.id, active: user.active, mustChangePassword: user.mustChangePassword === true, roles };
   }
 
   private async getActiveUsersByRoleCapability(capability: 'canBeReportingManager' | 'canBeFieldInspector') {
@@ -339,7 +413,7 @@ export class UserService {
 
     const users = await this.users.find({
       where: { id: In([...roleNameByUserId.keys()]), active: true },
-      order: { firstName: 'ASC' },
+      order: { firstName: SORT_ORDER.ASC },
     });
 
     return users.map((user) => ({ user, roleName: roleNameByUserId.get(user.id) ?? null }));
@@ -391,6 +465,7 @@ export class UserService {
       middleName: user.middleName,
       lastName: user.lastName,
       email: user.email,
+      mobile: user.mobile ?? null,
       employeeCode: user.employeeCode,
       designation: user.designation,
 
@@ -408,30 +483,127 @@ export class UserService {
     };
   }
 
-  async updateOwnPreferences(id: number, dto: UpdatePreferencesDto) {
-    const user = await this.findOne(id);
-
-    if (dto.themeMode !== undefined) user.themeMode = dto.themeMode;
-    if (dto.navTheme !== undefined) user.navTheme = dto.navTheme;
-
-    if (dto.preferredLanguageCode !== undefined) {
-      const languages = await this.lov.findActiveLanguages();
-      const isValid = languages.some((l) => l.code === dto.preferredLanguageCode);
-      if (!isValid) {
-        throw new BadRequestException(
-          `"${dto.preferredLanguageCode}" is not an active language — configure it in Lookup Field Master first`,
-        );
-      }
-      user.preferredLanguageCode = dto.preferredLanguageCode;
+  /**
+   * A user's own name and mobile number — nothing else about the account (see UpdateOwnProfileDto). Only what the request really
+   * changes is written, and it is audited like any user edit — but only when something changed, and the audit row carries just
+   * the caller's own changed fields (previous and new value), never the whole users row with its reporting manager and roles.
+   */
+  async updateOwnProfile(id: number, dto: UpdateOwnProfileDto) {
+    // The four editable columns only: no reporting-manager join, no role lookup, nothing else of the account to snapshot.
+    const current = await this.users.findOne({
+      where: { id },
+      select: { id: true, firstName: true, middleName: true, lastName: true, mobile: true },
+      loadEagerRelations: false,
+    });
+    if (!current) {
+      throw new NotFoundException(ERROR_MESSAGES.USER_NOT_FOUND);
     }
 
-    await this.users.save(user);
+    // A change is a field that was sent AND differs from what is stored: a missing (or null) field means "leave it", a value
+    // equal to the stored one changes nothing, and a blank middle name is "none" whether it is stored as '' or as NULL.
+    const patch: Partial<OwnProfileValues> = {};
+    const previous: Partial<OwnProfileValues> = {};
+    for (const field of OWN_PROFILE_FIELDS) {
+      const sent = dto[field] ?? undefined;
+      if (sent === undefined || sent === (current[field] ?? '')) continue;
+      Object.assign(patch, { [field]: sent });
+      Object.assign(previous, { [field]: current[field] });
+    }
+    if (Object.keys(patch).length === 0) {
+      return toOwnProfile(current);
+    }
+
+    // A new mobile number must be free (409), and a deleted account must not keep it reserved.
+    const mobile = patch.mobile ?? undefined;
+    if (mobile !== undefined) {
+      await this.validateUniqueFields({ mobile }, id);
+    }
+
+    return this.users.manager.transaction(async (manager) => {
+      if (mobile !== undefined) {
+        await this.releaseDeletedHolders(manager, { mobile }, id);
+      }
+      await manager.getRepository(User).update(id, patch);
+      await this.audit.record(
+        { moduleName: AUDIT_MODULE.USERS, entityId: id, action: AUDIT_ACTION.UPDATE, oldValue: previous, newValue: patch, performedBy: id },
+        manager,
+      );
+      return toOwnProfile({ ...current, ...patch });
+    });
+  }
+
+  /**
+   * PATCH /users/me/preferences. Only the columns that were sent are written, in ONE update — not a read-modify-write of the
+   * whole row — so a concurrent change to anything else on the row (a second preference save, an administrator's edit) can never
+   * be overwritten with a stale copy. A field left out is untouched; theme and navigation colour are written as sent, as they
+   * always were. The language can also be CLEARED: null means "no personal choice", so the system default language
+   * (DEFAULT_LANGUAGE) applies again — any other value must be an active code of the LANGUAGE lookup. Everything is validated
+   * before anything is written. The response is what is stored afterwards, not an echo of the request.
+   *
+   * Always the caller's own row. Which grant a field needs follows the Settings page it is edited on: theme and navigation colour
+   * need Appearance UPDATE, the language needs Regional Preferences UPDATE (it is edited on that page). The route guard only
+   * checks that the caller holds one of them; every field actually sent is checked here, and a missing grant is a 403 with
+   * nothing saved.
+   */
+  async updateOwnPreferences(actor: AuthenticatedUser, dto: UpdatePreferencesDto) {
+    await this.assertMayChangeOwnPreferences(actor, dto);
+    const id = actor.sub;
+    const patch: Partial<Pick<User, 'themeMode' | 'navTheme' | 'preferredLanguageCode'>> = {};
+    if (dto.themeMode !== undefined) patch.themeMode = dto.themeMode;
+    if (dto.navTheme !== undefined) patch.navTheme = dto.navTheme;
+    if (dto.preferredLanguageCode !== undefined) {
+      patch.preferredLanguageCode =
+        dto.preferredLanguageCode === null ? null : await this.assertActiveLanguage(dto.preferredLanguageCode);
+    }
+
+    if (Object.keys(patch).length > 0) {
+      await this.users.update(id, patch);
+    }
+
+    const saved = await this.users.findOne({
+      where: { id },
+      select: { id: true, themeMode: true, navTheme: true, preferredLanguageCode: true },
+      loadEagerRelations: false,
+    });
+    if (!saved) {
+      throw new NotFoundException(ERROR_MESSAGES.USER_NOT_FOUND);
+    }
 
     return {
-      themeMode: user.themeMode ?? null,
-      navTheme: user.navTheme ?? null,
-      preferredLanguageCode: user.preferredLanguageCode ?? null,
+      themeMode: saved.themeMode ?? null,
+      navTheme: saved.navTheme ?? null,
+      preferredLanguageCode: saved.preferredLanguageCode ?? null,
     };
+  }
+
+  /** 403 unless the caller holds the UPDATE grant of every Settings page that owns a field in `dto`. */
+  private async assertMayChangeOwnPreferences(actor: AuthenticatedUser, dto: UpdatePreferencesDto): Promise<void> {
+    const needed = new Map<string, string>();
+    if (dto.themeMode !== undefined || dto.navTheme !== undefined) {
+      needed.set(ACTION_CODES.SETTINGS_APPEARANCE_UPDATE, 'Appearance Settings');
+    }
+    if (dto.preferredLanguageCode !== undefined) {
+      needed.set(ACTION_CODES.SETTINGS_REGIONAL_UPDATE, 'Regional Preferences');
+    }
+    if (needed.size === 0) return;
+
+    const granted = new Set(await this.rolePermissionService.getMyActionCodesForRoles(actor.roleIds ?? [actor.roleId], actor.sub));
+    const missing = [...needed].filter(([code]) => !granted.has(code));
+    if (missing.length > 0) {
+      throw new ForbiddenException(
+        `You do not have permission to change ${missing.map(([, page]) => page).join(', ')}. ` +
+          `Required permission: ${missing.map(([code]) => code).join(', ')}.`,
+      );
+    }
+  }
+
+  /** The code must be an ACTIVE entry of the LANGUAGE lookup (Lookup Field Master) — the rule a preferred language has always followed. */
+  private async assertActiveLanguage(code: string): Promise<string> {
+    const languages = await this.lov.findActiveLanguages();
+    if (!languages.some((language) => language.code === code)) {
+      throw new BadRequestException(`"${code}" is not an active language — configure it in Lookup Field Master first`);
+    }
+    return code;
   }
 
   /** Narrowly-scoped shape (addSelect the hidden passwordHash column) for AuthService.login, which
@@ -460,8 +632,8 @@ export class UserService {
 
   /**
    * Sign-in access status for the Security Credentials tab's "Sign-in access" section — whether a
-   * usable password currently exists (never the hash itself) plus when it was last set. Deliberately
-   * its own narrow query rather than widening findOne's response shape, since passwordHash is
+   * usable password currently exists (never the hash itself) plus when it was last set. Deliberately its
+   * own narrow query rather than widening findOne's response shape, since passwordHash is
    * select:false everywhere else and this is the one legitimate reason to peek at its presence (not
    * its value) for an admin viewing another user.
    */
@@ -472,7 +644,7 @@ export class UserService {
       .where('user.id = :id', { id })
       .getOne();
     if (!user) {
-      throw new NotFoundException('User not found');
+      throw new NotFoundException(ERROR_MESSAGES.USER_NOT_FOUND);
     }
     return {
       signinAccessEnabled: !!user.passwordHash,
@@ -523,15 +695,28 @@ export class UserService {
 
 
   /**
-   * Never touches roles: UpdateUserDto has no role field (the global whitelist/forbidNonWhitelisted
-   * pipe answers one with a 400), and nothing here reads one either. Every role change goes through
-   * addRoles/removeRole — the one path that enforces the self-change, last-role and last-SUPER_ADMIN
-   * rules and writes the ASSIGN_ROLE/REVOKE_ROLE audit row. A profile save that could also edit
-   * roles would be a second, unguarded way around all of them.
+   * Edits a user's profile fields and enabled state — nothing else:
+   *  - never roles: UpdateUserDto has no role field (the global whitelist/forbidNonWhitelisted pipe
+   *    answers one with a 400), so every role change goes through addRoles/removeRole, the one path that
+   *    enforces the privilege, self-change, last-role and last-SUPER_ADMIN rules and writes the audit row;
+   *  - never a password: it has no password field either (a password sent is a 400). A password changes
+   *    only through the dedicated flows — the user's own change-password (needs the current password) and
+   *    the admin reset, both of which also revoke sessions and apply the password policy.
+   *
+   * `actor` is the signed-in user. A SUPER_ADMIN's account can be edited only by a SUPER_ADMIN; nobody can
+   * deactivate their own account; and the last active SUPER_ADMIN can never be deactivated (checked under a
+   * row lock in the same transaction as the save).
    */
-  async update(id: number, dto: UpdateUserDto, actorId?: number) {
+  async update(id: number, dto: UpdateUserDto, actor: Actor) {
     const user = await this.findOne(id);
-    const oldValue = { ...user };
+    await this.userRoles.assertActorMayModifyUser(actor, id);
+
+    const deactivating = dto.active === false && user.active;
+    if (deactivating && actor.kind === ACTOR_KIND.USER && actor.id === id) {
+      throw new ForbiddenException('You cannot deactivate your own account.');
+    }
+
+    const oldValue = withoutPasswordHash({ ...user });
     await this.validateUniqueFields(
       dto,
       id,
@@ -576,32 +761,37 @@ export class UserService {
         dto.employeeCode ??
         user.employeeCode,
     });
-    if (dto.password) {
-      user.passwordHash = await bcrypt.hash(dto.password, 12);
-      user.passwordUpdatedAt = new Date();
-    }
-    const saved = await this.users.save(user);
 
-    await this.audit.record({ moduleName: 'users', entityId: id, action: 'UPDATE', oldValue, newValue: saved, performedBy: actorId });
-    return saved;
+    return this.users.manager.transaction(async (manager) => {
+      if (deactivating) {
+        await this.userRoles.assertNotLastActiveSuperAdmin(id, manager, 'deactivate');
+      }
+      await this.releaseDeletedHolders(manager, dto, id);
+
+      const saved = withoutPasswordHash(await manager.getRepository(User).save(user));
+      await this.audit.record(
+        { moduleName: AUDIT_MODULE.USERS, entityId: id, action: AUDIT_ACTION.UPDATE, oldValue, newValue: saved, performedBy: actorUserId(actor) },
+        manager,
+      );
+      return saved;
+    });
   }
 
   /**
    * POST /users/:id/roles — grants roles to an existing user, additively and idempotently (a role
-   * they already hold is skipped, not an error). An actor cannot grant roles to their OWN user: that
-   * is self-escalation with no second party accountable for it (a request that would change nothing
-   * stays allowed). That rule, and the audit row, are enforced inside UserRoleService.addRolesToUser's
-   * own transaction, where "would this change anything" can be decided against the rows being
-   * written — see that method for why they live there rather than here. Existence is checked first,
-   * so a request naming one unknown role never applies partially. Returns the user's full roles
-   * array AFTER the change (the same shape as findOne's `roles`), so a caller can replace its copy
-   * without a refetch.
+   * they already hold is skipped, not an error). The privilege, self-change and audit rules are enforced
+   * inside UserRoleService.addRolesToUser's own transaction, where "would this change anything" can be
+   * decided against the rows being written — see that method. Only a SUPER_ADMIN may grant SUPER_ADMIN
+   * (403 otherwise); that is checked here first as well, so the refusal comes before any write.
+   * Existence is checked first, so a request naming one unknown role never applies partially. Returns the
+   * user's full roles array AFTER the change (the same shape as findOne's `roles`), so a caller can
+   * replace its copy without a refetch.
    */
-  async addRoles(userId: number, roleIds: number[], actorId?: number): Promise<Role[]> {
+  async addRoles(userId: number, roleIds: number[], actor: Actor): Promise<Role[]> {
     await this.assertUserExists(userId);
-    await this.assertRolesExist(roleIds);
+    this.assertMayGrant(actor, await this.loadRoles(roleIds));
 
-    await this.userRoles.addRolesToUser(userId, roleIds, undefined, actorId);
+    await this.userRoles.addRolesToUser(userId, roleIds, undefined, actor);
 
     return this.userRoles.getRolesForUser(userId);
   }
@@ -609,20 +799,20 @@ export class UserService {
   /**
    * DELETE /users/:id/roles/:roleId — revokes ONE role, idempotently (a role the user does not hold
    * is a no-op, not a 404 — including a role id that does not exist at all, which no one can hold).
-   * Three rules apply, enforced inside UserRoleService.removeRoleFromUser's own transaction against
-   * locked rows (see that method for the locking, and for why the row is hard-deleted — the unique
-   * (user_id, role_id) key ignores deleted_at, so a soft-deleted row would block re-granting):
+   * The rules apply inside UserRoleService.removeRoleFromUser's own transaction against locked rows (see
+   * that method for the locking, and for why the row is hard-deleted — the unique (user_id, role_id) key
+   * ignores deleted_at, so a soft-deleted row would block re-granting):
+   *   - only a SUPER_ADMIN may change the roles of a SUPER_ADMIN user;
    *   - no self-change: role changes are made by someone else, so a second party is accountable;
    *   - a user must keep at least one role: login and JwtStrategy reject a role-less user, so
    *     removing the last one is an instant lock-out;
-   *   - the last SUPER_ADMIN cannot be demoted: every admin-only surface, user/role management
-   *     included, would be left with no one able to grant it back.
+   *   - the last ACTIVE SUPER_ADMIN cannot be demoted.
    * Returns the user's full roles array AFTER the change.
    */
-  async removeRole(userId: number, roleId: number, actorId?: number): Promise<Role[]> {
+  async removeRole(userId: number, roleId: number, actor: Actor): Promise<Role[]> {
     await this.assertUserExists(userId);
 
-    await this.userRoles.removeRoleFromUser(userId, roleId, undefined, actorId);
+    await this.userRoles.removeRoleFromUser(userId, roleId, undefined, actor);
 
     return this.userRoles.getRolesForUser(userId);
   }
@@ -630,13 +820,20 @@ export class UserService {
   private async assertUserExists(id: number): Promise<void> {
     const user = await this.users.findOne({ where: { id }, select: { id: true } });
     if (!user) {
-      throw new NotFoundException('User not found');
+      throw new NotFoundException(ERROR_MESSAGES.USER_NOT_FOUND);
     }
   }
 
   /** RoleService.findOne throws NotFoundException('Role not found') for an unknown id. */
-  private async assertRolesExist(roleIds: number[]): Promise<void> {
-    await Promise.all([...new Set(roleIds)].map((roleId) => this.roles.findOne(roleId)));
+  private loadRoles(roleIds: number[]): Promise<Role[]> {
+    return Promise.all([...new Set(roleIds)].map((roleId) => this.roles.findOne(roleId)));
+  }
+
+  /** Granting SUPER_ADMIN is reserved for a SUPER_ADMIN — EDIT_USER / CREATE_USER never carry it. */
+  private assertMayGrant(actor: Actor, roles: Role[]): void {
+    if (!isSuperAdminActor(actor) && roles.some((role) => role.roleName === ROLES.SUPER_ADMIN)) {
+      throw new ForbiddenException(SUPER_ADMIN_ASSIGN_MESSAGE);
+    }
   }
 
   private async validateUniqueFields(
@@ -706,12 +903,57 @@ export class UserService {
     }
   }
 
-  async remove(id: number, actorId?: number) {
+  /** Frees the unique values (email, mobile, employee code) that a SOFT-DELETED account still holds, so
+   *  a new or edited account can use them. Runs in the caller's transaction, right before the write. */
+  private async releaseDeletedHolders(
+    manager: EntityManager,
+    values: { email?: string; mobile?: string; employeeCode?: string },
+    exceptId?: number,
+  ): Promise<void> {
+    await releaseSoftDeletedUnique(manager, User, 'email', values.email, { email: true, exceptId });
+    await releaseSoftDeletedUnique(manager, User, 'mobile', values.mobile, { replaceWith: 'null', exceptId });
+    await releaseSoftDeletedUnique(manager, User, 'employeeCode', values.employeeCode, { replaceWith: 'null', exceptId });
+  }
+
+  /**
+   * Soft-deletes an account. Refused (403) for your own account, for a SUPER_ADMIN account unless the
+   * actor is a SUPER_ADMIN, and for the last ACTIVE SUPER_ADMIN (checked under a row lock in the same
+   * transaction). The account's dependents are cleaned up with it, in that transaction, so nothing is left
+   * pointing at a deleted user: its role assignments, its own inline policies, and its live sessions
+   * (refresh tokens are revoked, so no further token can be minted for it).
+   */
+  async remove(id: number, actor: Actor) {
     const user = await this.findOne(id);
-    await this.users.softRemove(user);
-    await this.audit.record({ moduleName: 'users', entityId: id, action: 'DELETE', oldValue: user, performedBy: actorId });
+    if (actor.kind === ACTOR_KIND.USER && actor.id === id) {
+      throw new ForbiddenException('You cannot delete your own account.');
+    }
+    await this.userRoles.assertActorMayModifyUser(actor, id);
+
+    await this.users.manager.transaction(async (manager) => {
+      await this.userRoles.assertNotLastActiveSuperAdmin(id, manager, 'delete');
+
+      await manager.getRepository(User).softRemove(user);
+      await manager.getRepository(UserRole).delete({ userId: id });
+      await manager.getRepository(UserInlinePolicy).delete({ userId: id });
+      await manager
+        .createQueryBuilder()
+        .update(RefreshToken)
+        .set({ revokedAt: new Date() })
+        .where('user_id = :id AND principal_type = :type AND revoked_at IS NULL', { id, type: PRINCIPAL_TYPE.STAFF })
+        .execute();
+
+      await this.audit.record(
+        {
+          moduleName: AUDIT_MODULE.USERS,
+          entityId: id,
+          action: AUDIT_ACTION.DELETE,
+          oldValue: { ...withoutPasswordHash(user), roleIds: user.roles.map((role) => role.id) },
+          performedBy: actorUserId(actor),
+        },
+        manager,
+      );
+    });
   }
 
 
 }
-

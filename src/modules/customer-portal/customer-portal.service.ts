@@ -13,6 +13,9 @@ import { DailyMeterReadingQueryDto } from '../meter/dto/meter.dto';
 import { RecordDepositPaymentDto } from '../registration-request/dto/registration-request.dto';
 import { UpdateMyProfileDto } from '../customer/dto/update-my-profile.dto';
 import { MyRegistrationConfigDto, MyRegistrationConfigLovValueDto } from './dto/my-registration-config.dto';
+import { ERROR_MESSAGES } from '../../common/constants/error-messages.constants';
+import { LOV_CATEGORY } from '../lov/lov.constants';
+import { ATTRIBUTE_KEY } from '../attribute/attribute.constants';
 
 /**
  * Composes the SAME services staff controllers already use (CommunityService/PropertyService/
@@ -123,7 +126,7 @@ export class CustomerPortalService {
 
     if (query.unitId != null) {
       if (!unitIds.includes(query.unitId)) {
-        throw new ForbiddenException('This unit is not associated with your account');
+        throw new ForbiddenException(ERROR_MESSAGES.UNIT_NOT_ASSOCIATED_WITH_ACCOUNT);
       }
       const result = await this.meters.getDailyMeterReadings(query);
       return { ...result, items: result.items.map((item) => this.redactOccupantIdentity(item, customerId)) };
@@ -172,7 +175,7 @@ export class CustomerPortalService {
   async getMySecurityDeposit(customerId: number) {
     const request = await this.getMyOriginRequest(customerId);
     if (!request) {
-      throw new NotFoundException('No registration request found for your account');
+      throw new NotFoundException(ERROR_MESSAGES.NO_REGISTRATION_REQUEST_FOR_ACCOUNT);
     }
     return {
       depositStatus: request.depositStatus,
@@ -197,7 +200,7 @@ export class CustomerPortalService {
   async payMySecurityDeposit(customerId: number, dto: RecordDepositPaymentDto) {
     const request = await this.getMyOriginRequest(customerId);
     if (!request) {
-      throw new NotFoundException('No registration request found for your account');
+      throw new NotFoundException(ERROR_MESSAGES.NO_REGISTRATION_REQUEST_FOR_ACCOUNT);
     }
     return this.registrationRequests.recordDepositPayment(request.id, dto, undefined, true);
   }
@@ -289,31 +292,31 @@ export class CustomerPortalService {
       paymentMethodMandatory,
       registrationFaqEnabled,
     ] = await Promise.all([
-      lovValues('SALUTATION'),
-      lovValues('GENDER'),
-      lovValues('NATIONALITY'),
-      lovValues('MARITAL_STATUS'),
-      lovValues('COMMUNICATION_CHANNEL'),
-      lovValues('LANGUAGE'),
-      lovValues('RELATIONSHIP'),
-      lovValues('LEGAL_STRUCTURE'),
-      lovValues('PAYMENT_METHOD_TYPE'),
-      mandatory('REGISTRATION_NAME_MANDATORY'),
-      mandatory('REGISTRATION_EMAIL_MANDATORY'),
-      mandatory('REGISTRATION_MOBILE_MANDATORY'),
-      mandatory('REGISTRATION_EMERGENCY_CONTACT_MANDATORY'),
-      mandatory('REGISTRATION_PRINCIPAL_MANDATORY'),
-      mandatory('REGISTRATION_TRADE_LICENSE_NUMBER_MANDATORY'),
-      mandatory('REGISTRATION_MANAGER_NAME_MANDATORY'),
-      mandatory('REGISTRATION_TAXABLE_ENTITY_NAME_MANDATORY'),
-      mandatory('REGISTRATION_TRN_MANDATORY'),
-      mandatory('REGISTRATION_EFFECTIVE_REGISTRATION_DATE_MANDATORY'),
-      mandatory('REGISTRATION_ISSUING_AUTHORITY_MANDATORY'),
-      mandatory('REGISTRATION_PAYMENT_METHOD_MANDATORY'),
+      lovValues(LOV_CATEGORY.SALUTATION),
+      lovValues(LOV_CATEGORY.GENDER),
+      lovValues(LOV_CATEGORY.NATIONALITY),
+      lovValues(LOV_CATEGORY.MARITAL_STATUS),
+      lovValues(LOV_CATEGORY.COMMUNICATION_CHANNEL),
+      lovValues(LOV_CATEGORY.LANGUAGE),
+      lovValues(LOV_CATEGORY.RELATIONSHIP),
+      lovValues(LOV_CATEGORY.LEGAL_STRUCTURE),
+      lovValues(LOV_CATEGORY.PAYMENT_METHOD_TYPE),
+      mandatory(ATTRIBUTE_KEY.REGISTRATION_NAME_MANDATORY),
+      mandatory(ATTRIBUTE_KEY.REGISTRATION_EMAIL_MANDATORY),
+      mandatory(ATTRIBUTE_KEY.REGISTRATION_MOBILE_MANDATORY),
+      mandatory(ATTRIBUTE_KEY.REGISTRATION_EMERGENCY_CONTACT_MANDATORY),
+      mandatory(ATTRIBUTE_KEY.REGISTRATION_PRINCIPAL_MANDATORY),
+      mandatory(ATTRIBUTE_KEY.REGISTRATION_TRADE_LICENSE_NUMBER_MANDATORY),
+      mandatory(ATTRIBUTE_KEY.REGISTRATION_MANAGER_NAME_MANDATORY),
+      mandatory(ATTRIBUTE_KEY.REGISTRATION_TAXABLE_ENTITY_NAME_MANDATORY),
+      mandatory(ATTRIBUTE_KEY.REGISTRATION_TRN_MANDATORY),
+      mandatory(ATTRIBUTE_KEY.REGISTRATION_EFFECTIVE_REGISTRATION_DATE_MANDATORY),
+      mandatory(ATTRIBUTE_KEY.REGISTRATION_ISSUING_AUTHORITY_MANDATORY),
+      mandatory(ATTRIBUTE_KEY.REGISTRATION_PAYMENT_METHOD_MANDATORY),
       // Admin-configurable business behavior, NOT plain field data — resolved via
       // getCustomerValueByKey (falls back to the global `value` when Admin hasn't configured a
       // Customer-specific override), never getValueByKey (the Staff/User-only read).
-      this.attributes.getCustomerValueByKey('REGISTRATION_FAQ_ENABLED').then((value) => value === 'true'),
+      this.attributes.getCustomerValueByKey(ATTRIBUTE_KEY.REGISTRATION_FAQ_ENABLED).then((value) => value === 'true'),
     ]);
 
     return {
@@ -345,7 +348,7 @@ export class CustomerPortalService {
   private async assertOwnsUnit(customerId: number, unitId: number): Promise<void> {
     const unitIds = await this.customers.getOwnedUnitIds(customerId);
     if (!unitIds.includes(unitId)) {
-      throw new ForbiddenException('This unit is not associated with your account');
+      throw new ForbiddenException(ERROR_MESSAGES.UNIT_NOT_ASSOCIATED_WITH_ACCOUNT);
     }
   }
 

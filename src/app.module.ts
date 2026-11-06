@@ -10,6 +10,7 @@ import { BootstrapModule } from './bootstrap/bootstrap.module';
 import { MailModule } from './mail/mail.module';
 import { typeOrmConfig } from './config/typeorm.config';
 import { resolveEnvFilePath } from './config/env-file';
+import { validateEnv } from './config/env.validation';
 import { CommunityModule } from './modules/community/community.module';
 import { PropertyModule } from './modules/property/property.module';
 import { RoleModule } from './modules/role/role.module';
@@ -42,10 +43,11 @@ import { BillRunModule } from './modules/bill-run/bill-run.module';
 import { FieldInspectionModule } from './modules/field-inspection/field-inspection.module';
 import { WorkflowModule } from './modules/workflow/workflow.module';
 import { IamModule } from './modules/iam/iam.module';
+import { SettingsModule } from './modules/settings/settings.module';
 
 @Module({
   imports: [
-    ConfigModule.forRoot({ isGlobal: true, envFilePath: resolveEnvFilePath() }),
+    ConfigModule.forRoot({ isGlobal: true, envFilePath: resolveEnvFilePath(), validate: validateEnv }),
     EventEmitterModule.forRoot(),
     ScheduleModule.forRoot(),
     TypeOrmModule.forRootAsync(typeOrmConfig),
@@ -86,6 +88,7 @@ import { IamModule } from './modules/iam/iam.module';
     FieldInspectionModule,
     WorkflowModule,
     IamModule,
+    SettingsModule,
   ],
 })
 export class AppModule {}

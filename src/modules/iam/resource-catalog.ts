@@ -1,3 +1,5 @@
+import { ACTION_CODES } from '../../common/constants/action-codes.constants'
+
 /**
  * The reviewed, final Resource-to-Action mapping — every code in `bootstrap/seed-data.ts`'s ACTIONS
  * array maps to exactly one Resource below, EXCEPT five deliberately nav-visibility-only codes
@@ -104,14 +106,14 @@ export const RESOURCES: SeedResource[] = [
     // of EDIT_USER here, not a child of it, since the Policy model has no concept of parent/child
     // grants within one Resource; parentActionCode in seed-data.ts only affects seeding ORDER, not
     // this Resource-level grouping.
-    actionCodes: ['VIEW_USER', 'CREATE_USER', 'EDIT_USER', 'DELETE_USER', 'RESET_USER_PASSWORD'],
+    actionCodes: [ACTION_CODES.VIEW_USER, ACTION_CODES.CREATE_USER, ACTION_CODES.EDIT_USER, ACTION_CODES.DELETE_USER, ACTION_CODES.RESET_USER_PASSWORD],
   },
   {
     code: 'ROLE',
     name: 'Roles',
     description: 'Role definitions and their attached policies',
     displayOrder: 2,
-    actionCodes: ['VIEW_ROLE', 'CREATE_ROLE', 'EDIT_ROLE', 'DELETE_ROLE'],
+    actionCodes: [ACTION_CODES.VIEW_ROLE, ACTION_CODES.CREATE_ROLE, ACTION_CODES.EDIT_ROLE, ACTION_CODES.DELETE_ROLE],
   },
   {
     code: 'ATTRIBUTE',
@@ -120,7 +122,7 @@ export const RESOURCES: SeedResource[] = [
     displayOrder: 3,
     // CREATE_ATTRIBUTE/DELETE_ATTRIBUTE retired — no create/delete route or service method ever
     // existed (RBAC cleanup audit); see 1793100000000-RetireDeadActionCodes.ts.
-    actionCodes: ['VIEW_ATTRIBUTE', 'EDIT_ATTRIBUTE'],
+    actionCodes: [ACTION_CODES.VIEW_ATTRIBUTE, ACTION_CODES.EDIT_ATTRIBUTE],
   },
   {
     code: 'TARIFF',
@@ -130,8 +132,8 @@ export const RESOURCES: SeedResource[] = [
     // TARIFF_APPROVAL_VIEW/QUEUE folded into TARIFF_VIEW; TARIFF_APPROVAL_APPROVE into TARIFF_APPROVE;
     // TARIFF_APPROVAL_REJECT into TARIFF_REJECT (confirmed OR'd duplicates of the same capability).
     actionCodes: [
-      'TARIFF_CREATE', 'TARIFF_SUBMIT', 'TARIFF_EDIT', 'TARIFF_DEACTIVATE', 'TARIFF_REACTIVATE',
-      'TARIFF_DEPRECATE', 'TARIFF_NEW_VERSION', 'TARIFF_VIEW', 'TARIFF_APPROVE', 'TARIFF_REJECT',
+      ACTION_CODES.TARIFF_CREATE, ACTION_CODES.TARIFF_SUBMIT, ACTION_CODES.TARIFF_EDIT, ACTION_CODES.TARIFF_DEACTIVATE, ACTION_CODES.TARIFF_REACTIVATE,
+      ACTION_CODES.TARIFF_DEPRECATE, ACTION_CODES.TARIFF_NEW_VERSION, ACTION_CODES.TARIFF_VIEW, ACTION_CODES.TARIFF_APPROVE, ACTION_CODES.TARIFF_REJECT,
     ],
   },
   {
@@ -139,7 +141,7 @@ export const RESOURCES: SeedResource[] = [
     name: 'Approval Workflows',
     description: 'Multi-level approval chain configuration (Tariff, Billing Cycle, Bill Run)',
     displayOrder: 5,
-    actionCodes: ['WORKFLOW_VIEW', 'WORKFLOW_MANAGE_APPROVERS'],
+    actionCodes: [ACTION_CODES.WORKFLOW_VIEW, ACTION_CODES.WORKFLOW_MANAGE_APPROVERS],
   },
   {
     code: 'BILLING_CYCLE',
@@ -151,9 +153,9 @@ export const RESOURCES: SeedResource[] = [
     // EXPORT_BILLING_CYCLE retired — no export route or service method ever existed (RBAC cleanup
     // audit); see 1793100000000-RetireDeadActionCodes.ts.
     actionCodes: [
-      'CREATE_BILLING_CYCLE', 'BILLING_CYCLE_RESUBMIT', 'BILLING_CYCLE_NEW_VERSION',
-      'BILLING_CYCLE_DEPRECATE', 'VIEW_BILLING_CYCLE', 'BILLING_CYCLE_APPROVE',
-      'BILLING_CYCLE_REJECT',
+      ACTION_CODES.CREATE_BILLING_CYCLE, ACTION_CODES.BILLING_CYCLE_RESUBMIT, ACTION_CODES.BILLING_CYCLE_NEW_VERSION,
+      ACTION_CODES.BILLING_CYCLE_DEPRECATE, ACTION_CODES.VIEW_BILLING_CYCLE, ACTION_CODES.BILLING_CYCLE_APPROVE,
+      ACTION_CODES.BILLING_CYCLE_REJECT,
     ],
   },
   {
@@ -168,7 +170,7 @@ export const RESOURCES: SeedResource[] = [
     description: 'Bill run submission, review, and approval — also covers the Billing Readiness screen\'s own view action (BILLING_READINESS_VIEW)',
     displayOrder: 7,
     actionCodes: [
-      'BILL_RUN_VIEW', 'BILL_RUN_APPROVE', 'BILL_RUN_SUBMIT', 'BILLING_READINESS_VIEW',
+      ACTION_CODES.BILL_RUN_VIEW, ACTION_CODES.BILL_RUN_APPROVE, ACTION_CODES.BILL_RUN_SUBMIT, ACTION_CODES.BILLING_READINESS_VIEW,
       // BILL_RUN_HISTORICAL_SUBMIT/APPROVE: confirmed live in the database (isActive, 4 real role
       // grants: SUPER_ADMIN, CUSTOMER_SERVICE_EXECUTIVE, FINANCE, Cheif_Officer) but NOT present in
       // seed-data.ts's ACTIONS array and NOT referenced by any @Permission decorator anywhere in the
@@ -180,32 +182,32 @@ export const RESOURCES: SeedResource[] = [
       // permissions" requirement) — not because the underlying feature is confirmed built. If/when
       // the historical billing feature is actually implemented, its real routes should be
       // @Permission-decorated with these exact codes rather than inventing new ones.
-      'BILL_RUN_HISTORICAL_SUBMIT', 'BILL_RUN_HISTORICAL_APPROVE',
+      ACTION_CODES.BILL_RUN_HISTORICAL_SUBMIT, ACTION_CODES.BILL_RUN_HISTORICAL_APPROVE,
     ],
   },
   {
     code: 'COMMUNITY',
     name: 'Communities',
     displayOrder: 8,
-    actionCodes: ['VIEW_COMMUNITY', 'CREATE_COMMUNITY', 'EDIT_COMMUNITY', 'DELETE_COMMUNITY', 'COMMUNITY_STATUS'],
+    actionCodes: [ACTION_CODES.VIEW_COMMUNITY, ACTION_CODES.CREATE_COMMUNITY, ACTION_CODES.EDIT_COMMUNITY, ACTION_CODES.DELETE_COMMUNITY, ACTION_CODES.COMMUNITY_STATUS],
   },
   {
     code: 'PROPERTY',
     name: 'Properties',
     displayOrder: 9,
-    actionCodes: ['VIEW_PROPERTY', 'CREATE_PROPERTY', 'EDIT_PROPERTY', 'DELETE_PROPERTY', 'PROPERTY_STATUS'],
+    actionCodes: [ACTION_CODES.VIEW_PROPERTY, ACTION_CODES.CREATE_PROPERTY, ACTION_CODES.EDIT_PROPERTY, ACTION_CODES.DELETE_PROPERTY, ACTION_CODES.PROPERTY_STATUS],
   },
   {
     code: 'UNIT',
     name: 'Units',
     displayOrder: 10,
-    actionCodes: ['VIEW_UNIT', 'CREATE_UNIT', 'EDIT_UNIT', 'DELETE_UNIT', 'UNIT_OCCUPANCY'],
+    actionCodes: [ACTION_CODES.VIEW_UNIT, ACTION_CODES.CREATE_UNIT, ACTION_CODES.EDIT_UNIT, ACTION_CODES.DELETE_UNIT, ACTION_CODES.UNIT_OCCUPANCY],
   },
   {
     code: 'CUSTOMER',
     name: 'Customers',
     displayOrder: 11,
-    actionCodes: ['VIEW_CUSTOMER', 'CREATE_CUSTOMER', 'EDIT_CUSTOMER', 'DELETE_CUSTOMER'],
+    actionCodes: [ACTION_CODES.VIEW_CUSTOMER, ACTION_CODES.CREATE_CUSTOMER, ACTION_CODES.EDIT_CUSTOMER, ACTION_CODES.DELETE_CUSTOMER],
   },
   {
     code: 'REGISTRATION_REQUEST',
@@ -217,9 +219,9 @@ export const RESOURCES: SeedResource[] = [
     // same capability). REGISTRATION_APPROVAL_DEPOSIT_MANAGE is NOT a duplicate — it's a distinct,
     // narrower capability already OR'd *alongside* (not instead of) EDIT_REGISTRATION_REQUEST, kept.
     actionCodes: [
-      'VIEW_REGISTRATION_REQUESTS', 'CREATE_REGISTRATION_REQUEST', 'EDIT_REGISTRATION_REQUEST',
-      'APPROVE_REGISTRATION_REQUEST', 'REJECT_REGISTRATION_REQUEST',
-      'REGISTRATION_APPROVAL_DEPOSIT_MANAGE',
+      ACTION_CODES.VIEW_REGISTRATION_REQUESTS, ACTION_CODES.CREATE_REGISTRATION_REQUEST, ACTION_CODES.EDIT_REGISTRATION_REQUEST,
+      ACTION_CODES.APPROVE_REGISTRATION_REQUEST, ACTION_CODES.REJECT_REGISTRATION_REQUEST,
+      ACTION_CODES.REGISTRATION_APPROVAL_DEPOSIT_MANAGE,
     ],
   },
   {
@@ -227,19 +229,19 @@ export const RESOURCES: SeedResource[] = [
     name: 'Service Requests & Tickets',
     description: 'Not yet implemented as a feature — Resource reserved for the seeded placeholder Action',
     displayOrder: 13,
-    actionCodes: ['VIEW_SERVICE_REQUESTS_TICKETS'],
+    actionCodes: [ACTION_CODES.VIEW_SERVICE_REQUESTS_TICKETS],
   },
   {
     code: 'REGISTRATION_DOCUMENT_RULE',
     name: 'Document Set Definition',
     displayOrder: 14,
-    actionCodes: ['VIEW_REGISTRATION_DOCUMENT_RULES', 'EDIT_REGISTRATION_DOCUMENT_RULES'],
+    actionCodes: [ACTION_CODES.VIEW_REGISTRATION_DOCUMENT_RULES, ACTION_CODES.EDIT_REGISTRATION_DOCUMENT_RULES],
   },
   {
     code: 'LOV',
     name: 'List of Values',
     displayOrder: 15,
-    actionCodes: ['LOV_VIEW', 'LOV_CREATE', 'LOV_EDIT', 'LOV_DELETE', 'LOV_MODULE_ASSIGN'],
+    actionCodes: [ACTION_CODES.LOV_VIEW, ACTION_CODES.LOV_CREATE, ACTION_CODES.LOV_EDIT, ACTION_CODES.LOV_DELETE, ACTION_CODES.LOV_MODULE_ASSIGN],
   },
   {
     code: 'METER',
@@ -251,7 +253,7 @@ export const RESOURCES: SeedResource[] = [
     name: 'Meter Information',
     description: 'Meter Information and Daily Meter Readings viewing, plus meter import/export/mapping (collapsed from several duplicate-code screens)',
     displayOrder: 16,
-    actionCodes: ['METER_VIEW', 'METER_EXPORT', 'METER_MAPPING', 'METER_CREATE', 'METER_IMPORT'],
+    actionCodes: [ACTION_CODES.METER_VIEW, ACTION_CODES.METER_EXPORT, ACTION_CODES.METER_MAPPING, ACTION_CODES.METER_CREATE, ACTION_CODES.METER_IMPORT],
   },
   {
     code: 'METER_INVENTORY',
@@ -259,8 +261,8 @@ export const RESOURCES: SeedResource[] = [
     parentResourceCode: 'METER',
     displayOrder: 17,
     actionCodes: [
-      'METER_INVENTORY_VIEW', 'METER_INVENTORY_EXPORT', 'METER_INVENTORY_CREATE',
-      'METER_INVENTORY_EDIT', 'METER_INVENTORY_DELETE',
+      ACTION_CODES.METER_INVENTORY_VIEW, ACTION_CODES.METER_INVENTORY_EXPORT, ACTION_CODES.METER_INVENTORY_CREATE,
+      ACTION_CODES.METER_INVENTORY_EDIT, ACTION_CODES.METER_INVENTORY_DELETE,
     ],
   },
   {
@@ -272,25 +274,47 @@ export const RESOURCES: SeedResource[] = [
     name: 'Meter Reading Approvals',
     description: 'Approve or revoke approval of individual/bulk meter readings on the Daily Meter Readings screen — granting this alone does not grant viewing that screen; see Meter Information\'s METER_VIEW action for that',
     displayOrder: 18,
-    actionCodes: ['METER_READING_APPROVE'],
+    actionCodes: [ACTION_CODES.METER_READING_APPROVE],
   },
   {
     code: 'IMPORT_CENTER',
     name: 'Import Center',
     displayOrder: 19,
-    actionCodes: ['IMPORT_CENTER_VIEW'],
+    actionCodes: [ACTION_CODES.IMPORT_CENTER_VIEW],
   },
   {
     code: 'SFTP_MONITOR',
     name: 'SFTP File Monitor',
     displayOrder: 20,
-    actionCodes: ['SFTP_MONITOR_VIEW', 'SFTP_MONITOR_TRIGGER'],
+    actionCodes: [ACTION_CODES.SFTP_MONITOR_VIEW, ACTION_CODES.SFTP_MONITOR_TRIGGER],
   },
   {
     code: 'BILL',
     name: 'Bills (Invoices)',
     displayOrder: 21,
-    actionCodes: ['BILLING_VIEW', 'BILLING_CANCEL'],
+    actionCodes: [ACTION_CODES.BILLING_VIEW, ACTION_CODES.BILLING_CANCEL],
+  },
+  // Account — ONE Resource for the whole Settings area (Personal Settings and Security), not one per page. The Policy editor lists its
+  // actions under one heading per page (action-presentation.ts) and each page keeps an independent VIEW and, where it changes anything,
+  // UPDATE action; selecting the resource grants none of them — a statement names the action codes it wants. They act only on the
+  // caller's own account and are never granted automatically (SUPER_ADMIN's system policy picks them up like every other active
+  // action). System Settings has no Resource: it is @Roles(SUPER_ADMIN). Replaced eight per-page resources (SETTINGS_PROFILE ...
+  // SETTINGS_LOGIN_HISTORY) — see migration 1794100000000-ConsolidateSettingsResourcesIntoAccount.ts.
+  {
+    code: 'ACCOUNT',
+    name: 'Account',
+    description: 'Your own account in Settings: profile, appearance, regional and display preferences, notifications, password, sessions and login history',
+    displayOrder: 22,
+    actionCodes: [
+      ACTION_CODES.SETTINGS_PROFILE_VIEW, ACTION_CODES.SETTINGS_PROFILE_UPDATE,
+      ACTION_CODES.SETTINGS_APPEARANCE_VIEW, ACTION_CODES.SETTINGS_APPEARANCE_UPDATE,
+      ACTION_CODES.SETTINGS_REGIONAL_VIEW, ACTION_CODES.SETTINGS_REGIONAL_UPDATE,
+      ACTION_CODES.SETTINGS_DISPLAY_VIEW, ACTION_CODES.SETTINGS_DISPLAY_UPDATE,
+      ACTION_CODES.SETTINGS_NOTIFICATIONS_VIEW, ACTION_CODES.SETTINGS_NOTIFICATIONS_UPDATE,
+      ACTION_CODES.SETTINGS_PASSWORD_VIEW, ACTION_CODES.SETTINGS_PASSWORD_UPDATE,
+      ACTION_CODES.SETTINGS_SESSIONS_VIEW, ACTION_CODES.SETTINGS_SESSIONS_UPDATE,
+      ACTION_CODES.SETTINGS_LOGIN_HISTORY_VIEW,
+    ],
   },
 ];
 
@@ -302,11 +326,11 @@ export const RESOURCES: SeedResource[] = [
  *  both the static resource-catalog correctness tests and any migration/script that needs to tell
  *  apart a genuine mapping gap (a real bug) from one of these five intentional exceptions. */
 export const NAV_ONLY_ACTION_CODES = new Set([
-  'VIEW_POLICY',
-  'CREATE_POLICY',
-  'EDIT_POLICY',
-  'DELETE_POLICY',
-  'VIEW_RESOURCE',
+  ACTION_CODES.VIEW_POLICY,
+  ACTION_CODES.CREATE_POLICY,
+  ACTION_CODES.EDIT_POLICY,
+  ACTION_CODES.DELETE_POLICY,
+  ACTION_CODES.VIEW_RESOURCE,
 ]);
 
 /** Reverse lookup built once, used by ActionResourceMapService — every Action code maps to exactly

@@ -18,6 +18,14 @@ import { AttributeQueryDto, attributeValueErrorMessage, isValueValidForType, Upd
 import { Attribute, AttributeScope, AttributeValueType } from './entities/attribute.entity';
 import { LOCKABLE_TARIFF_FIELDS } from '../tariff/tariff.constants';
 import { REGISTRATION_TERMS_AND_CONDITIONS_DEFAULT } from '../../bootstrap/seed-data';
+import { ATTRIBUTE_KEY } from './attribute.constants';
+import { SETTINGS_MANAGED_ATTRIBUTE_KEYS, SYSTEM_SETTING_DEFAULTS, validateSystemSettingValue } from './system-setting.rules';
+import { SORT_ORDER } from '../../common/constants/sort.constants';
+import { ERROR_MESSAGES } from '../../common/constants/error-messages.constants';
+import { ACTION_CODES } from '../../common/constants/action-codes.constants';
+import { AUDIT_MODULE, AUDIT_ACTION } from '../../audit/audit.constants';
+import { ENV_KEY } from '../../common/constants/env.constants';
+import { APP_MODULE_KEY } from '../../common/constants/app-module.constants';
 
 // Cache-aside for getValueByKey — the single hottest Attribute read in the codebase (isMandatory/
 // getJsonValueByKey/getCustomerValueByKey all call it, plus the controller's own findAll({ key })
@@ -28,10 +36,10 @@ function attributeCacheKey(key: string): string {
 }
 
 const CYCLE_SENSITIVE_KEYS = new Set([
-  'VAT_RATE',
-  'SUPER_ADMIN_REVOKE_AFTER_CYCLE_CLOSE',
-  'SUPER_ADMIN_FORCE_TARIFF_ACTIVATION',
-  'FINANCE_OVERRIDE_VALIDATION_AT_BILL_RUN',
+  ATTRIBUTE_KEY.VAT_RATE,
+  ATTRIBUTE_KEY.SUPER_ADMIN_REVOKE_AFTER_CYCLE_CLOSE,
+  ATTRIBUTE_KEY.SUPER_ADMIN_FORCE_TARIFF_ACTIVATION,
+  ATTRIBUTE_KEY.FINANCE_OVERRIDE_VALIDATION_AT_BILL_RUN,
 ]);
 
 const ATTRIBUTE_BOUNDS: Record<string, { min: number; max: number }> = {
@@ -73,84 +81,84 @@ type AttributeSeedRow = Pick<Attribute, 'scope' | 'key' | 'label' | 'valueType' 
 
 function buildAttributeSeed(sessionTimeoutMinutes: number): AttributeSeedRow[] {
   const portalGroup = {
-    module: 'customer',
+    module: APP_MODULE_KEY.CUSTOMER,
     groupKey: 'portal_and_access',
     groupLabel: 'Portal and Access',
     groupDescription: 'Customer portal access controls, payment options, and authentication requirements',
   };
 
   const userManagementGroup = {
-    module: 'user-management',
+    module: APP_MODULE_KEY.USER_MANAGEMENT,
     groupKey: 'user_creation_rules',
     groupLabel: 'User Creation Rules',
     groupDescription: 'Field requirements applied when creating or editing users',
   };
 
   const roleManagementGroup = {
-    module: 'role-management',
+    module: APP_MODULE_KEY.ROLE_MANAGEMENT,
     groupKey: 'permission_management_rules',
     groupLabel: 'Permission Management Rules',
     groupDescription: 'Behavior controls for the role permission tree editor',
   };
 
   const billingCycleGroup = {
-    module: 'billing-cycle',
+    module: APP_MODULE_KEY.BILLING_CYCLE,
     groupKey: 'billing_cycle_rules',
     groupLabel: 'Billing Cycle Rules',
     groupDescription: 'Default behavior and change controls for billing cycle records',
   };
 
   const tariffGroup = {
-    module: 'tariff',
+    module: APP_MODULE_KEY.TARIFF,
     groupKey: 'tariff_config_rules',
     groupLabel: 'Tariff Configuration Rules',
     groupDescription: 'Defaults and guardrails applied to the tariff creation, approval, and versioning workflow',
   };
 
   const meterImportGroup = {
-    module: 'meter',
+    module: APP_MODULE_KEY.METER,
     groupKey: 'meter_bulk_import',
     groupLabel: 'Bulk Import',
     groupDescription: 'Approval thresholds and general settings for Master Meter and Sub Meter bulk import/export',
   };
 
   const registrationDepositGroup = {
-    module: 'customer',
+    module: APP_MODULE_KEY.CUSTOMER,
     groupKey: 'registration_deposit',
     groupLabel: 'Registration Deposit',
     groupDescription: 'Whether the security deposit and activation fee are demanded when a registration request is raised',
   };
 
   const registrationDocumentCaptureGroup = {
-    module: 'customer',
+    module: APP_MODULE_KEY.CUSTOMER,
     groupKey: 'registration_document_capture',
     groupLabel: 'Registration Document Capture',
     groupDescription: 'Whether the registration wizard extracts document fields via OCR, or the applicant enters them manually',
   };
 
   const registrationWizardAssistanceGroup = {
-    module: 'customer',
+    module: APP_MODULE_KEY.CUSTOMER,
     groupKey: 'registration_wizard_assistance',
     groupLabel: 'Wizard Assistance',
     groupDescription: 'Visibility of the registration wizard\'s optional help surfaces — independent of each other and of document capture',
   };
 
   const registrationFieldRequirementsGroup = {
-    module: 'customer',
+    module: APP_MODULE_KEY.CUSTOMER,
     groupKey: 'registration_field_requirements',
     groupLabel: 'Field Requirements',
     groupDescription: 'Which registration wizard fields must be filled in before the applicant can proceed — enforced on both the wizard and the submit-for-review API call',
   };
 
   const ticketAssignmentGroup = {
-    module: 'customer',
+    module: APP_MODULE_KEY.CUSTOMER,
     groupKey: 'ticket_team_assignment',
     groupLabel: 'Team Assignment by Category',
     groupDescription: 'Whether raising a ticket in this category requires an explicit team assignment before it can progress',
   };
 
   const ticketRoutingGroup = {
-    module: 'customer',
+    module: APP_MODULE_KEY.CUSTOMER,
     groupKey: 'ticket_single_department_routing',
     groupLabel: 'Single-Department Routing',
     groupDescription: 'Which department a Support Ticket category routes to',
@@ -163,7 +171,7 @@ function buildAttributeSeed(sessionTimeoutMinutes: number): AttributeSeedRow[] {
       editable: false, displayOrder: 1,
     },
     {
-      scope: AttributeScope.SYSTEM, key: 'VAT_RATE', label: 'VAT Rate',
+      scope: AttributeScope.SYSTEM, key: ATTRIBUTE_KEY.VAT_RATE, label: 'VAT Rate',
       description: 'UAE FTA standard', valueType: AttributeValueType.NUMBER, value: '5',
       unit: '%', displayOrder: 2,
     },
@@ -173,22 +181,22 @@ function buildAttributeSeed(sessionTimeoutMinutes: number): AttributeSeedRow[] {
       editable: false, displayOrder: 3,
     },
     {
-      scope: AttributeScope.SYSTEM, key: 'SUPER_ADMIN_REVOKE_AFTER_CYCLE_CLOSE',
+      scope: AttributeScope.SYSTEM, key: ATTRIBUTE_KEY.SUPER_ADMIN_REVOKE_AFTER_CYCLE_CLOSE,
       label: 'Super Admin Revoke After Cycle Close', valueType: AttributeValueType.BOOLEAN, value: 'true',
       trueLabel: 'Allowed with justification', falseLabel: 'Blocked', displayOrder: 4,
     },
     {
-      scope: AttributeScope.SYSTEM, key: 'SUPER_ADMIN_FORCE_TARIFF_ACTIVATION',
+      scope: AttributeScope.SYSTEM, key: ATTRIBUTE_KEY.SUPER_ADMIN_FORCE_TARIFF_ACTIVATION,
       label: 'Super Admin Force Tariff Activation', valueType: AttributeValueType.BOOLEAN, value: 'true',
       trueLabel: 'Allowed with justification', falseLabel: 'Blocked', displayOrder: 5,
     },
     {
-      scope: AttributeScope.SYSTEM, key: 'FINANCE_OVERRIDE_VALIDATION_AT_BILL_RUN',
+      scope: AttributeScope.SYSTEM, key: ATTRIBUTE_KEY.FINANCE_OVERRIDE_VALIDATION_AT_BILL_RUN,
       label: 'Finance Can Override Validation at Bill Run', valueType: AttributeValueType.BOOLEAN, value: 'false',
       trueLabel: 'Yes', falseLabel: 'No', displayOrder: 6,
     },
     {
-      scope: AttributeScope.SYSTEM, key: 'SESSION_TIMEOUT_MINUTES', label: 'Session Timeout (minutes)',
+      scope: AttributeScope.SYSTEM, key: ATTRIBUTE_KEY.SESSION_TIMEOUT_MINUTES, label: 'Session Timeout (minutes)',
       description: 'Controls how long a login session stays active before requiring re-authentication',
       valueType: AttributeValueType.NUMBER, value: String(sessionTimeoutMinutes), unit: 'minutes', displayOrder: 7,
     },
@@ -196,6 +204,49 @@ function buildAttributeSeed(sessionTimeoutMinutes: number): AttributeSeedRow[] {
       scope: AttributeScope.SYSTEM, key: 'REGISTRATION_TERMS_AND_CONDITIONS', label: 'Terms & Conditions Text',
       description: 'Shown on the registration wizard\'s Review & Submit step; the applicant must accept it before the request can be submitted for approval',
       valueType: AttributeValueType.TEXT, value: REGISTRATION_TERMS_AND_CONDITIONS_DEFAULT, displayOrder: 8,
+    },
+
+    // System Settings (Settings > System Settings): the system-wide defaults a user's own preferences fall back to, and
+    // the notification switches. Validated by system-setting.rules.ts, edited through PATCH /settings/system.
+    {
+      scope: AttributeScope.SYSTEM, key: ATTRIBUTE_KEY.DEFAULT_LANGUAGE, label: 'Default Language',
+      description: 'Language for users who have not chosen their own; must be an active language in Lookup Field Master',
+      valueType: AttributeValueType.TEXT, value: SYSTEM_SETTING_DEFAULTS.language, displayOrder: 9,
+    },
+    {
+      scope: AttributeScope.SYSTEM, key: ATTRIBUTE_KEY.DEFAULT_TIMEZONE, label: 'Default Time Zone',
+      description: 'Time zone for users who have not chosen their own (an IANA name from the Time Zone lookup)',
+      valueType: AttributeValueType.TEXT, value: SYSTEM_SETTING_DEFAULTS.timezone, displayOrder: 10,
+    },
+    {
+      scope: AttributeScope.SYSTEM, key: ATTRIBUTE_KEY.DEFAULT_DATE_FORMAT, label: 'Default Date Format',
+      description: 'How dates are shown to users who have not chosen their own format',
+      valueType: AttributeValueType.TEXT, value: SYSTEM_SETTING_DEFAULTS.dateFormat, displayOrder: 11,
+    },
+    {
+      scope: AttributeScope.SYSTEM, key: ATTRIBUTE_KEY.DEFAULT_PAGE_SIZE, label: 'Default Page Size',
+      description: 'Rows per page in tables for users who have not chosen their own',
+      valueType: AttributeValueType.NUMBER, value: String(SYSTEM_SETTING_DEFAULTS.pageSize), unit: 'rows', displayOrder: 12,
+    },
+    {
+      scope: AttributeScope.SYSTEM, key: ATTRIBUTE_KEY.DEFAULT_TABLE_DENSITY, label: 'Default Table Density',
+      description: 'Row spacing in tables for users who have not chosen their own (comfortable or compact)',
+      valueType: AttributeValueType.TEXT, value: SYSTEM_SETTING_DEFAULTS.tableDensity, displayOrder: 13,
+    },
+    {
+      scope: AttributeScope.SYSTEM, key: ATTRIBUTE_KEY.DEFAULT_SIDEBAR_STATE, label: 'Default Sidebar State',
+      description: 'Whether the navigation sidebar starts expanded or collapsed for users who have not chosen their own',
+      valueType: AttributeValueType.TEXT, value: SYSTEM_SETTING_DEFAULTS.sidebarState, displayOrder: 14,
+    },
+    {
+      scope: AttributeScope.SYSTEM, key: ATTRIBUTE_KEY.NOTIFICATIONS_EMAIL_ENABLED, label: 'Email Notifications',
+      description: 'Master switch for notification e-mails sent to staff, such as overdue-approval notices; a user\'s own e-mail preferences apply only while this is on. E-mails to customers, such as account activation links, are always sent',
+      valueType: AttributeValueType.BOOLEAN, value: 'true', trueLabel: 'Enabled', falseLabel: 'Disabled', displayOrder: 15,
+    },
+    {
+      scope: AttributeScope.SYSTEM, key: ATTRIBUTE_KEY.NOTIFICATIONS_IN_APP_ENABLED, label: 'In-App Notifications',
+      description: 'Reserved for in-application notifications, which are not available yet; this switch has no effect until they are',
+      valueType: AttributeValueType.BOOLEAN, value: 'true', trueLabel: 'Enabled', falseLabel: 'Disabled', displayOrder: 16,
     },
 
     {
@@ -220,7 +271,7 @@ function buildAttributeSeed(sessionTimeoutMinutes: number): AttributeSeedRow[] {
     },
 
     {
-      ...userManagementGroup, scope: AttributeScope.MODULE, key: 'REPORTING_MANAGER_MANDATORY',
+      ...userManagementGroup, scope: AttributeScope.MODULE, key: ATTRIBUTE_KEY.REPORTING_MANAGER_MANDATORY,
       label: 'Reporting Manager Mandatory', valueType: AttributeValueType.BOOLEAN, value: 'false',
       description: 'Whether a Reporting Manager must be selected when creating a user',
       trueLabel: 'Mandatory', falseLabel: 'Optional', displayOrder: 1,
@@ -234,32 +285,32 @@ function buildAttributeSeed(sessionTimeoutMinutes: number): AttributeSeedRow[] {
     },
 
     {
-      ...billingCycleGroup, scope: AttributeScope.MODULE, key: 'REQUIRE_CHANGE_REASON_ON_EDIT',
+      ...billingCycleGroup, scope: AttributeScope.MODULE, key: ATTRIBUTE_KEY.REQUIRE_CHANGE_REASON_ON_EDIT,
       label: 'Require Change Reason on Edit', valueType: AttributeValueType.BOOLEAN, value: 'true',
       description: 'Whether a reason is mandatory when saving changes to an existing billing cycle',
       trueLabel: 'Required', falseLabel: 'Optional', displayOrder: 1,
     },
     {
-      ...billingCycleGroup, scope: AttributeScope.MODULE, key: 'BILLING_CYCLE_DEFAULT_BILL_GENERATION_DAYS',
+      ...billingCycleGroup, scope: AttributeScope.MODULE, key: ATTRIBUTE_KEY.BILLING_CYCLE_DEFAULT_BILL_GENERATION_DAYS,
       label: 'Default Bill Generation Days', valueType: AttributeValueType.NUMBER, value: '3',
       description: 'Days after reading end pre-filled on the create-cycle form for when a bill is generated internally',
       unit: 'days', displayOrder: 2,
     },
     {
-      ...billingCycleGroup, scope: AttributeScope.MODULE, key: 'BILLING_CYCLE_DEFAULT_BILL_ISSUE_DAYS',
+      ...billingCycleGroup, scope: AttributeScope.MODULE, key: ATTRIBUTE_KEY.BILLING_CYCLE_DEFAULT_BILL_ISSUE_DAYS,
       label: 'Default Bill Issue Days', valueType: AttributeValueType.NUMBER, value: '7',
       description: 'Days after reading end pre-filled on the create-cycle form for when a bill is issued to the customer',
       unit: 'days', displayOrder: 3,
     },
     {
-      ...billingCycleGroup, scope: AttributeScope.MODULE, key: 'BILLING_CYCLE_DEFAULT_BILL_DUE_DAYS',
+      ...billingCycleGroup, scope: AttributeScope.MODULE, key: ATTRIBUTE_KEY.BILLING_CYCLE_DEFAULT_BILL_DUE_DAYS,
       label: 'Default Payment Due Days', valueType: AttributeValueType.NUMBER, value: '14',
       description: 'Days after bill issue pre-filled on the create-cycle form for when payment is due',
       unit: 'days', displayOrder: 4,
     },
 
     {
-      ...tariffGroup, scope: AttributeScope.MODULE, key: 'TARIFF_DEFAULT_VAT_RATE',
+      ...tariffGroup, scope: AttributeScope.MODULE, key: ATTRIBUTE_KEY.TARIFF_DEFAULT_VAT_RATE,
       label: 'Default VAT Rate', valueType: AttributeValueType.NUMBER, value: '5',
       description: 'VAT percentage pre-filled on a new tariff when none is specified',
       unit: '%', displayOrder: 1,
@@ -271,13 +322,13 @@ function buildAttributeSeed(sessionTimeoutMinutes: number): AttributeSeedRow[] {
       unit: 'hours', displayOrder: 2,
     },
     {
-      ...tariffGroup, scope: AttributeScope.MODULE, key: 'TARIFF_REACTIVATION_CONFLICT_CHECK',
+      ...tariffGroup, scope: AttributeScope.MODULE, key: ATTRIBUTE_KEY.TARIFF_REACTIVATION_CONFLICT_CHECK,
       label: 'Conflict Check on Reactivation', valueType: AttributeValueType.BOOLEAN, value: 'true',
       description: 'Whether reactivating an inactive tariff re-checks for scope/date conflicts with other tariffs',
       trueLabel: 'Required', falseLabel: 'Skipped', displayOrder: 3,
     },
     {
-      ...tariffGroup, scope: AttributeScope.MODULE, key: 'TARIFF_ACTIVE_LOCKED_FIELDS',
+      ...tariffGroup, scope: AttributeScope.MODULE, key: ATTRIBUTE_KEY.TARIFF_ACTIVE_LOCKED_FIELDS,
       label: 'Fields Locked for Active Tariffs', valueType: AttributeValueType.TEXT,
       value: 'propertyType,rateType,flatRate,tiers,applicability,propertyIds,unitIds,billingServiceFee,vat,effectiveFrom',
       description: 'Defines which fields are locked when editing an active tariff. After invoicing, a new tariff version is required.',
@@ -285,7 +336,7 @@ function buildAttributeSeed(sessionTimeoutMinutes: number): AttributeSeedRow[] {
     },
 
     {
-      ...meterImportGroup, scope: AttributeScope.MODULE, key: 'MASTER_METER_IMPORT_COLUMNS',
+      ...meterImportGroup, scope: AttributeScope.MODULE, key: ATTRIBUTE_KEY.MASTER_METER_IMPORT_COLUMNS,
       label: 'Master Meter Import Column Configuration', valueType: AttributeValueType.TEXT,
       description: 'Configure the column headers used in the Master Meter import/export template. Locked columns are mandatory and cannot be disabled.',
       value: JSON.stringify([
@@ -303,7 +354,7 @@ function buildAttributeSeed(sessionTimeoutMinutes: number): AttributeSeedRow[] {
       displayOrder: 1,
     },
     {
-      ...meterImportGroup, scope: AttributeScope.MODULE, key: 'SUB_METER_IMPORT_COLUMNS',
+      ...meterImportGroup, scope: AttributeScope.MODULE, key: ATTRIBUTE_KEY.SUB_METER_IMPORT_COLUMNS,
       label: 'Sub-Meter Import Column Configuration', valueType: AttributeValueType.TEXT,
       description: 'Configure the column headers used in the Sub-Meter import/export template. Locked columns are mandatory and cannot be disabled.',
       value: JSON.stringify([
@@ -325,33 +376,33 @@ function buildAttributeSeed(sessionTimeoutMinutes: number): AttributeSeedRow[] {
     },
 
     {
-      ...registrationDepositGroup, scope: AttributeScope.MODULE, key: 'SECURITY_DEPOSIT_MANDATORY_OWNER',
+      ...registrationDepositGroup, scope: AttributeScope.MODULE, key: ATTRIBUTE_KEY.SECURITY_DEPOSIT_MANDATORY_OWNER,
       label: 'Security Deposit Mandatory — Owner', valueType: AttributeValueType.BOOLEAN, value: 'true',
       description: 'Whether the Security Deposit is included in the demand raised for an Owner registration',
       trueLabel: 'Yes', falseLabel: 'No', displayOrder: 1,
     },
     {
-      ...registrationDepositGroup, scope: AttributeScope.MODULE, key: 'SECURITY_DEPOSIT_MANDATORY_TENANT',
+      ...registrationDepositGroup, scope: AttributeScope.MODULE, key: ATTRIBUTE_KEY.SECURITY_DEPOSIT_MANDATORY_TENANT,
       label: 'Security Deposit Mandatory — Tenant', valueType: AttributeValueType.BOOLEAN, value: 'true',
       description: 'Whether the Security Deposit is included in the demand raised for a Tenant registration',
       trueLabel: 'Yes', falseLabel: 'No', displayOrder: 2,
     },
     {
-      ...registrationDepositGroup, scope: AttributeScope.MODULE, key: 'ACTIVATION_FEE_MANDATORY',
+      ...registrationDepositGroup, scope: AttributeScope.MODULE, key: ATTRIBUTE_KEY.ACTIVATION_FEE_MANDATORY,
       label: 'Activation Fee Mandatory', valueType: AttributeValueType.BOOLEAN, value: 'false',
       description: 'Whether the Activation Fee is included in the raised registration demand by default',
       trueLabel: 'Yes', falseLabel: 'No', displayOrder: 3,
     },
 
     {
-      ...registrationDocumentCaptureGroup, scope: AttributeScope.MODULE, key: 'OCR_DATA_ENTRY_ENABLED',
+      ...registrationDocumentCaptureGroup, scope: AttributeScope.MODULE, key: ATTRIBUTE_KEY.OCR_DATA_ENTRY_ENABLED,
       label: 'OCR-Based Data Entry', valueType: AttributeValueType.BOOLEAN, value: 'true',
       description: 'Yes = documents are extracted via OCR on upload. No = the applicant enters document fields manually and no extraction runs',
       trueLabel: 'Yes', falseLabel: 'No', displayOrder: 1,
     },
 
     {
-      ...registrationWizardAssistanceGroup, scope: AttributeScope.MODULE, key: 'REGISTRATION_FAQ_ENABLED',
+      ...registrationWizardAssistanceGroup, scope: AttributeScope.MODULE, key: ATTRIBUTE_KEY.REGISTRATION_FAQ_ENABLED,
       label: 'Show Help & FAQ Panel', valueType: AttributeValueType.BOOLEAN, value: 'true',
       description: 'No = the wizard\'s Help & FAQ rail renders on no step at all — not expanded, not as a collapsed strip',
       trueLabel: 'Yes', falseLabel: 'No', displayOrder: 1,
@@ -369,73 +420,73 @@ function buildAttributeSeed(sessionTimeoutMinutes: number): AttributeSeedRow[] {
     },
 
     {
-      ...registrationFieldRequirementsGroup, scope: AttributeScope.MODULE, key: 'REGISTRATION_NAME_MANDATORY',
+      ...registrationFieldRequirementsGroup, scope: AttributeScope.MODULE, key: ATTRIBUTE_KEY.REGISTRATION_NAME_MANDATORY,
       label: 'Applicant Name Mandatory', valueType: AttributeValueType.BOOLEAN, value: 'true',
       description: 'Whether First/Last Name (Individual) or Contact Person Name (Corporate) must be filled in on the Account step',
       trueLabel: 'Mandatory', falseLabel: 'Optional', displayOrder: 1,
     },
     {
-      ...registrationFieldRequirementsGroup, scope: AttributeScope.MODULE, key: 'REGISTRATION_EMAIL_MANDATORY',
+      ...registrationFieldRequirementsGroup, scope: AttributeScope.MODULE, key: ATTRIBUTE_KEY.REGISTRATION_EMAIL_MANDATORY,
       label: 'Email Mandatory', valueType: AttributeValueType.BOOLEAN, value: 'true',
       description: 'Whether Email must be filled in before the registration request can be submitted for approval',
       trueLabel: 'Mandatory', falseLabel: 'Optional', displayOrder: 2,
     },
     {
-      ...registrationFieldRequirementsGroup, scope: AttributeScope.MODULE, key: 'REGISTRATION_MOBILE_MANDATORY',
+      ...registrationFieldRequirementsGroup, scope: AttributeScope.MODULE, key: ATTRIBUTE_KEY.REGISTRATION_MOBILE_MANDATORY,
       label: 'Mobile Mandatory', valueType: AttributeValueType.BOOLEAN, value: 'true',
       description: 'Whether Mobile must be filled in before the registration request can be submitted for approval',
       trueLabel: 'Mandatory', falseLabel: 'Optional', displayOrder: 3,
     },
     {
-      ...registrationFieldRequirementsGroup, scope: AttributeScope.MODULE, key: 'REGISTRATION_EMERGENCY_CONTACT_MANDATORY',
+      ...registrationFieldRequirementsGroup, scope: AttributeScope.MODULE, key: ATTRIBUTE_KEY.REGISTRATION_EMERGENCY_CONTACT_MANDATORY,
       label: 'Emergency Contact Mandatory (once started)', valueType: AttributeValueType.BOOLEAN, value: 'true',
       description: 'Whether Emergency Contact Name/Phone become required once the applicant has filled in any one emergency contact field',
       trueLabel: 'Mandatory', falseLabel: 'Optional', displayOrder: 4,
     },
     {
-      ...registrationFieldRequirementsGroup, scope: AttributeScope.MODULE, key: 'REGISTRATION_PRINCIPAL_MANDATORY',
+      ...registrationFieldRequirementsGroup, scope: AttributeScope.MODULE, key: ATTRIBUTE_KEY.REGISTRATION_PRINCIPAL_MANDATORY,
       label: 'Principal Details Mandatory (Authorized Representative)', valueType: AttributeValueType.BOOLEAN, value: 'true',
       description: 'Whether Principal Name/Email/Phone are required when the applicant is an Authorized Representative marked as the primary recipient',
       trueLabel: 'Mandatory', falseLabel: 'Optional', displayOrder: 5,
     },
     {
-      ...registrationFieldRequirementsGroup, scope: AttributeScope.MODULE, key: 'REGISTRATION_TRADE_LICENSE_NUMBER_MANDATORY',
+      ...registrationFieldRequirementsGroup, scope: AttributeScope.MODULE, key: ATTRIBUTE_KEY.REGISTRATION_TRADE_LICENSE_NUMBER_MANDATORY,
       label: 'Trade License Number Mandatory (Corporate)', valueType: AttributeValueType.BOOLEAN, value: 'true',
       description: 'Whether Trade License Number must be filled in on the Corporate Details step',
       trueLabel: 'Mandatory', falseLabel: 'Optional', displayOrder: 6,
     },
     {
-      ...registrationFieldRequirementsGroup, scope: AttributeScope.MODULE, key: 'REGISTRATION_MANAGER_NAME_MANDATORY',
+      ...registrationFieldRequirementsGroup, scope: AttributeScope.MODULE, key: ATTRIBUTE_KEY.REGISTRATION_MANAGER_NAME_MANDATORY,
       label: 'Manager Name Mandatory (Corporate)', valueType: AttributeValueType.BOOLEAN, value: 'true',
       description: 'Whether Manager Name must be filled in on the Corporate Details step',
       trueLabel: 'Mandatory', falseLabel: 'Optional', displayOrder: 7,
     },
     {
-      ...registrationFieldRequirementsGroup, scope: AttributeScope.MODULE, key: 'REGISTRATION_TAXABLE_ENTITY_NAME_MANDATORY',
+      ...registrationFieldRequirementsGroup, scope: AttributeScope.MODULE, key: ATTRIBUTE_KEY.REGISTRATION_TAXABLE_ENTITY_NAME_MANDATORY,
       label: 'Taxable Entity Name Mandatory (Corporate)', valueType: AttributeValueType.BOOLEAN, value: 'true',
       description: 'Whether Taxable Entity Name must be filled in on the Corporate Details step',
       trueLabel: 'Mandatory', falseLabel: 'Optional', displayOrder: 8,
     },
     {
-      ...registrationFieldRequirementsGroup, scope: AttributeScope.MODULE, key: 'REGISTRATION_TRN_MANDATORY',
+      ...registrationFieldRequirementsGroup, scope: AttributeScope.MODULE, key: ATTRIBUTE_KEY.REGISTRATION_TRN_MANDATORY,
       label: 'TRN Mandatory (Corporate)', valueType: AttributeValueType.BOOLEAN, value: 'true',
       description: 'Whether TRN must be filled in on the Corporate Details step',
       trueLabel: 'Mandatory', falseLabel: 'Optional', displayOrder: 9,
     },
     {
-      ...registrationFieldRequirementsGroup, scope: AttributeScope.MODULE, key: 'REGISTRATION_EFFECTIVE_REGISTRATION_DATE_MANDATORY',
+      ...registrationFieldRequirementsGroup, scope: AttributeScope.MODULE, key: ATTRIBUTE_KEY.REGISTRATION_EFFECTIVE_REGISTRATION_DATE_MANDATORY,
       label: 'Effective Registration Date Mandatory (Corporate)', valueType: AttributeValueType.BOOLEAN, value: 'true',
       description: 'Whether Effective Registration Date must be filled in on the Corporate Details step',
       trueLabel: 'Mandatory', falseLabel: 'Optional', displayOrder: 10,
     },
     {
-      ...registrationFieldRequirementsGroup, scope: AttributeScope.MODULE, key: 'REGISTRATION_ISSUING_AUTHORITY_MANDATORY',
+      ...registrationFieldRequirementsGroup, scope: AttributeScope.MODULE, key: ATTRIBUTE_KEY.REGISTRATION_ISSUING_AUTHORITY_MANDATORY,
       label: 'Issuing Authority Mandatory (Corporate)', valueType: AttributeValueType.BOOLEAN, value: 'true',
       description: 'Whether Issuing Authority must be filled in on the Corporate Details step',
       trueLabel: 'Mandatory', falseLabel: 'Optional', displayOrder: 11,
     },
     {
-      ...registrationFieldRequirementsGroup, scope: AttributeScope.MODULE, key: 'REGISTRATION_PAYMENT_METHOD_MANDATORY',
+      ...registrationFieldRequirementsGroup, scope: AttributeScope.MODULE, key: ATTRIBUTE_KEY.REGISTRATION_PAYMENT_METHOD_MANDATORY,
       label: 'Payment Method Mandatory', valueType: AttributeValueType.BOOLEAN, value: 'true',
       description: 'Whether at least one payment method (with exactly one marked default) must be added on the Payment step',
       trueLabel: 'Mandatory', falseLabel: 'Optional', displayOrder: 12,
@@ -559,8 +610,8 @@ export class AttributeService {
 
     const qb = this.attributes
       .createQueryBuilder('a')
-      .orderBy('a.displayOrder', 'ASC')
-      .addOrderBy('a.label', 'ASC');
+      .orderBy('a.displayOrder', SORT_ORDER.ASC)
+      .addOrderBy('a.label', SORT_ORDER.ASC);
 
     if (scope) qb.andWhere('a.scope = :scope', { scope });
     if (module) qb.andWhere('a.module = :module', { module });
@@ -580,8 +631,13 @@ export class AttributeService {
 
   async findOne(id: number): Promise<Attribute> {
     const attribute = await this.attributes.findOne({ where: { id } });
-    if (!attribute) throw new NotFoundException('Attribute not found');
+    if (!attribute) throw new NotFoundException(ERROR_MESSAGES.ATTRIBUTE_NOT_FOUND);
     return attribute;
+  }
+
+  /** The attributes with these keys (any scope), in one query — for a caller that needs several values and their ids. */
+  findByKeys(keys: string[]): Promise<Attribute[]> {
+    return this.attributes.find({ where: { key: In(keys) } });
   }
 
   /** Cache-aside read for a single attribute's value — the hottest Attribute read path in the
@@ -643,19 +699,26 @@ export class AttributeService {
 
   /** `actorRoleNames`/`actorRoleIds` are the actor's LIVE role set (principal.roleNames/roleIds,
    *  resolved per request by JwtStrategy — never role claims from the JWT); omitted or empty means
-   *  the actor holds nothing, so every check below fails closed. */
+   *  the actor holds nothing, so every check below fails closed. `viaSettings` is true only on the Settings > System
+   *  Settings write path (SettingsService) — the one place the SETTINGS_MANAGED_ATTRIBUTE_KEYS are edited; the generic
+   *  Attributes route never sets it, so those keys cannot be changed there. */
   async update(
     id: number,
     dto: UpdateAttributeDto,
     actorId?: number,
     actorRoleNames?: string[],
     actorRoleIds?: number[],
+    viaSettings = false,
   ): Promise<Attribute> {
     const attribute = await this.attributes.findOne({ where: { id } });
-    if (!attribute) throw new NotFoundException('Attribute not found');
+    if (!attribute) throw new NotFoundException(ERROR_MESSAGES.ATTRIBUTE_NOT_FOUND);
 
     if (attribute.scope === AttributeScope.SYSTEM && !actorRoleNames?.includes(ROLES.SUPER_ADMIN)) {
       throw new ForbiddenException('Only Super Admin can edit General Attributes');
+    }
+
+    if (!viaSettings && SETTINGS_MANAGED_ATTRIBUTE_KEYS.has(attribute.key)) {
+      throw new ConflictException(`"${attribute.label}" is managed in Settings > System Settings and cannot be changed here`);
     }
 
     // Authorization moved here from the controller's @Permission decorator because it now varies
@@ -666,10 +729,10 @@ export class AttributeService {
     // the code), never a role-name check beyond the SYSTEM-scope gate above, so this generalizes to
     // whatever role is actually granted these action codes.
     const extraAllowedActionCodesByKey: Record<string, string[]> = {
-      OCR_DATA_ENTRY_ENABLED: ['CREATE_REGISTRATION_REQUEST', 'EDIT_REGISTRATION_REQUEST'],
+      OCR_DATA_ENTRY_ENABLED: [ACTION_CODES.CREATE_REGISTRATION_REQUEST, ACTION_CODES.EDIT_REGISTRATION_REQUEST],
     };
     const roleIds = actorRoleIds ?? [];
-    const hasEditAttribute = roleIds.length > 0 && (await this.rolePermissions.rolesHaveAction(roleIds, 'EDIT_ATTRIBUTE', actorId));
+    const hasEditAttribute = roleIds.length > 0 && (await this.rolePermissions.rolesHaveAction(roleIds, ACTION_CODES.EDIT_ATTRIBUTE, actorId));
     if (!hasEditAttribute) {
       const extraActionCodes = extraAllowedActionCodesByKey[attribute.key] ?? [];
       const hasExtra =
@@ -712,7 +775,12 @@ export class AttributeService {
       }
     }
 
-    if (attribute.key === 'TARIFF_ACTIVE_LOCKED_FIELDS' && fields.value !== undefined) {
+    if (fields.value !== undefined) {
+      const settingError = validateSystemSettingValue(attribute.key, fields.value);
+      if (settingError) throw new BadRequestException(settingError);
+    }
+
+    if (attribute.key === ATTRIBUTE_KEY.TARIFF_ACTIVE_LOCKED_FIELDS && fields.value !== undefined) {
       assertValidLockableTariffFields(fields.value);
     }
 
@@ -731,9 +799,9 @@ export class AttributeService {
     await this.redis.del(attributeCacheKey(attribute.key));
 
     await this.audit.record({
-      moduleName: 'attributes',
+      moduleName: AUDIT_MODULE.ATTRIBUTES,
       entityId: id,
-      action: 'UPDATE',
+      action: AUDIT_ACTION.UPDATE,
       oldValue,
       newValue: { ...fields, changeReason },
       performedBy: actorId,
@@ -742,10 +810,16 @@ export class AttributeService {
     return saved;
   }
 
+  /** First-time seed: inserts every seeded attribute whose key is not there yet and leaves existing rows (and any value
+   *  an admin has configured) untouched. The attributes table has no unique key on `key`, so the existence check is what
+   *  prevents duplicates; it includes soft-deleted rows so a removed attribute is not silently re-created. */
   async seedValues(manager: EntityManager): Promise<void> {
-    const sessionTimeoutMinutes = this.config.get<number>('SESSION_TIMEOUT_MINUTES', 30);
+    const sessionTimeoutMinutes = this.config.get<number>(ENV_KEY.SESSION_TIMEOUT_MINUTES, 30);
 
     for (const row of buildAttributeSeed(sessionTimeoutMinutes)) {
+      const existing = await manager.findOne(Attribute, { where: { key: row.key }, withDeleted: true });
+      if (existing) continue;
+
       const entity = manager.create(Attribute, {
         module: null,
         groupKey: null,
@@ -767,7 +841,7 @@ export class AttributeService {
   async ensureCriticalDefaults(): Promise<void> {
     await this.attributes.delete({ key: In(RETIRED_ATTRIBUTE_KEYS) });
 
-    const sessionTimeoutMinutes = this.config.get<number>('SESSION_TIMEOUT_MINUTES', 30);
+    const sessionTimeoutMinutes = this.config.get<number>(ENV_KEY.SESSION_TIMEOUT_MINUTES, 30);
     const seedRows = buildAttributeSeed(sessionTimeoutMinutes);
 
     // Every seed-defined key is critical to backfill onto an existing database — derived directly
@@ -826,7 +900,7 @@ export class AttributeService {
   }
 
   private async refreshRelabeledColumnConfigs(seedRows: AttributeSeedRow[]): Promise<void> {
-    const columnConfigKeys = ['MASTER_METER_IMPORT_COLUMNS', 'SUB_METER_IMPORT_COLUMNS'];
+    const columnConfigKeys = [ATTRIBUTE_KEY.MASTER_METER_IMPORT_COLUMNS, ATTRIBUTE_KEY.SUB_METER_IMPORT_COLUMNS];
 
     for (const key of columnConfigKeys) {
       const seedRow = seedRows.find((r) => r.key === key);

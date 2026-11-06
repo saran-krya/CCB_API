@@ -64,6 +64,12 @@ export class UserDevice {
   @Column({ name: 'expires_at', type: 'timestamp', nullable: true })
   expiresAt?: Date | null;
 
+  /** The `rememberMe` of the latest token issued on this device. Like `expiresAt` and `refreshTokenHash` above it mirrors
+   *  that token, so the Active Sessions row can show it without a lookup; RefreshToken.rememberMe is the one that decides
+   *  anything. */
+  @Column({ name: 'remember_me', type: 'boolean', default: false })
+  rememberMe!: boolean;
+
   @Column({ name: 'is_trusted', type: 'boolean', default: false })
   isTrusted!: boolean;
 

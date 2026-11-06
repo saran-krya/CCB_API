@@ -49,6 +49,11 @@ import {
   TariffAuditAction,
   TariffValidationIssue,
 } from './tariff.constants';
+import { SORT_ORDER } from '../../common/constants/sort.constants';
+import { ERROR_MESSAGES } from '../../common/constants/error-messages.constants';
+import { ISO_DATE_LENGTH } from '../../common/constants/time.constants';
+import { LOCK_MODE } from '../../common/constants/database.constants';
+import { ATTRIBUTE_KEY } from '../attribute/attribute.constants';
 
 const VERSION_RESPONSE_RELATIONS = [
   'master',
@@ -170,7 +175,7 @@ export class TariffService {
     const [properties, unitTypes, activeLockedFields, defaultVat] = await Promise.all([
       this.propertyRepo.find({
         relations: ['community'],
-        order: { name: 'ASC' },
+        order: { name: SORT_ORDER.ASC },
       }),
       this.lovService.findByCategory(TARIFF_UNIT_TYPE_LOV_CATEGORY),
       this.getActiveLockedFields(),
@@ -285,7 +290,7 @@ export class TariffService {
     }
 
     const sortBy = query.sortBy && SORTABLE_TARIFF_FIELDS.has(query.sortBy) ? query.sortBy : 'createdAt';
-    qb.orderBy(TARIFF_SORT_COLUMN_MAP[sortBy], query.sortOrder ?? 'DESC');
+    qb.orderBy(TARIFF_SORT_COLUMN_MAP[sortBy], query.sortOrder ?? SORT_ORDER.DESC);
 
     const result = await paginate(qb, query);
 
@@ -318,18 +323,18 @@ export class TariffService {
       where: { id },
       relations: VERSION_RESPONSE_RELATIONS,
     });
-    if (!version) throw new NotFoundException('Tariff not found');
+    if (!version) throw new NotFoundException(ERROR_MESSAGES.TARIFF_NOT_FOUND);
     return this.mapToResponse(version, true);
   }
 
   async getVersionHistory(id: number) {
     const version = await this.versions.findOne({ where: { id } });
-    if (!version) throw new NotFoundException('Tariff not found');
+    if (!version) throw new NotFoundException(ERROR_MESSAGES.TARIFF_NOT_FOUND);
 
     const lineage = await this.versions.find({
       where: { masterId: version.masterId },
       relations: ['submittedBy', 'approvedBy'],
-      order: { id: 'ASC' },
+      order: { id: SORT_ORDER.ASC },
     });
 
     return lineage.map((v) => ({
@@ -467,12 +472,12 @@ export class TariffService {
       where: { id },
       relations: ['tiers', 'properties', 'units', 'submittedBy'],
     });
-    if (!version) throw new NotFoundException('Tariff not found');
+    if (!version) throw new NotFoundException(ERROR_MESSAGES.TARIFF_NOT_FOUND);
 
     if (!EDITABLE_TARIFF_STATUSES.has(version.status)) {
       throw new BadRequestException(
         version.status === TariffStatus.PENDING
-          ? 'A tariff awaiting Finance approval is read-only — approve, reject, or wait for a decision.'
+          ? 'A tariff awaiting approval is read-only — approve, reject, or wait for a decision.'
           : version.status === TariffStatus.ACTIVE
             ? 'An approved tariff is read-only — deprecate it or create a new version to make changes.'
             : `A tariff with status "${this.labelize(version.status)}" is read-only and cannot be edited.`,
@@ -568,7 +573,7 @@ export class TariffService {
       where: { id },
       relations: ['tiers', 'properties', 'units'],
     });
-    if (!version) throw new NotFoundException('Tariff not found');
+    if (!version) throw new NotFoundException(ERROR_MESSAGES.TARIFF_NOT_FOUND);
     if (!SUBMITTABLE_TARIFF_STATUSES.has(version.status)) {
       throw new BadRequestException('Only a draft, corrected, or rejected tariff can be submitted for approval');
     }
@@ -598,7 +603,7 @@ export class TariffService {
 
     const oldValue = { ...version };
     version.status = TariffStatus.PENDING;
-    version.submittedOn = new Date().toISOString().slice(0, 10);
+    version.submittedOn = new Date().toISOString().slice(0, ISO_DATE_LENGTH);
     if (actorId) version.submittedBy = { id: actorId } as any;
     version.rejectionReason = null;
     version.rejectionNotes = null;
@@ -637,11 +642,11 @@ export class TariffService {
 
       const version = await manager
         .createQueryBuilder(TariffVersion, 'v')
-        .setLock('pessimistic_write')
+        .setLock(LOCK_MODE.PESSIMISTIC_WRITE)
         .leftJoinAndSelect('v.submittedBy', 'submittedBy')
         .where('v.id = :id', { id })
         .getOne();
-      if (!version) throw new NotFoundException('Tariff not found');
+      if (!version) throw new NotFoundException(ERROR_MESSAGES.TARIFF_NOT_FOUND);
       if (version.status !== TariffStatus.PENDING) {
         throw new BadRequestException('Only pending tariffs can be approved');
       }
@@ -658,7 +663,7 @@ export class TariffService {
       if (workflowContext.isFinalLevel) {
         version.status = TariffStatus.ACTIVE;
         if (actorId) version.approvedBy = { id: actorId } as any;
-        version.approvalDate = new Date().toISOString().slice(0, 10);
+        version.approvalDate = new Date().toISOString().slice(0, ISO_DATE_LENGTH);
       }
       const saved = await manager.save(TariffVersion, version);
 
@@ -678,11 +683,11 @@ export class TariffService {
 
       const version = await manager
         .createQueryBuilder(TariffVersion, 'v')
-        .setLock('pessimistic_write')
+        .setLock(LOCK_MODE.PESSIMISTIC_WRITE)
         .leftJoinAndSelect('v.submittedBy', 'submittedBy')
         .where('v.id = :id', { id })
         .getOne();
-      if (!version) throw new NotFoundException('Tariff not found');
+      if (!version) throw new NotFoundException(ERROR_MESSAGES.TARIFF_NOT_FOUND);
       if (version.status !== TariffStatus.PENDING) {
         throw new BadRequestException('Only pending tariffs can be rejected');
       }
@@ -697,7 +702,7 @@ export class TariffService {
       version.rejectionReason = dto.rejectionReason;
       version.rejectionNotes = dto.rejectionNotes;
       if (actorId) version.approvedBy = { id: actorId } as any;
-      version.approvalDate = new Date().toISOString().slice(0, 10);
+      version.approvalDate = new Date().toISOString().slice(0, ISO_DATE_LENGTH);
       const saved = await manager.save(TariffVersion, version);
 
       await this.workflowOrchestration.recordRejection(workflowContext, actorId, dto.rejectionNotes ?? dto.rejectionReason, manager);
@@ -708,9 +713,9 @@ export class TariffService {
 
   async deactivate(id: number, actorId?: number) {
     const version = await this.versions.findOne({ where: { id } });
-    if (!version) throw new NotFoundException('Tariff not found');
+    if (!version) throw new NotFoundException(ERROR_MESSAGES.TARIFF_NOT_FOUND);
     if (version.status !== TariffStatus.ACTIVE) {
-      throw new BadRequestException('Only an active tariff can be deactivated — a pending one is locked until Finance approves or rejects it.');
+      throw new BadRequestException('Only an active tariff can be deactivated — a pending one is locked until it is approved or rejected.');
     }
     const oldValue = { ...version };
     version.status = TariffStatus.INACTIVE;
@@ -721,12 +726,12 @@ export class TariffService {
 
   async reactivate(id: number, actorId?: number) {
     const version = await this.versions.findOne({ where: { id }, relations: ['properties', 'units'] });
-    if (!version) throw new NotFoundException('Tariff not found');
+    if (!version) throw new NotFoundException(ERROR_MESSAGES.TARIFF_NOT_FOUND);
     if (version.status !== TariffStatus.INACTIVE) {
       throw new BadRequestException('Only inactive tariffs can be reactivated');
     }
 
-    const conflictCheckEnabled = (await this.attributeService.getValueByKey('TARIFF_REACTIVATION_CONFLICT_CHECK')) !== 'false';
+    const conflictCheckEnabled = (await this.attributeService.getValueByKey(ATTRIBUTE_KEY.TARIFF_REACTIVATION_CONFLICT_CHECK)) !== 'false';
     if (conflictCheckEnabled) {
       const result = await this.checkConflict({
         propertyType: version.propertyType,
@@ -753,7 +758,7 @@ export class TariffService {
 
   async deprecate(id: number, actorId?: number) {
     const version = await this.versions.findOne({ where: { id } });
-    if (!version) throw new NotFoundException('Tariff not found');
+    if (!version) throw new NotFoundException(ERROR_MESSAGES.TARIFF_NOT_FOUND);
     if (version.status !== TariffStatus.ACTIVE) {
       throw new BadRequestException('Only active tariffs can be deprecated');
     }
@@ -769,7 +774,7 @@ export class TariffService {
       where: { id },
       relations: ['tiers', 'properties', 'units'],
     });
-    if (!source) throw new NotFoundException('Tariff not found');
+    if (!source) throw new NotFoundException(ERROR_MESSAGES.TARIFF_NOT_FOUND);
     if (source.status !== TariffStatus.ACTIVE) {
       throw new BadRequestException('A new version can only be created from an active tariff');
     }
@@ -861,7 +866,7 @@ export class TariffService {
   }
 
   private async getActiveLockedFields(): Promise<(keyof UpdateTariffDto)[]> {
-    const raw = await this.attributeService.getValueByKey('TARIFF_ACTIVE_LOCKED_FIELDS');
+    const raw = await this.attributeService.getValueByKey(ATTRIBUTE_KEY.TARIFF_ACTIVE_LOCKED_FIELDS);
     if (!raw?.trim()) return ACTIVE_LOCKED_TARIFF_FIELDS;
 
     const fields = raw
@@ -873,7 +878,7 @@ export class TariffService {
   }
 
   private async getDefaultVat(): Promise<number> {
-    const value = await this.attributeService.getValueByKey('TARIFF_DEFAULT_VAT_RATE');
+    const value = await this.attributeService.getValueByKey(ATTRIBUTE_KEY.TARIFF_DEFAULT_VAT_RATE);
     const parsed = value !== null ? Number(value) : NaN;
     return Number.isFinite(parsed) ? parsed : DEFAULT_VAT_RATE_FALLBACK;
   }

@@ -4,6 +4,9 @@ import { EntityManager, Repository } from 'typeorm';
 import { CreateLovDto, UpdateLovDto } from './dto/lov.dto';
 import { LovCategory } from './entities/lov-category.entity';
 import { LovValue } from './entities/lov-value.entity';
+import { LOV_CATEGORY } from './lov.constants';
+import { SORT_ORDER } from '../../common/constants/sort.constants';
+import { APP_MODULE_KEY } from '../../common/constants/app-module.constants';
 
 // Nationality list — kept separate from the main LOV_SEED literal purely for readability given its
 // size (~195 rows); merged into LOV_SEED below like every other category. Codes are ISO 3166-1
@@ -50,7 +53,7 @@ const NATIONALITY_SEED: {
   'Venezuelan|VE', 'Vietnamese|VN', 'Yemeni|YE', 'Zambian|ZM', 'Zimbabwean|ZW',
 ].map((entry, i) => {
   const [label, code] = entry.split('|');
-  return { category: 'NATIONALITY', code: code.toLowerCase(), label, displayOrder: i + 1 };
+  return { category: LOV_CATEGORY.NATIONALITY, code: code.toLowerCase(), label, displayOrder: i + 1 };
 });
 
 const LOV_SEED: {
@@ -62,119 +65,138 @@ const LOV_SEED: {
   localeCode?: string;
   isSystem?: boolean;
 }[] = [
-  { category: 'BILLING_FREQUENCY', code: 'monthly',   label: 'Monthly',   displayOrder: 1 },
-  { category: 'BILLING_FREQUENCY', code: 'quarterly', label: 'Quarterly', displayOrder: 2 },
-  { category: 'BILLING_FREQUENCY', code: 'annually',  label: 'Annually',  displayOrder: 3 },
-  { category: 'USER_CATEGORY',     code: 'internal',  label: 'Internal',  displayOrder: 1 },
-  { category: 'USER_CATEGORY',     code: 'external',  label: 'External',  displayOrder: 2 },
-  { category: 'USER_TYPE',         code: 'employee',  label: 'Employee',  displayOrder: 1 },
-  { category: 'USER_TYPE',         code: 'customer',  label: 'Customer',  displayOrder: 2 },
-  { category: 'TARIFF_UNIT_TYPE',  code: 'residential', label: 'Residential', displayOrder: 1 },
-  { category: 'TARIFF_UNIT_TYPE',  code: 'commercial',  label: 'Commercial',  displayOrder: 2 },
-  { category: 'TARIFF_REJECTION_REASON', code: 'incomplete',     label: 'Incomplete Information',      displayOrder: 1 },
-  { category: 'TARIFF_REJECTION_REASON', code: 'rate-incorrect', label: 'Rate Configuration Incorrect', displayOrder: 2 },
-  { category: 'TARIFF_REJECTION_REASON', code: 'applicability',  label: 'Applicability Scope Issue',    displayOrder: 3 },
-  { category: 'TARIFF_REJECTION_REASON', code: 'scope',          label: 'Scope Reduction Conflict',     displayOrder: 4 },
-  { category: 'TARIFF_REJECTION_REASON', code: 'other',          label: 'Other',                        displayOrder: 5 },
-  { category: 'BILLING_CYCLE_CHANGE_REASON', code: 'dewa-realign',        label: 'DEWA Billing Realignment',        displayOrder: 1 },
-  { category: 'BILLING_CYCLE_CHANGE_REASON', code: 'building-handover',   label: 'Building Handover',                displayOrder: 2 },
-  { category: 'BILLING_CYCLE_CHANGE_REASON', code: 'finance-period',      label: 'Finance Period Change',            displayOrder: 3 },
-  { category: 'BILLING_CYCLE_CHANGE_REASON', code: 'correction',          label: 'Data Correction',                  displayOrder: 4 },
-  { category: 'BILLING_CYCLE_CHANGE_REASON', code: 'operational',         label: 'Operational Requirement',          displayOrder: 5 },
-  { category: 'BILLING_CYCLE_CHANGE_REASON', code: 'regulatory',          label: 'Regulatory Requirement',           displayOrder: 6 },
-  { category: 'BILLING_CYCLE_CHANGE_REASON', code: 'other',               label: 'Other',                            displayOrder: 7 },
-  { category: 'BILLING_CYCLE_DEPRECATION_REASON', code: 'dewa-realign',          label: 'DEWA Billing Realignment',    displayOrder: 1 },
-  { category: 'BILLING_CYCLE_DEPRECATION_REASON', code: 'building-decommission', label: 'Building Decommissioned',     displayOrder: 2 },
-  { category: 'BILLING_CYCLE_DEPRECATION_REASON', code: 'replaced-by-new-version', label: 'Replaced by New Version',   displayOrder: 3 },
-  { category: 'BILLING_CYCLE_DEPRECATION_REASON', code: 'regulatory',            label: 'Regulatory Requirement',      displayOrder: 4 },
-  { category: 'BILLING_CYCLE_DEPRECATION_REASON', code: 'other',                 label: 'Other',                       displayOrder: 5 },
-  { category: 'LANGUAGE', code: 'en', label: 'English',  displayOrder: 1, direction: 'ltr', localeCode: 'en-US', isSystem: true },
-  { category: 'LANGUAGE', code: 'ar', label: 'العربية', displayOrder: 2, direction: 'rtl', localeCode: 'ar-AE', isSystem: true },
+  { category: LOV_CATEGORY.BILLING_FREQUENCY, code: 'monthly',   label: 'Monthly',   displayOrder: 1 },
+  { category: LOV_CATEGORY.BILLING_FREQUENCY, code: 'quarterly', label: 'Quarterly', displayOrder: 2 },
+  { category: LOV_CATEGORY.BILLING_FREQUENCY, code: 'annually',  label: 'Annually',  displayOrder: 3 },
+  { category: LOV_CATEGORY.USER_CATEGORY,     code: 'internal',  label: 'Internal',  displayOrder: 1 },
+  { category: LOV_CATEGORY.USER_CATEGORY,     code: 'external',  label: 'External',  displayOrder: 2 },
+  { category: LOV_CATEGORY.USER_TYPE,         code: 'employee',  label: 'Employee',  displayOrder: 1 },
+  { category: LOV_CATEGORY.USER_TYPE,         code: 'customer',  label: 'Customer',  displayOrder: 2 },
+  { category: LOV_CATEGORY.TARIFF_UNIT_TYPE,  code: 'residential', label: 'Residential', displayOrder: 1 },
+  { category: LOV_CATEGORY.TARIFF_UNIT_TYPE,  code: 'commercial',  label: 'Commercial',  displayOrder: 2 },
+  { category: LOV_CATEGORY.TARIFF_REJECTION_REASON, code: 'incomplete',     label: 'Incomplete Information',      displayOrder: 1 },
+  { category: LOV_CATEGORY.TARIFF_REJECTION_REASON, code: 'rate-incorrect', label: 'Rate Configuration Incorrect', displayOrder: 2 },
+  { category: LOV_CATEGORY.TARIFF_REJECTION_REASON, code: 'applicability',  label: 'Applicability Scope Issue',    displayOrder: 3 },
+  { category: LOV_CATEGORY.TARIFF_REJECTION_REASON, code: 'scope',          label: 'Scope Reduction Conflict',     displayOrder: 4 },
+  { category: LOV_CATEGORY.TARIFF_REJECTION_REASON, code: 'other',          label: 'Other',                        displayOrder: 5 },
+  { category: LOV_CATEGORY.BILLING_CYCLE_CHANGE_REASON, code: 'dewa-realign',        label: 'DEWA Billing Realignment',        displayOrder: 1 },
+  { category: LOV_CATEGORY.BILLING_CYCLE_CHANGE_REASON, code: 'building-handover',   label: 'Building Handover',                displayOrder: 2 },
+  { category: LOV_CATEGORY.BILLING_CYCLE_CHANGE_REASON, code: 'finance-period',      label: 'Finance Period Change',            displayOrder: 3 },
+  { category: LOV_CATEGORY.BILLING_CYCLE_CHANGE_REASON, code: 'correction',          label: 'Data Correction',                  displayOrder: 4 },
+  { category: LOV_CATEGORY.BILLING_CYCLE_CHANGE_REASON, code: 'operational',         label: 'Operational Requirement',          displayOrder: 5 },
+  { category: LOV_CATEGORY.BILLING_CYCLE_CHANGE_REASON, code: 'regulatory',          label: 'Regulatory Requirement',           displayOrder: 6 },
+  { category: LOV_CATEGORY.BILLING_CYCLE_CHANGE_REASON, code: 'other',               label: 'Other',                            displayOrder: 7 },
+  { category: LOV_CATEGORY.BILLING_CYCLE_DEPRECATION_REASON, code: 'dewa-realign',          label: 'DEWA Billing Realignment',    displayOrder: 1 },
+  { category: LOV_CATEGORY.BILLING_CYCLE_DEPRECATION_REASON, code: 'building-decommission', label: 'Building Decommissioned',     displayOrder: 2 },
+  { category: LOV_CATEGORY.BILLING_CYCLE_DEPRECATION_REASON, code: 'replaced-by-new-version', label: 'Replaced by New Version',   displayOrder: 3 },
+  { category: LOV_CATEGORY.BILLING_CYCLE_DEPRECATION_REASON, code: 'regulatory',            label: 'Regulatory Requirement',      displayOrder: 4 },
+  { category: LOV_CATEGORY.BILLING_CYCLE_DEPRECATION_REASON, code: 'other',                 label: 'Other',                       displayOrder: 5 },
+  { category: LOV_CATEGORY.LANGUAGE, code: 'en', label: 'English',  displayOrder: 1, direction: 'ltr', localeCode: 'en-US', isSystem: true },
+  { category: LOV_CATEGORY.LANGUAGE, code: 'ar', label: 'العربية', displayOrder: 2, direction: 'rtl', localeCode: 'ar-AE', isSystem: true },
 
-  { category: 'SALUTATION', code: 'mr', label: 'Mr', displayOrder: 1 },
-  { category: 'SALUTATION', code: 'mrs', label: 'Mrs', displayOrder: 2 },
-  { category: 'SALUTATION', code: 'ms', label: 'Ms', displayOrder: 3 },
-  { category: 'SALUTATION', code: 'dr', label: 'Dr', displayOrder: 4 },
+  // Regional lookups behind Settings > Regional Preferences / System Settings. TIMEZONE codes are IANA names (an admin may
+  // add more; a value that is not a real time zone is refused when a preference is saved). DATE_FORMAT lists exactly the
+  // layouts the web app can render, so those rows are system-defined (no rename / delete).
+  { category: LOV_CATEGORY.TIMEZONE, code: 'Asia/Dubai',       label: 'Dubai (GMT+4)',          displayOrder: 1, isSystem: true },
+  { category: LOV_CATEGORY.TIMEZONE, code: 'Asia/Riyadh',      label: 'Riyadh (GMT+3)',         displayOrder: 2 },
+  { category: LOV_CATEGORY.TIMEZONE, code: 'Asia/Qatar',       label: 'Doha (GMT+3)',           displayOrder: 3 },
+  { category: LOV_CATEGORY.TIMEZONE, code: 'Asia/Karachi',     label: 'Karachi (GMT+5)',        displayOrder: 4 },
+  { category: LOV_CATEGORY.TIMEZONE, code: 'Asia/Kolkata',     label: 'India (GMT+5:30)',       displayOrder: 5 },
+  { category: LOV_CATEGORY.TIMEZONE, code: 'Asia/Singapore',   label: 'Singapore (GMT+8)',      displayOrder: 6 },
+  { category: LOV_CATEGORY.TIMEZONE, code: 'Europe/London',    label: 'London (GMT/BST)',       displayOrder: 7 },
+  { category: LOV_CATEGORY.TIMEZONE, code: 'Europe/Paris',     label: 'Central Europe (CET)',   displayOrder: 8 },
+  { category: LOV_CATEGORY.TIMEZONE, code: 'America/New_York', label: 'New York (ET)',          displayOrder: 9 },
+  { category: LOV_CATEGORY.TIMEZONE, code: 'UTC',              label: 'UTC',                    displayOrder: 10 },
 
-  { category: 'MARITAL_STATUS', code: 'single', label: 'Single', displayOrder: 1 },
-  { category: 'MARITAL_STATUS', code: 'married', label: 'Married', displayOrder: 2 },
-  { category: 'MARITAL_STATUS', code: 'divorced', label: 'Divorced', displayOrder: 3 },
-  { category: 'MARITAL_STATUS', code: 'widowed', label: 'Widowed', displayOrder: 4 },
+  { category: LOV_CATEGORY.DATE_FORMAT, code: 'DD/MM/YYYY',  label: '31/12/2026 (DD/MM/YYYY)',  displayOrder: 1, isSystem: true },
+  { category: LOV_CATEGORY.DATE_FORMAT, code: 'MM/DD/YYYY',  label: '12/31/2026 (MM/DD/YYYY)',  displayOrder: 2, isSystem: true },
+  { category: LOV_CATEGORY.DATE_FORMAT, code: 'YYYY-MM-DD',  label: '2026-12-31 (YYYY-MM-DD)',  displayOrder: 3, isSystem: true },
+  { category: LOV_CATEGORY.DATE_FORMAT, code: 'DD-MMM-YYYY', label: '31-Dec-2026 (DD-MMM-YYYY)', displayOrder: 4, isSystem: true },
 
-  { category: 'COMMUNICATION_CHANNEL', code: 'email', label: 'Email', displayOrder: 1 },
-  { category: 'COMMUNICATION_CHANNEL', code: 'sms', label: 'SMS', displayOrder: 2 },
-  { category: 'COMMUNICATION_CHANNEL', code: 'whatsapp', label: 'WhatsApp', displayOrder: 3 },
-  { category: 'COMMUNICATION_CHANNEL', code: 'phone-call', label: 'Phone Call', displayOrder: 4 },
+  { category: LOV_CATEGORY.SALUTATION, code: 'mr', label: 'Mr', displayOrder: 1 },
+  { category: LOV_CATEGORY.SALUTATION, code: 'mrs', label: 'Mrs', displayOrder: 2 },
+  { category: LOV_CATEGORY.SALUTATION, code: 'ms', label: 'Ms', displayOrder: 3 },
+  { category: LOV_CATEGORY.SALUTATION, code: 'dr', label: 'Dr', displayOrder: 4 },
 
-  { category: 'RELATIONSHIP', code: 'spouse', label: 'Spouse', displayOrder: 1 },
-  { category: 'RELATIONSHIP', code: 'parent', label: 'Parent', displayOrder: 2 },
-  { category: 'RELATIONSHIP', code: 'child', label: 'Child', displayOrder: 3 },
-  { category: 'RELATIONSHIP', code: 'sibling', label: 'Sibling', displayOrder: 4 },
-  { category: 'RELATIONSHIP', code: 'friend', label: 'Friend', displayOrder: 5 },
-  { category: 'RELATIONSHIP', code: 'relative', label: 'Relative', displayOrder: 6 },
-  { category: 'RELATIONSHIP', code: 'other', label: 'Other', displayOrder: 7 },
+  { category: LOV_CATEGORY.MARITAL_STATUS, code: 'single', label: 'Single', displayOrder: 1 },
+  { category: LOV_CATEGORY.MARITAL_STATUS, code: 'married', label: 'Married', displayOrder: 2 },
+  { category: LOV_CATEGORY.MARITAL_STATUS, code: 'divorced', label: 'Divorced', displayOrder: 3 },
+  { category: LOV_CATEGORY.MARITAL_STATUS, code: 'widowed', label: 'Widowed', displayOrder: 4 },
 
-  { category: 'LEGAL_STRUCTURE', code: 'llc', label: 'LLC', displayOrder: 1 },
-  { category: 'LEGAL_STRUCTURE', code: 'free-zone-company', label: 'Free Zone Company', displayOrder: 2 },
-  { category: 'LEGAL_STRUCTURE', code: 'sole-establishment', label: 'Sole Establishment', displayOrder: 3 },
-  { category: 'LEGAL_STRUCTURE', code: 'branch-of-foreign-company', label: 'Branch of Foreign Company', displayOrder: 4 },
+  { category: LOV_CATEGORY.COMMUNICATION_CHANNEL, code: 'email', label: 'Email', displayOrder: 1 },
+  { category: LOV_CATEGORY.COMMUNICATION_CHANNEL, code: 'sms', label: 'SMS', displayOrder: 2 },
+  { category: LOV_CATEGORY.COMMUNICATION_CHANNEL, code: 'whatsapp', label: 'WhatsApp', displayOrder: 3 },
+  { category: LOV_CATEGORY.COMMUNICATION_CHANNEL, code: 'phone-call', label: 'Phone Call', displayOrder: 4 },
 
-  { category: 'PAYMENT_METHOD_TYPE', code: 'card', label: 'Card', displayOrder: 1 },
-  { category: 'PAYMENT_METHOD_TYPE', code: 'direct-debit', label: 'Direct Debit', displayOrder: 2 },
-  { category: 'PAYMENT_METHOD_TYPE', code: 'bank-transfer', label: 'Bank Transfer', displayOrder: 3 },
-  { category: 'PAYMENT_METHOD_TYPE', code: 'cheque', label: 'Cheque', displayOrder: 4 },
-  { category: 'PAYMENT_METHOD_TYPE', code: 'cash', label: 'Cash', displayOrder: 5 },
-  { category: 'PAYMENT_METHOD_TYPE', code: 'online-portal', label: 'Online Portal', displayOrder: 6 },
+  { category: LOV_CATEGORY.RELATIONSHIP, code: 'spouse', label: 'Spouse', displayOrder: 1 },
+  { category: LOV_CATEGORY.RELATIONSHIP, code: 'parent', label: 'Parent', displayOrder: 2 },
+  { category: LOV_CATEGORY.RELATIONSHIP, code: 'child', label: 'Child', displayOrder: 3 },
+  { category: LOV_CATEGORY.RELATIONSHIP, code: 'sibling', label: 'Sibling', displayOrder: 4 },
+  { category: LOV_CATEGORY.RELATIONSHIP, code: 'friend', label: 'Friend', displayOrder: 5 },
+  { category: LOV_CATEGORY.RELATIONSHIP, code: 'relative', label: 'Relative', displayOrder: 6 },
+  { category: LOV_CATEGORY.RELATIONSHIP, code: 'other', label: 'Other', displayOrder: 7 },
 
-  { category: 'GENDER', code: 'male', label: 'Male', displayOrder: 1 },
-  { category: 'GENDER', code: 'female', label: 'Female', displayOrder: 2 },
-  { category: 'GENDER', code: 'other', label: 'Other', displayOrder: 3 },
+  { category: LOV_CATEGORY.LEGAL_STRUCTURE, code: 'llc', label: 'LLC', displayOrder: 1 },
+  { category: LOV_CATEGORY.LEGAL_STRUCTURE, code: 'free-zone-company', label: 'Free Zone Company', displayOrder: 2 },
+  { category: LOV_CATEGORY.LEGAL_STRUCTURE, code: 'sole-establishment', label: 'Sole Establishment', displayOrder: 3 },
+  { category: LOV_CATEGORY.LEGAL_STRUCTURE, code: 'branch-of-foreign-company', label: 'Branch of Foreign Company', displayOrder: 4 },
 
-  { category: 'BILLING_TYPE', code: 'consolidated', label: 'Consolidated', displayOrder: 1 },
-  { category: 'BILLING_TYPE', code: 'per-unit', label: 'Per Unit', displayOrder: 2 },
+  { category: LOV_CATEGORY.PAYMENT_METHOD_TYPE, code: 'card', label: 'Card', displayOrder: 1 },
+  { category: LOV_CATEGORY.PAYMENT_METHOD_TYPE, code: 'direct-debit', label: 'Direct Debit', displayOrder: 2 },
+  { category: LOV_CATEGORY.PAYMENT_METHOD_TYPE, code: 'bank-transfer', label: 'Bank Transfer', displayOrder: 3 },
+  { category: LOV_CATEGORY.PAYMENT_METHOD_TYPE, code: 'cheque', label: 'Cheque', displayOrder: 4 },
+  { category: LOV_CATEGORY.PAYMENT_METHOD_TYPE, code: 'cash', label: 'Cash', displayOrder: 5 },
+  { category: LOV_CATEGORY.PAYMENT_METHOD_TYPE, code: 'online-portal', label: 'Online Portal', displayOrder: 6 },
 
-  { category: 'FIELD_INSPECTION_TYPE', code: 'dtu-connectivity',      label: 'DTU Connectivity Issue',        displayOrder: 1 },
-  { category: 'FIELD_INSPECTION_TYPE', code: 'meter-hardware-fault',  label: 'Meter Hardware Fault',          displayOrder: 2 },
-  { category: 'FIELD_INSPECTION_TYPE', code: 'physical-damage',       label: 'Physical Damage Assessment',    displayOrder: 3 },
-  { category: 'FIELD_INSPECTION_TYPE', code: 'tamper-investigation',  label: 'Tamper Investigation',          displayOrder: 4 },
-  { category: 'FIELD_INSPECTION_TYPE', code: 'data-transmission',     label: 'Data Transmission Failure',     displayOrder: 5 },
-  { category: 'FIELD_INSPECTION_TYPE', code: 'routine-verification',  label: 'Routine Verification',          displayOrder: 6 },
-  { category: 'FIELD_INSPECTION_TYPE', code: 'other',                 label: 'Other',                         displayOrder: 7 },
+  { category: LOV_CATEGORY.GENDER, code: 'male', label: 'Male', displayOrder: 1 },
+  { category: LOV_CATEGORY.GENDER, code: 'female', label: 'Female', displayOrder: 2 },
+  { category: LOV_CATEGORY.GENDER, code: 'other', label: 'Other', displayOrder: 3 },
 
-  { category: 'FIELD_INSPECTION_PRIORITY', code: 'urgent', label: 'Urgent', displayOrder: 1 },
-  { category: 'FIELD_INSPECTION_PRIORITY', code: 'high',   label: 'High',   displayOrder: 2 },
-  { category: 'FIELD_INSPECTION_PRIORITY', code: 'normal', label: 'Normal', displayOrder: 3 },
+  { category: LOV_CATEGORY.BILLING_TYPE, code: 'consolidated', label: 'Consolidated', displayOrder: 1 },
+  { category: LOV_CATEGORY.BILLING_TYPE, code: 'per-unit', label: 'Per Unit', displayOrder: 2 },
 
-  { category: 'FIELD_INSPECTION_NOTIFY_ROLE', code: 'operations-manager', label: 'Operations Manager', displayOrder: 1 },
-  { category: 'FIELD_INSPECTION_NOTIFY_ROLE', code: 'finance-team',       label: 'Finance Team',       displayOrder: 2 },
-  { category: 'FIELD_INSPECTION_NOTIFY_ROLE', code: 'property-manager',   label: 'Property Manager',   displayOrder: 3 },
+  { category: LOV_CATEGORY.FIELD_INSPECTION_TYPE, code: 'dtu-connectivity',      label: 'DTU Connectivity Issue',        displayOrder: 1 },
+  { category: LOV_CATEGORY.FIELD_INSPECTION_TYPE, code: 'meter-hardware-fault',  label: 'Meter Hardware Fault',          displayOrder: 2 },
+  { category: LOV_CATEGORY.FIELD_INSPECTION_TYPE, code: 'physical-damage',       label: 'Physical Damage Assessment',    displayOrder: 3 },
+  { category: LOV_CATEGORY.FIELD_INSPECTION_TYPE, code: 'tamper-investigation',  label: 'Tamper Investigation',          displayOrder: 4 },
+  { category: LOV_CATEGORY.FIELD_INSPECTION_TYPE, code: 'data-transmission',     label: 'Data Transmission Failure',     displayOrder: 5 },
+  { category: LOV_CATEGORY.FIELD_INSPECTION_TYPE, code: 'routine-verification',  label: 'Routine Verification',          displayOrder: 6 },
+  { category: LOV_CATEGORY.FIELD_INSPECTION_TYPE, code: 'other',                 label: 'Other',                         displayOrder: 7 },
+
+  { category: LOV_CATEGORY.FIELD_INSPECTION_PRIORITY, code: 'urgent', label: 'Urgent', displayOrder: 1 },
+  { category: LOV_CATEGORY.FIELD_INSPECTION_PRIORITY, code: 'high',   label: 'High',   displayOrder: 2 },
+  { category: LOV_CATEGORY.FIELD_INSPECTION_PRIORITY, code: 'normal', label: 'Normal', displayOrder: 3 },
+
+  { category: LOV_CATEGORY.FIELD_INSPECTION_NOTIFY_ROLE, code: 'operations-manager', label: 'Operations Manager', displayOrder: 1 },
+  { category: LOV_CATEGORY.FIELD_INSPECTION_NOTIFY_ROLE, code: 'finance-team',       label: 'Finance Team',       displayOrder: 2 },
+  { category: LOV_CATEGORY.FIELD_INSPECTION_NOTIFY_ROLE, code: 'property-manager',   label: 'Property Manager',   displayOrder: 3 },
 
   ...NATIONALITY_SEED,
 ];
 
 const LOV_CATEGORY_MODULES: Record<string, string> = {
-  BILLING_FREQUENCY: 'billing-cycle',      // Billing Cycle Configuration
-  USER_CATEGORY: 'user-management',
-  USER_TYPE: 'user-management',
-  TARIFF_UNIT_TYPE: 'tariff',              // Tariff Configuration
-  TARIFF_REJECTION_REASON: 'tariff',
-  BILLING_CYCLE_CHANGE_REASON: 'billing-cycle',
-  BILLING_CYCLE_DEPRECATION_REASON: 'billing-cycle',
-  SALUTATION: 'customer',                  // Registration Requests
-  MARITAL_STATUS: 'customer',
-  COMMUNICATION_CHANNEL: 'customer',
-  RELATIONSHIP: 'customer',
-  LEGAL_STRUCTURE: 'customer',
-  PAYMENT_METHOD_TYPE: 'customer',
-  GENDER: 'customer',
-  NATIONALITY: 'customer',
-  BILLING_TYPE: 'customer',
+  BILLING_FREQUENCY: APP_MODULE_KEY.BILLING_CYCLE,      // Billing Cycle Configuration
+  USER_CATEGORY: APP_MODULE_KEY.USER_MANAGEMENT,
+  USER_TYPE: APP_MODULE_KEY.USER_MANAGEMENT,
+  TARIFF_UNIT_TYPE: APP_MODULE_KEY.TARIFF,              // Tariff Configuration
+  TARIFF_REJECTION_REASON: APP_MODULE_KEY.TARIFF,
+  BILLING_CYCLE_CHANGE_REASON: APP_MODULE_KEY.BILLING_CYCLE,
+  BILLING_CYCLE_DEPRECATION_REASON: APP_MODULE_KEY.BILLING_CYCLE,
+  SALUTATION: APP_MODULE_KEY.CUSTOMER,                  // Registration Requests
+  MARITAL_STATUS: APP_MODULE_KEY.CUSTOMER,
+  COMMUNICATION_CHANNEL: APP_MODULE_KEY.CUSTOMER,
+  RELATIONSHIP: APP_MODULE_KEY.CUSTOMER,
+  LEGAL_STRUCTURE: APP_MODULE_KEY.CUSTOMER,
+  PAYMENT_METHOD_TYPE: APP_MODULE_KEY.CUSTOMER,
+  GENDER: APP_MODULE_KEY.CUSTOMER,
+  NATIONALITY: APP_MODULE_KEY.CUSTOMER,
+  BILLING_TYPE: APP_MODULE_KEY.CUSTOMER,
   // 'meter' matches this admin UI's real module key (APP_MODULES, meter-management group) —
   // Billing Readiness/Field Inspection lives under Meter Management, not a standalone module key,
   // so admins can manage these values from the existing Meter Information LOV tab.
-  FIELD_INSPECTION_TYPE: 'meter',
-  FIELD_INSPECTION_PRIORITY: 'meter',
-  FIELD_INSPECTION_NOTIFY_ROLE: 'meter',
+  FIELD_INSPECTION_TYPE: APP_MODULE_KEY.METER,
+  FIELD_INSPECTION_PRIORITY: APP_MODULE_KEY.METER,
+  FIELD_INSPECTION_NOTIFY_ROLE: APP_MODULE_KEY.METER,
 };
 
 @Injectable()
@@ -190,7 +212,7 @@ export class LovService {
     const rows = await this.lovValues
       .createQueryBuilder('lv')
       .select('DISTINCT lv.category', 'category')
-      .orderBy('lv.category', 'ASC')
+      .orderBy('lv.category', SORT_ORDER.ASC)
       .getRawMany<{ category: string }>();
     return rows.map((r) => r.category);
   }
@@ -198,16 +220,16 @@ export class LovService {
   async findByCategory(category: string, includeInactive = false): Promise<LovValue[]> {
     return this.lovValues.find({
       where: includeInactive ? { category } : { category, isActive: true },
-      order: { displayOrder: 'ASC', code: 'ASC' },
+      order: { displayOrder: SORT_ORDER.ASC, code: SORT_ORDER.ASC },
     });
   }
 
   async findActiveLanguages(): Promise<LovValue[]> {
-    return this.findByCategory('LANGUAGE', false);
+    return this.findByCategory(LOV_CATEGORY.LANGUAGE, false);
   }
 
   async findAll(): Promise<LovValue[]> {
-    return this.lovValues.find({ order: { category: 'ASC', displayOrder: 'ASC' } });
+    return this.lovValues.find({ order: { category: SORT_ORDER.ASC, displayOrder: SORT_ORDER.ASC } });
   }
 
   async findCategoryModules(): Promise<Record<string, string | null>> {
@@ -291,6 +313,8 @@ export class LovService {
       'BILLING_CYCLE_CHANGE_REASON',
       'BILLING_CYCLE_DEPRECATION_REASON',
       'LANGUAGE',
+      'TIMEZONE',
+      'DATE_FORMAT',
       'SALUTATION',
       'MARITAL_STATUS',
       'COMMUNICATION_CHANNEL',
@@ -330,16 +354,24 @@ export class LovService {
     }
   }
 
+  /** First-time seed: inserts every LOV value / category that is not there yet and leaves existing rows exactly as they
+   *  are, so it is safe to run against a database that already holds some of them. Looks rows up INCLUDING soft-deleted
+   *  ones — the unique keys span deleted rows too, and a value an admin removed must not be re-created. Returns the
+   *  `CATEGORY:code` → id map for every seeded value (existing rows included) so dependent seeds can reference them. */
   async seedValues(manager: EntityManager): Promise<Map<string, number>> {
     const idMap = new Map<string, number>()
     for (const v of LOV_SEED) {
-      const entity = manager.create(LovValue, { ...v, isActive: true });
-      const saved = await manager.save(LovValue, entity);
-      idMap.set(`${v.category}:${v.code}`, saved.id)
+      const existing = await manager.findOne(LovValue, {
+        where: { category: v.category, code: v.code },
+        withDeleted: true,
+      });
+      const row = existing ?? (await manager.save(LovValue, manager.create(LovValue, { ...v, isActive: true })));
+      idMap.set(`${v.category}:${v.code}`, row.id)
     }
     for (const [category, module] of Object.entries(LOV_CATEGORY_MODULES)) {
-      const entity = manager.create(LovCategory, { category, module });
-      await manager.save(LovCategory, entity);
+      const existing = await manager.findOne(LovCategory, { where: { category }, withDeleted: true });
+      if (existing) continue;
+      await manager.save(LovCategory, manager.create(LovCategory, { category, module }));
     }
     return idMap
   }

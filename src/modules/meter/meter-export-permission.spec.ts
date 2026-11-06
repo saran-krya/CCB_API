@@ -5,6 +5,7 @@ import { PermissionGuard } from '../../common/guards/permission.guard';
 import { PERMISSION_KEY } from '../../common/decorators/permission.decorator';
 import { RolePermissionsService } from '../role-permissions/role-permissions.service';
 import { MeterController } from './meter.controller';
+import { rolePermissionsMock } from '../../../test/helpers/role-permissions.mock';
 
 // RBAC cleanup audit finding: METER_EXPORT is a real, seeded, Policy-attachable Action code (METER
 // resource) that previously gated nothing — both export routes only ever checked METER_VIEW/
@@ -20,7 +21,7 @@ describe('Meter export routes — METER_EXPORT wired to a real guard (previously
   beforeEach(async () => {
     rolesHaveAction = jest.fn();
     const moduleRef = await Test.createTestingModule({
-      providers: [PermissionGuard, { provide: RolePermissionsService, useValue: { rolesHaveAction } }],
+      providers: [PermissionGuard, { provide: RolePermissionsService, useValue: rolePermissionsMock(rolesHaveAction) }],
     }).compile();
     guard = moduleRef.get(PermissionGuard);
   });

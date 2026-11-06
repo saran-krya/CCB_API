@@ -4,6 +4,7 @@ import { PermissionGuard } from '../../common/guards/permission.guard';
 import { PERMISSION_KEY } from '../../common/decorators/permission.decorator';
 import { RolePermissionsService } from '../role-permissions/role-permissions.service';
 import { UserController } from './user.controller';
+import { rolePermissionsMock } from '../../../test/helpers/role-permissions.mock';
 
 // Isolated tests for the authorization gap found during the Policy-based RBAC audit:
 // GET /users/reporting-managers had NO guard at all (any authenticated staff member, any role,
@@ -20,7 +21,7 @@ describe('UserController authorization', () => {
   beforeEach(async () => {
     rolesHaveAction = jest.fn();
     const moduleRef = await Test.createTestingModule({
-      providers: [PermissionGuard, { provide: RolePermissionsService, useValue: { rolesHaveAction } }],
+      providers: [PermissionGuard, { provide: RolePermissionsService, useValue: rolePermissionsMock(rolesHaveAction) }],
     }).compile();
     guard = moduleRef.get(PermissionGuard);
   });

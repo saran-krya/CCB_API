@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Repository } from 'typeorm';
+import { In, Repository, SelectQueryBuilder } from 'typeorm';
 import { paginate } from '../../common/utils/pagination.util';
 import { Role } from '../role/entities/role.entity';
 import { Policy, POLICY_TYPE_LABEL } from './entities/policy.entity';
@@ -8,6 +8,8 @@ import { PolicyStatement } from './entities/policy-statement.entity';
 import { RolePolicy } from './entities/role-policy.entity';
 import { PolicyAttachedRolesQueryDto } from './dto/policy-attached-roles-query.dto';
 import { PolicyListQueryDto } from './dto/policy-list-query.dto';
+import { SORT_ORDER } from '../../common/constants/sort.constants';
+import { ERROR_MESSAGES } from '../../common/constants/error-messages.constants';
 
 // How many roles hold the policy — a correlated subquery selected as an alias (never joined), so a page still
 // holds one row per policy and TypeORM can order a skip/take page by it.
@@ -17,8 +19,16 @@ const ATTACHED_ROLE_COUNT_SQL = `(
   WHERE rp_att.policyId = policy.id AND rp_att.deleted_at IS NULL
 )`;
 
+// A role the policy is NOT attached to, for the role alias given — a NOT EXISTS over the join table (never a join),
+// so a page still holds one row per role. Written out with `deleted_at` like ATTACHED_ROLE_COUNT_SQL above.
+const roleNotAttachedSql = (roleAlias: string) => `NOT EXISTS (
+  SELECT 1
+  FROM role_policies rp_att
+  WHERE rp_att.roleId = ${roleAlias}.id AND rp_att.policyId = :policyId AND rp_att.deleted_at IS NULL
+)`;
+
 /**
- * Read side of Policy Management: the Policies list, and the roles one policy is attached to, each searched /
+ * Read side of Policy Management: the Policies list, and the roles one policy is / is not attached to, each searched /
  * filtered / sorted / paged here. Everything a row says about itself — its type label, its "Attached roles" text,
  * why it can't be deleted — and the filter options come from this service, so the web client holds none of it.
  * Kept apart from IamService (which owns the writes and the authorization maths) so the list rules stay small.
@@ -48,7 +58,7 @@ export class PolicyQueryService {
       qb.andWhere('policy.id NOT IN (:...excludeIds)', { excludeIds: query.excludeIds });
     }
 
-    const direction = query.sortOrder === 'DESC' ? 'DESC' : 'ASC';
+    const direction = query.sortOrder === SORT_ORDER.DESC ? SORT_ORDER.DESC : SORT_ORDER.ASC;
     const sortColumns = {
       name: 'policy.name',
       type: 'policy.isSystem',
@@ -59,13 +69,14 @@ export class PolicyQueryService {
     const sortColumn = sortColumns[query.sortBy] ?? sortColumns.name;
     qb.orderBy(sortColumn, direction);
     // Ties fall back to the name so the order never jumps between requests.
-    if (sortColumn !== sortColumns.name) qb.addOrderBy('policy.name', 'ASC');
+    if (sortColumn !== sortColumns.name) qb.addOrderBy('policy.name', SORT_ORDER.ASC);
 
     const page = await paginate(qb, query);
     const policyIds = page.items.map((policy) => policy.id);
-    const [attachedCounts, actionCounts] = await Promise.all([
+    const [attachedCounts, actionCounts, totalRoles] = await Promise.all([
       this.getAttachedRoleCounts(policyIds),
       this.getActionCounts(policyIds),
+      this.roles.count(),
     ]);
 
     return {
@@ -78,6 +89,9 @@ export class PolicyQueryService {
           isSystem: policy.isSystem,
           typeLabel: policy.isSystem ? POLICY_TYPE_LABEL.system : POLICY_TYPE_LABEL.custom,
           attachedRoleCount,
+          // Roles that could still receive this policy — what the Attach page lists. A role's policy links go with it
+          // when it is deleted (RoleService.remove), so total roles minus attached is exact.
+          availableRoleCount: Math.max(totalRoles - attachedRoleCount, 0),
           usedAsLabel: attachedRoleCount === 0 ? 'None' : `${attachedRoleCount} role${attachedRoleCount === 1 ? '' : 's'}`,
           actionCount: actionCounts.get(policy.id) ?? 0,
           deleteBlockedReason: this.deleteBlockedReason(policy, attachedRoleCount),
@@ -99,27 +113,44 @@ export class PolicyQueryService {
 
   /** The roles one policy is attached to, as a searchable / filterable / sortable / paged list. The category
    *  filter's options are the categories those roles actually have. */
-  async attachedRoles(policyId: number, query: PolicyAttachedRolesQueryDto) {
-    if (!(await this.policies.exist({ where: { id: policyId } }))) throw new NotFoundException('Policy not found');
-
-    const attachedTo = (alias: string) =>
+  attachedRoles(policyId: number, query: PolicyAttachedRolesQueryDto) {
+    return this.rolePage(policyId, query, (alias) =>
       this.roles
         .createQueryBuilder(alias)
-        .innerJoin(RolePolicy, 'rp', `rp.roleId = ${alias}.id AND rp.policyId = :policyId`, { policyId });
+        .innerJoin(RolePolicy, 'rp', `rp.roleId = ${alias}.id AND rp.policyId = :policyId`, { policyId }),
+    );
+  }
 
-    const qb = attachedTo('role').leftJoinAndSelect('role.userCategory', 'userCategory');
+  /** The roles one policy is NOT attached to — the Attach page's list. Same search / filter / sort / paging and the
+   *  same row shape as attachedRoles, so the two pages share one layout; the two lists never hold the same role. */
+  availableRoles(policyId: number, query: PolicyAttachedRolesQueryDto) {
+    return this.rolePage(policyId, query, (alias) =>
+      this.roles.createQueryBuilder(alias).andWhere(roleNotAttachedSql(alias), { policyId }),
+    );
+  }
+
+  /** One page of a role list scoped to a policy. `scope` builds the base query for a role alias — it runs twice, once
+   *  for the page and once for the category options, which come from the roles in scope only. */
+  private async rolePage(
+    policyId: number,
+    query: PolicyAttachedRolesQueryDto,
+    scope: (alias: string) => SelectQueryBuilder<Role>,
+  ) {
+    if (!(await this.policies.exist({ where: { id: policyId } }))) throw new NotFoundException(ERROR_MESSAGES.POLICY_NOT_FOUND);
+
+    const qb = scope('role').leftJoinAndSelect('role.userCategory', 'userCategory');
 
     const term = query['search.query']?.trim();
     if (term) qb.andWhere('role.roleName LIKE :term', { term: `%${term}%` });
     if (query.userCategoryId) qb.andWhere('role.userCategoryId = :userCategoryId', { userCategoryId: query.userCategoryId });
 
-    const direction = query.sortOrder === 'DESC' ? 'DESC' : 'ASC';
+    const direction = query.sortOrder === SORT_ORDER.DESC ? SORT_ORDER.DESC : SORT_ORDER.ASC;
     qb.orderBy(query.sortBy === 'userCategory' ? 'userCategory.label' : 'role.roleName', direction);
-    if (query.sortBy === 'userCategory') qb.addOrderBy('role.roleName', 'ASC');
+    if (query.sortBy === 'userCategory') qb.addOrderBy('role.roleName', SORT_ORDER.ASC);
 
     const [page, categoryRows] = await Promise.all([
       paginate(qb, query),
-      attachedTo('role')
+      scope('role')
         .innerJoin('role.userCategory', 'uc')
         .select('uc.id', 'id')
         .addSelect('uc.label', 'label')

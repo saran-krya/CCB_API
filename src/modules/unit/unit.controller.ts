@@ -27,6 +27,7 @@ import {
 } from './dto/create-unit.dto';
 import { UnitDetailDto, UnitListDto } from './dto/unit-response.dto';
 import { UnitService } from './unit.service';
+import { ACTION_CODES } from '../../common/constants/action-codes.constants';
 
 @ApiBearerAuth()
 @ApiTags('Units')
@@ -35,7 +36,7 @@ export class UnitController {
   constructor(private readonly units: UnitService) {}
 
   @Post()
-  @Permission('CREATE_UNIT')
+  @Permission(ACTION_CODES.CREATE_UNIT)
   @ApiOperation({ summary: 'Create a unit' })
   create(
     @Body() dto: CreateUnitDto,
@@ -49,7 +50,7 @@ export class UnitController {
   // creation's applicability picker read this list as reference data, not to manage Unit as a
   // module. Does NOT grant create/edit/delete.
   @Get()
-  @Permission('VIEW_UNIT', 'CREATE_REGISTRATION_REQUEST', 'EDIT_REGISTRATION_REQUEST', 'TARIFF_CREATE', 'TARIFF_EDIT')
+  @Permission(ACTION_CODES.VIEW_UNIT, ACTION_CODES.CREATE_REGISTRATION_REQUEST, ACTION_CODES.EDIT_REGISTRATION_REQUEST, ACTION_CODES.TARIFF_CREATE, ACTION_CODES.TARIFF_EDIT)
   @ApiOperation({ summary: 'List all units with pagination and filters' })
   @ApiOkResponse({ type: UnitListDto, isArray: true, description: 'Paginated list of units' })
   findAll(@Query() query: UnitQueryDto) {
@@ -67,7 +68,7 @@ export class UnitController {
   // LIST endpoint above, never this by-id route, so TARIFF_CREATE/TARIFF_EDIT are deliberately not
   // added here.
   @Get(':id')
-  @Permission('VIEW_UNIT', 'VIEW_COMMUNITY', 'CREATE_REGISTRATION_REQUEST', 'EDIT_REGISTRATION_REQUEST')
+  @Permission(ACTION_CODES.VIEW_UNIT, ACTION_CODES.VIEW_COMMUNITY, ACTION_CODES.CREATE_REGISTRATION_REQUEST, ACTION_CODES.EDIT_REGISTRATION_REQUEST)
   @ApiOperation({ summary: 'Get unit detail' })
   @ApiOkResponse({ type: UnitDetailDto })
   @ApiParam({ name: 'id', type: Number })
@@ -76,7 +77,7 @@ export class UnitController {
   }
 
   @Patch(':id')
-  @Permission('EDIT_UNIT')
+  @Permission(ACTION_CODES.EDIT_UNIT)
   @ApiOperation({ summary: 'Update unit' })
   @ApiParam({ name: 'id', type: Number })
   update(
@@ -88,7 +89,7 @@ export class UnitController {
   }
 
   @Patch(':id/occupancy')
-  @Permission('UNIT_OCCUPANCY')
+  @Permission(ACTION_CODES.UNIT_OCCUPANCY)
   @ApiOperation({ summary: 'Update unit occupancy status' })
   @ApiParam({ name: 'id', type: Number })
   updateOccupancy(
@@ -100,7 +101,7 @@ export class UnitController {
   }
 
   @Delete(':id')
-  @Permission('DELETE_UNIT')
+  @Permission(ACTION_CODES.DELETE_UNIT)
   @ApiOperation({ summary: 'Soft-delete a unit' })
   @ApiParam({ name: 'id', type: Number })
   remove(

@@ -9,6 +9,7 @@ import { PermissionGuard } from '../common/guards/permission.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Permission } from '../common/decorators/permission.decorator';
 import { Roles } from '../common/decorators/roles.decorator';
+import { Authenticated } from '../common/decorators/authenticated.decorator';
 import { IamService } from '../modules/iam/iam.service';
 import { RolePermissionsService } from '../modules/role-permissions/role-permissions.service';
 
@@ -27,6 +28,12 @@ class ProbeController {
 
   @Roles('SUPER_ADMIN')
   rootOnly() {}
+
+  @Authenticated()
+  selfService() {}
+
+  /** No rule at all — staff authorization is deny-by-default, so this must never be reachable. */
+  forgotten() {}
 }
 
 type Role = { id: number; roleName: string };
@@ -77,8 +84,12 @@ describe('Live role authorization — the same token, re-evaluated against curre
     inlinePolicyFind = jest.fn(({ where }: { where: { userId: number } }) =>
       Promise.resolve((inlinePolicies.get(where.userId) ?? []).map((policy) => ({ userId: where.userId, ...policy }))),
     );
+    // roles.find({ where: { id: In(...) } }) — how the resolver recognises a principal that holds SUPER_ADMIN.
+    const rolesFind = jest.fn(({ where }: { where: { id: { value: number[] } } }) =>
+      Promise.resolve([SUPER_ADMIN, FINANCE, OPERATIONS, AUDITOR].filter((role) => where.id.value.includes(role.id))),
+    );
     const iam = new IamService(
-      {} as never, {} as never, {} as never, { find: rolePolicyFind } as never, {} as never, {} as never, {} as never, {} as never,
+      {} as never, {} as never, {} as never, { find: rolePolicyFind } as never, { find: rolesFind } as never, {} as never, {} as never, {} as never,
       { find: inlinePolicyFind } as never,
       // This spec never exercises a role's OWN inline policies — only the user's — so an always-empty
       // mock preserves every existing assertion in this file exactly.
@@ -86,12 +97,13 @@ describe('Live role authorization — the same token, re-evaluated against curre
     );
     rolePermissions = new RolePermissionsService(legacyTable as never, {} as never, {} as never, {} as never, {} as never, {} as never, {} as never, {} as never, iam);
 
-    // UserService.findOne's shape: the user plus `role` (primary) and `roles` (all, in order), re-read each call.
+    // UserService.findAuthState's shape — the lean per-request read: active flag, mustChangePassword and the
+    // live role refs (all, in assignment order), re-read on EVERY call.
     const users = {
-      findOne: jest.fn(async (id: number) => {
+      findAuthState: jest.fn(async (id: number) => {
         const roles = userRoles.get(id);
         if (!roles) throw new NotFoundException('User not found');
-        return { id, active: true, role: roles[0] ?? null, roles: [...roles] };
+        return { id, active: true, mustChangePassword: false, roles: [...roles] };
       }),
     };
     strategy = new JwtStrategy({ getOrThrow: () => 'test-secret' } as never, users as never, {} as never);
@@ -189,6 +201,34 @@ describe('Live role authorization — the same token, re-evaluated against curre
         userRoles.set(USER_ID, roles);
         expect(await permitted(token, 'approveTariff')).toBe(expected);
       }
+    });
+  });
+
+  describe('deny-by-default, end to end', () => {
+    it("a route nobody gave a rule is refused for every live staff session — even a SUPER_ADMIN's, on a valid token", async () => {
+      userRoles.set(USER_ID, [SUPER_ADMIN]);
+      expect(await permitted(tokenIssuedAs(SUPER_ADMIN), 'forgotten')).toBe(false);
+
+      userRoles.set(USER_ID, [FINANCE, OPERATIONS]);
+      expect(await permitted(tokenIssuedAs(FINANCE), 'forgotten')).toBe(false);
+    });
+
+    it('@Authenticated admits any live staff session whatever roles it holds — but a user left with no role is still 401 before any guard', async () => {
+      userRoles.set(USER_ID, [AUDITOR]); // grants nothing
+      expect(await permitted(tokenIssuedAs(AUDITOR), 'selfService')).toBe(true);
+
+      userRoles.set(USER_ID, []);
+      await expect(permitted(tokenIssuedAs(AUDITOR), 'selfService')).rejects.toThrow(UnauthorizedException);
+    });
+
+    it('the union is resolved in ONE permission lookup per request however many roles the user holds', async () => {
+      userRoles.set(USER_ID, [AUDITOR, FINANCE, OPERATIONS]);
+      const spy = jest.spyOn(rolePermissions, 'rolesHaveAnyAction');
+
+      expect(await permitted(tokenIssuedAs(AUDITOR), 'meters')).toBe(true);
+
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(spy).toHaveBeenCalledWith([AUDITOR.id, FINANCE.id, OPERATIONS.id], ['VIEW_METER', 'EDIT_METER'], USER_ID);
     });
   });
 
@@ -332,7 +372,7 @@ describe('Issued tokens carry the primary role only — never the live role set'
   let passwordHash: string;
   let jwt: { sign: jest.Mock };
   let users: { findByEmailWithPasswordHash: jest.Mock; updateLastLogin: jest.Mock; findOne: jest.Mock };
-  let refreshTokens: { create: jest.Mock; save: jest.Mock; findOne: jest.Mock; update: jest.Mock };
+  let refreshTokens: { create: jest.Mock; save: jest.Mock; findOne: jest.Mock; update: jest.Mock; createQueryBuilder: jest.Mock };
   let authService: AuthService;
 
   beforeAll(async () => {
@@ -344,7 +384,7 @@ describe('Issued tokens carry the primary role only — never the live role set'
     users = {
       findByEmailWithPasswordHash: jest.fn().mockResolvedValue({ id: USER_ID, email: 'staff@ccb.local', passwordHash, active: true, mustChangePassword: false }),
       updateLastLogin: jest.fn().mockResolvedValue(undefined),
-      findOne: jest.fn().mockResolvedValue({ id: USER_ID, email: 'staff@ccb.local', active: true }),
+      findOne: jest.fn().mockResolvedValue({ id: USER_ID, email: 'staff@ccb.local', active: true, mustChangePassword: false }),
     };
     // Two roles held; the PRIMARY (first by assignment order) is OPERATIONS.
     const userRolesStub = { getPrimaryRole: jest.fn().mockResolvedValue({ roleId: OPERATIONS.id, roleName: OPERATIONS.roleName }) };
@@ -361,6 +401,10 @@ describe('Issued tokens carry the primary role only — never the live role set'
         deviceId: null,
       }),
       update: jest.fn().mockResolvedValue(undefined),
+      // Atomic rotation: UPDATE ... SET revoked_at WHERE id = :id AND revoked_at IS NULL — one row flipped.
+      createQueryBuilder: jest.fn().mockReturnValue({
+        update: () => ({ set: () => ({ where: () => ({ execute: async () => ({ affected: 1 }) }) }) }),
+      }),
     };
     const loginHistory = {
       createQueryBuilder: jest.fn().mockReturnValue({ update: () => ({ set: () => ({ where: () => ({ execute: async () => undefined }) }) }) }),

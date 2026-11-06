@@ -1,5 +1,6 @@
 import { createParamDecorator, ExecutionContext, UnauthorizedException } from '@nestjs/common';
 import { AuthPrincipal, AuthenticatedCustomer } from '../../auth/interfaces/authenticated-user.interface';
+import { PRINCIPAL_TYPE } from '../constants/auth.constants';
 
 /**
  * The Customer-portal counterpart to `@CurrentUser()` — asserts the authenticated principal is a
@@ -13,7 +14,7 @@ export const CurrentCustomer = createParamDecorator(
   (_data: unknown, ctx: ExecutionContext): AuthenticatedCustomer => {
     const request = ctx.switchToHttp().getRequest<{ user?: AuthPrincipal }>();
     const user = request.user;
-    if (!user || user.type !== 'customer') {
+    if (!user || user.type !== PRINCIPAL_TYPE.CUSTOMER) {
       throw new UnauthorizedException('Customer session required');
     }
     return user;

@@ -1,5 +1,9 @@
-import { ArrayMinSize, IsArray, IsInt, IsOptional, IsString, MaxLength, ValidateNested } from 'class-validator';
-import { Type } from 'class-transformer';
+import { ArrayMinSize, IsArray, IsInt, IsNotEmpty, IsOptional, IsString, MaxLength, ValidateNested } from 'class-validator';
+import { Transform, Type } from 'class-transformer';
+
+/** Surrounding whitespace is never part of a name: "Finance " and "Finance" must not be two policies, and a
+ *  name of only spaces must not pass as a name at all. */
+const trimString = ({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim() : value);
 
 export class PolicyStatementDto {
   @IsString()
@@ -12,10 +16,13 @@ export class PolicyStatementDto {
 }
 
 export class CreatePolicyDto {
+  @Transform(trimString)
   @IsString()
+  @IsNotEmpty({ message: 'name should not be empty' })
   @MaxLength(150)
   name!: string;
 
+  @Transform(trimString)
   @IsOptional()
   @IsString()
   @MaxLength(500)

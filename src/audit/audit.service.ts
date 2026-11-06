@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { EntityManager, In, Repository } from 'typeorm';
 import { CreateAuditLogDto } from './dto/create-audit-log.dto';
 import { AuditLog } from './entities/audit-log.entity';
+import { SORT_ORDER } from '../common/constants/sort.constants';
 
 @Injectable()
 export class AuditService {
@@ -36,7 +37,7 @@ export class AuditService {
   async findByModule(moduleName: string, action?: string | string[], limit = 50) {
     return this.auditRepository.find({
       where: action ? { moduleName, action: Array.isArray(action) ? In(action) : action } : { moduleName },
-      order: { createdAt: 'DESC' },
+      order: { createdAt: SORT_ORDER.DESC },
       take: limit,
     });
   }
@@ -50,7 +51,7 @@ export class AuditService {
       where: action
         ? { moduleName, entityId, action: Array.isArray(action) ? In(action) : action }
         : { moduleName, entityId },
-      order: { createdAt: 'DESC' },
+      order: { createdAt: SORT_ORDER.DESC },
       take: limit,
     });
   }

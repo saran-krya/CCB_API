@@ -14,6 +14,8 @@ import { TriggerSource } from './entities/trigger-source.enum';
 import { MasterMeter } from '../meter/entities/master-meter.entity';
 import { SubMeter } from '../meter/entities/sub-meter.entity';
 import { DTU_FILENAME_PATTERN as FILENAME_PATTERN } from './filename.util';
+import { ISO_DATE_LENGTH } from '../../common/constants/time.constants';
+import { ERROR_MESSAGES } from '../../common/constants/error-messages.constants';
 
 const CONNECTIVITY_RETRY_DELAYS_MS = [1000, 2000, 4000];
 
@@ -57,14 +59,14 @@ export class SftpCronService {
     const jobId = randomUUID();
     const startedAt = Date.now();
    
-    const runDate = new Date().toISOString().slice(0, 10);
+    const runDate = new Date().toISOString().slice(0, ISO_DATE_LENGTH);
     this.logger.log(`[${jobId}] Cron Started (trigger=${triggerSource})`);
 
     let files: Awaited<ReturnType<SftpService['listFiles']>>;
     try {
       files = await this.connectWithRetry(jobId);
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Unknown error';
+      const message = err instanceof Error ? err.message : ERROR_MESSAGES.UNKNOWN_ERROR;
       this.logger.error(`[${jobId}] Cron failure — could not connect after ${CONNECTIVITY_RETRY_DELAYS_MS.length} retries: ${message}`);
   
       await this.estateSummary.recordFailedPoll(jobId);
@@ -173,7 +175,7 @@ export class SftpCronService {
       return 'failed';
     } catch (err) {
       
-      const message = err instanceof Error ? err.message : 'Unknown error';
+      const message = err instanceof Error ? err.message : ERROR_MESSAGES.UNKNOWN_ERROR;
       this.logger.error(`[${jobId}] File Failed — ${fileName}: ${message}`);
       return 'failed';
     }

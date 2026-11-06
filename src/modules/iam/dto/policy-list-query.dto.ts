@@ -1,6 +1,8 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform, Type } from 'class-transformer';
 import { ArrayMaxSize, IsArray, IsIn, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
+import { DEFAULT_PAGE, MIN_PAGE, SHORT_LIST_DEFAULT_LIMIT, MIN_LIMIT, MAX_LIMIT } from '../../../common/constants/pagination.constants';
+import { SORT_ORDER_VALUES, SORT_ORDER, SortOrder } from '../../../common/constants/sort.constants';
 
 export const POLICY_ATTACHMENTS = ['attached', 'unattached'] as const;
 export type PolicyAttachment = (typeof POLICY_ATTACHMENTS)[number];
@@ -13,20 +15,20 @@ export type PolicyListSortColumn = (typeof POLICY_LIST_SORT_COLUMNS)[number];
 
 /** Query for the Policies list (GET /iam/policies/list) — also what the role forms' policy combobox searches. */
 export class PolicyListQueryDto {
-  @ApiPropertyOptional({ default: 1, minimum: 1 })
+  @ApiPropertyOptional({ default: DEFAULT_PAGE, minimum: MIN_PAGE })
   @Type(() => Number)
   @IsInt()
-  @Min(1)
+  @Min(MIN_PAGE)
   @IsOptional()
-  page = 1;
+  page = DEFAULT_PAGE;
 
-  @ApiPropertyOptional({ default: 10, minimum: 1, maximum: 100 })
+  @ApiPropertyOptional({ default: SHORT_LIST_DEFAULT_LIMIT, minimum: MIN_LIMIT, maximum: MAX_LIMIT })
   @Type(() => Number)
   @IsInt()
-  @Min(1)
-  @Max(100)
+  @Min(MIN_LIMIT)
+  @Max(MAX_LIMIT)
   @IsOptional()
-  limit = 10;
+  limit = SHORT_LIST_DEFAULT_LIMIT;
 
   @ApiPropertyOptional({ description: 'Matches the policy name or description' })
   @IsOptional()
@@ -58,8 +60,8 @@ export class PolicyListQueryDto {
   @IsIn(POLICY_LIST_SORT_COLUMNS)
   sortBy: PolicyListSortColumn = 'name';
 
-  @ApiPropertyOptional({ enum: ['ASC', 'DESC'], default: 'ASC' })
+  @ApiPropertyOptional({ enum: SORT_ORDER_VALUES, default: SORT_ORDER.ASC })
   @IsOptional()
-  @IsIn(['ASC', 'DESC'])
-  sortOrder: 'ASC' | 'DESC' = 'ASC';
+  @IsIn(SORT_ORDER_VALUES)
+  sortOrder: SortOrder = SORT_ORDER.ASC;
 }

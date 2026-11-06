@@ -30,6 +30,12 @@ export interface AuthenticatedUser {
    *  describes the signed payload, which never carries them. */
   roleIds?: number[];
   roleNames?: string[];
+  /** Whether this user must change their password before doing anything else. Resolved live from the
+   *  user row on every request by JwtStrategy (never signed into a token), and enforced by
+   *  PasswordChangeGuard. */
+  mustChangePassword?: boolean;
+  /** The session this token belongs to — see AuthenticatedCustomer.sid (identical for both session kinds). */
+  sid?: string;
   type?: 'staff';
 }
 
@@ -37,6 +43,12 @@ export interface AuthenticatedCustomer {
   sub: number;
   email: string;
   type: 'customer';
+  /** The session this token belongs to: the refresh-token family, a server-generated UUID created at sign-in and kept
+   *  across refresh rotations. AuthService.issueTokenPair signs it into every access token, and JwtStrategy refuses the
+   *  token as soon as that session has no live refresh token (signed out, revoked, replaced after a password change,
+   *  expired) — so "this session" in Active Sessions and "sign out the others" come from here, never from a client
+   *  header. Absent only on a token issued before this claim existed; that token stays valid until it expires. */
+  sid?: string;
 }
 
 export type AuthPrincipal = AuthenticatedUser | AuthenticatedCustomer;

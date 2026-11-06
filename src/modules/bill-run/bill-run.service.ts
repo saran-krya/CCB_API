@@ -28,8 +28,14 @@ import {
   SubmitBatchBillRunDto,
   SubmitBillRunDto,
 } from './dto/bill-run.dto';
+import { AUDIT_MODULE, AUDIT_ACTION } from '../../audit/audit.constants';
+import { SORT_ORDER } from '../../common/constants/sort.constants';
+import { ERROR_MESSAGES } from '../../common/constants/error-messages.constants';
+import { LOCK_MODE } from '../../common/constants/database.constants';
+import { ISO_DATE_LENGTH, UTC_MIDNIGHT_SUFFIX } from '../../common/constants/time.constants';
+import { DEFAULT_LIMIT } from '../../common/constants/pagination.constants';
 
-const BILL_RUN_AUDIT_MODULE = 'BillRun';
+const BILL_RUN_AUDIT_MODULE = AUDIT_MODULE.BILL_RUN;
 
 // Statuses that mean "this property+cycle already has a live request" — a new submission must be
 // blocked while one of these exists. Deliberately excludes RETURNED_FOR_CORRECTION/REJECTED: those
@@ -92,7 +98,7 @@ export class BillRunService {
     const [readiness] = await this.billingReadiness.getReadiness({ propertyId });
     if (!readiness) {
       return {
-        checks: [{ id: 'property_exists', label: 'Property exists', passed: false, detail: 'Property not found' }],
+        checks: [{ id: 'property_exists', label: 'Property exists', passed: false, detail: ERROR_MESSAGES.PROPERTY_NOT_FOUND }],
         allPassed: false,
         readiness: null,
       };
@@ -136,7 +142,7 @@ export class BillRunService {
           periodStart: readiness.cyclePeriodStart,
           periodEnd: readiness.cyclePeriodEnd,
         })
-        .orderBy('r.reading_date', 'DESC')
+        .orderBy('r.reading_date', SORT_ORDER.DESC)
         .limit(1)
         .getRawOne<{ readingDate: string }>();
       outOfCycleReadingDate = latest?.readingDate ?? null;
@@ -366,7 +372,7 @@ export class BillRunService {
     } else {
       // Routine path — UNCHANGED from before this feature existed.
       const [readiness] = await this.billingReadiness.getReadiness({ propertyId });
-      if (!readiness) throw new NotFoundException('Property not found');
+      if (!readiness) throw new NotFoundException(ERROR_MESSAGES.PROPERTY_NOT_FOUND);
       if (readiness.status !== BillingReadinessStatus.READY) {
         throw new BadRequestException(`Property is ${readiness.status === BillingReadinessStatus.ON_HOLD ? 'On Hold' : 'Not Ready'} — resolve outstanding readiness issues before submitting a bill run`);
       }
@@ -395,7 +401,7 @@ export class BillRunService {
     // attempt can still be corrected and resubmitted the same way a routine one can.)
     const existingActive = await manager
       .createQueryBuilder(BillRun, 'br')
-      .setLock('pessimistic_write')
+      .setLock(LOCK_MODE.PESSIMISTIC_WRITE)
       .where('br.property_id = :propertyId', { propertyId })
       .andWhere('br.cycle_version_id = :versionId', { versionId: cycleVersionId })
       .andWhere('br.status IN (:...statuses)', { statuses: ACTIVE_BILL_RUN_STATUSES })
@@ -408,9 +414,9 @@ export class BillRunService {
 
     const submittedOn = new Date();
     const addDays = (dateStr: string, days: number) => {
-      const d = new Date(dateStr + 'T00:00:00Z');
+      const d = new Date(dateStr + UTC_MIDNIGHT_SUFFIX);
       d.setUTCDate(d.getUTCDate() + days);
-      return d.toISOString().slice(0, 10);
+      return d.toISOString().slice(0, ISO_DATE_LENGTH);
     };
 
     // billGenerationDays/billIssueDays/billDueDays are version-level CONFIGURATION, not something
@@ -480,14 +486,14 @@ export class BillRunService {
       submittedOn: 'br.submittedOn',
       status: 'br.status',
     };
-    qb.orderBy(SORTABLE[query.sortBy ?? ''] ?? 'br.submittedOn', query.sortOrder === 'ASC' ? 'ASC' : 'DESC');
+    qb.orderBy(SORTABLE[query.sortBy ?? ''] ?? 'br.submittedOn', query.sortOrder === SORT_ORDER.ASC ? SORT_ORDER.ASC : SORT_ORDER.DESC);
 
     return paginate(qb, query);
   }
 
   async findOne(id: number): Promise<BillRun> {
     const billRun = await this.billRuns.findOne({ where: { id }, relations: RESPONSE_RELATIONS });
-    if (!billRun) throw new NotFoundException('Bill run not found');
+    if (!billRun) throw new NotFoundException(ERROR_MESSAGES.BILL_RUN_NOT_FOUND);
     return billRun;
   }
 
@@ -510,7 +516,7 @@ export class BillRunService {
     newValue: unknown;
   }>> {
     const exists = await this.billRuns.findOne({ where: { id }, select: ['id'] });
-    if (!exists) throw new NotFoundException('Bill run not found');
+    if (!exists) throw new NotFoundException(ERROR_MESSAGES.BILL_RUN_NOT_FOUND);
 
     const events = await this.auditService.findByModuleAndEntity(BILL_RUN_AUDIT_MODULE, id);
 
@@ -687,7 +693,7 @@ export class BillRunService {
       : evaluated;
 
     const page = query.page ?? 1;
-    const limit = query.limit ?? 20;
+    const limit = query.limit ?? DEFAULT_LIMIT;
     const total = filtered.length;
     const start = (page - 1) * limit;
     const items = filtered.slice(start, start + limit);
@@ -747,10 +753,10 @@ export class BillRunService {
 
       const billRun = await manager
         .createQueryBuilder(BillRun, 'br')
-        .setLock('pessimistic_write')
+        .setLock(LOCK_MODE.PESSIMISTIC_WRITE)
         .where('br.id = :id', { id })
         .getOne();
-      if (!billRun) throw new NotFoundException('Bill run not found');
+      if (!billRun) throw new NotFoundException(ERROR_MESSAGES.BILL_RUN_NOT_FOUND);
       if (billRun.status !== BillRunStatus.PENDING_APPROVAL) {
         throw new BadRequestException('Only a bill run pending approval can be approved');
       }
@@ -770,7 +776,7 @@ export class BillRunService {
       }
       const saved = await manager.save(BillRun, billRun);
       await this.workflowOrchestration.recordApproval(workflowContext, actorId, dto.notes, manager);
-      await this.auditService.record({ moduleName: BILL_RUN_AUDIT_MODULE, entityId: id, action: 'APPROVE', oldValue, newValue: saved, performedBy: actorId }, manager);
+      await this.auditService.record({ moduleName: BILL_RUN_AUDIT_MODULE, entityId: id, action: AUDIT_ACTION.APPROVE, oldValue, newValue: saved, performedBy: actorId }, manager);
       return saved.id;
     });
 
@@ -804,10 +810,10 @@ export class BillRunService {
 
       const billRun = await manager
         .createQueryBuilder(BillRun, 'br')
-        .setLock('pessimistic_write')
+        .setLock(LOCK_MODE.PESSIMISTIC_WRITE)
         .where('br.id = :id', { id })
         .getOne();
-      if (!billRun) throw new NotFoundException('Bill run not found');
+      if (!billRun) throw new NotFoundException(ERROR_MESSAGES.BILL_RUN_NOT_FOUND);
       if (billRun.status !== BillRunStatus.PENDING_APPROVAL) {
         throw new BadRequestException('Only a bill run pending approval can be rejected');
       }
@@ -834,10 +840,10 @@ export class BillRunService {
 
       const billRun = await manager
         .createQueryBuilder(BillRun, 'br')
-        .setLock('pessimistic_write')
+        .setLock(LOCK_MODE.PESSIMISTIC_WRITE)
         .where('br.id = :id', { id })
         .getOne();
-      if (!billRun) throw new NotFoundException('Bill run not found');
+      if (!billRun) throw new NotFoundException(ERROR_MESSAGES.BILL_RUN_NOT_FOUND);
       if (billRun.status !== BillRunStatus.PENDING_APPROVAL) {
         throw new BadRequestException('Only a bill run pending approval can be returned for correction');
       }
@@ -866,7 +872,7 @@ export class BillRunService {
    *  between attempts is the underlying readiness data itself, which this re-validates fresh). */
   async resubmit(id: number, dto: ResubmitBillRunDto, actorId?: number): Promise<BillRun> {
     const original = await this.billRuns.findOne({ where: { id } });
-    if (!original) throw new NotFoundException('Bill run not found');
+    if (!original) throw new NotFoundException(ERROR_MESSAGES.BILL_RUN_NOT_FOUND);
     if (![BillRunStatus.RETURNED_FOR_CORRECTION, BillRunStatus.REJECTED].includes(original.status)) {
       throw new BadRequestException('Only a returned or rejected bill run can be resubmitted');
     }

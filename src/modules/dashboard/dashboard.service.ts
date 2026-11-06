@@ -4,6 +4,7 @@ import { In, Repository } from 'typeorm';
 import { Community } from '../community/entities/community.entity';
 import { Property } from '../property/entities/property.entity';
 import { OccupancyStatus, Unit, UnitType } from '../unit/entities/unit.entity';
+import { SORT_ORDER } from '../../common/constants/sort.constants';
 
 const RESIDENTIAL_UNIT_TYPES = [UnitType.APARTMENT, UnitType.STUDIO];
 const COMMERCIAL_UNIT_TYPES = [UnitType.OFFICE, UnitType.SHOP, UnitType.GARAGE];
@@ -51,7 +52,7 @@ export class DashboardService {
   }
 
   async getConsumption(month?: string) {
-    const communities = await this.communityRepo.find({ order: { name: 'ASC' } });
+    const communities = await this.communityRepo.find({ order: { name: SORT_ORDER.ASC } });
     return {
       month: month ?? null,
       communities: communities.map((community) => ({
@@ -63,7 +64,7 @@ export class DashboardService {
   }
 
   async getBillingPipeline(month?: string) {
-    const communities = await this.communityRepo.find({ order: { name: 'ASC' } });
+    const communities = await this.communityRepo.find({ order: { name: SORT_ORDER.ASC } });
     return {
       month: month ?? null,
       communities: communities.map((community) => ({

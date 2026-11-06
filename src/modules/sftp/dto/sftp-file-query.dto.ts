@@ -3,16 +3,17 @@ import { Type } from 'class-transformer';
 import { IsEnum, IsInt, IsOptional, IsString, Matches, Min } from 'class-validator';
 import { BasePaginationDto } from '../../../common/dto/base-pagination.dto';
 import { SftpIngestionStatus } from '../entities/sftp-ingestion-status.enum';
+import { DEFAULT_LIMIT, MIN_LIMIT, MAX_LIMIT } from '../../../common/constants/pagination.constants';
 
 const DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
 
 export class SftpFileQueryDto extends BasePaginationDto {
-  @ApiPropertyOptional({ default: 20, minimum: 1, maximum: 100 })
+  @ApiPropertyOptional({ default: DEFAULT_LIMIT, minimum: MIN_LIMIT, maximum: MAX_LIMIT })
   @IsOptional()
   @IsInt()
-  @Min(1)
+  @Min(MIN_LIMIT)
   @Type(() => Number)
-  override limit = 20;
+  override limit = DEFAULT_LIMIT;
 
   @ApiPropertyOptional({ enum: SftpIngestionStatus, description: 'Filter to one file_status' })
   @IsOptional()

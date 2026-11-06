@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, In, Repository } from 'typeorm';
+import { ROLES } from '@app/common/constants/global';
 import { Role } from '../role/entities/role.entity';
 import { RolePermissionsService } from '../role-permissions/role-permissions.service';
 import { ApprovalLevelDto, UpdateApprovalLevelsDto } from './dto/approval-level.dto';
@@ -11,6 +12,7 @@ import { WorkflowDefinitionLevel } from './entities/workflow-definition-level.en
 import {
   WorkflowDepartment, WorkflowOnBreach, WorkflowSlaUnit,
 } from './entities/workflow-approval-level.entity';
+import { SORT_ORDER } from '../../common/constants/sort.constants';
 
 const SLA_UNITS = Object.values(WorkflowSlaUnit);
 const ON_BREACH_BEHAVIOURS = Object.values(WorkflowOnBreach);
@@ -49,7 +51,7 @@ export class WorkflowDefinitionService {
     const levels = await this.definitionLevels.find({
       where: { definitionId: definition.id },
       relations: { role: true },
-      order: { levelOrder: 'ASC' },
+      order: { levelOrder: SORT_ORDER.ASC },
     });
 
     return {
@@ -70,37 +72,34 @@ export class WorkflowDefinitionService {
   /** Every version ever published for a workflowType, newest first — backs the "View version
    *  history" link (§E.1, §O.1). */
   async getDefinitionHistory(workflowType: WorkflowType) {
-    const definitions = await this.definitions.find({ where: { workflowType }, order: { version: 'DESC' } });
+    const definitions = await this.definitions.find({ where: { workflowType }, order: { version: SORT_ORDER.DESC } });
     return definitions.map((d) => ({ id: d.id, version: d.version, status: d.status, createdBy: d.createdBy, createdAt: d.createdAt }));
   }
 
-  /** Every role CURRENTLY holding the real domain approve permission for this workflow type — the
-   *  exact same predicate `assertLevels` below enforces at save time (same `APPROVE_ACTION_CODES`
-   *  map, same `role_permissions`/`actions` grant check), just exposed read-only so the Approver
-   *  Role dropdown on the workflow-config screen can show ONLY roles that would actually pass
-   *  publishNewVersion's own validation — never every role in the system, never a hardcoded role
-   *  name, never a designation. A role appears here if and only if it currently holds at least one
-   *  of this workflow type's approve action codes (e.g. for TARIFF: TARIFF_APPROVE OR
-   *  TARIFF_APPROVAL_APPROVE) — identical OR semantics to `getApprovalFlow`'s own query, which this
-   *  reuses almost verbatim. */
+  /** Every role that may be configured as an approver for this workflow type — the exact same predicate
+   *  `assertLevels` below enforces at save time (`getEligibleApproverRoleIds`), just exposed read-only so the
+   *  Approver Role dropdown on the workflow-config screen shows ONLY roles that would actually pass
+   *  publishNewVersion's own validation — never every role in the system, never a hardcoded role name, never
+   *  a designation. A role appears here if and only if its Policies (attached or its own inline ones) currently
+   *  grant at least one of this workflow type's approve action codes, and it is not SUPER_ADMIN, a
+   *  system-administration role that never approves business transactions. This is the Policy-based model real
+   *  authorization uses — the legacy `role_permissions` table, which this list used to read, decides nothing. */
   async getEligibleApproverRoles(workflowType: WorkflowType): Promise<{ workflowType: WorkflowType; roles: { id: number; roleName: string }[] }> {
-    const actionCodes = APPROVE_ACTION_CODES[workflowType];
-    if (!actionCodes) throw new BadRequestException(`Unsupported workflow type "${workflowType}"`);
-
-    const rows = await this.dataSource.query(
-      `SELECT DISTINCT r.id AS role_id, r.role_name
-       FROM roles r
-       JOIN role_permissions rp ON rp.roleId = r.id
-       JOIN actions a ON a.id = rp.actionId
-       WHERE a.code IN (${actionCodes.map(() => '?').join(',')}) AND a.deleted_at IS NULL
-       ORDER BY r.role_name ASC`,
-      actionCodes,
-    );
+    const eligibleRoleIds = await this.getEligibleApproverRoleIds(workflowType);
+    const roles = eligibleRoleIds.size ? await this.roles.find({ where: { id: In([...eligibleRoleIds]) }, order: { roleName: SORT_ORDER.ASC } }) : [];
 
     return {
       workflowType,
-      roles: rows.map((r: { role_id: number; role_name: string }) => ({ id: r.role_id, roleName: r.role_name })),
+      roles: roles.map((r) => ({ id: r.id, roleName: r.roleName })),
     };
+  }
+
+  /** THE eligibility predicate — shared by the Approver Role dropdown and `assertLevels`, so what the screen offers
+   *  is exactly what the backend accepts. */
+  private async getEligibleApproverRoleIds(workflowType: WorkflowType): Promise<Set<number>> {
+    const actionCodes = APPROVE_ACTION_CODES[workflowType];
+    if (!actionCodes) throw new BadRequestException(`Unsupported workflow type "${workflowType}"`);
+    return new Set(await this.rolePermissionsService.getRoleIdsHoldingAnyAction(actionCodes));
   }
 
   /** Validates the WHOLE proposed level sequence before a single row is written — same
@@ -120,19 +119,10 @@ export class WorkflowDefinitionService {
     const existingRoles = roleIds.length ? await this.roles.find({ where: { id: In(roleIds) } }) : [];
     const validRoleIds = new Set(existingRoles.map((r) => r.id));
 
-    const approveActionCodes = APPROVE_ACTION_CODES[workflowType];
+    // Resolved once for the whole sequence, from the same predicate the Approver Role dropdown lists.
+    const eligibleRoleIds = await this.getEligibleApproverRoleIds(workflowType);
 
     const problems: string[] = [];
-    const roleCapabilityCache = new Map<number, boolean>();
-    const roleHasApproveCapability = async (roleId: number): Promise<boolean> => {
-      if (roleCapabilityCache.has(roleId)) return roleCapabilityCache.get(roleId)!;
-      let holds = false;
-      for (const code of approveActionCodes) {
-        if (await this.rolePermissionsService.roleHasAction(roleId, code)) { holds = true; break; }
-      }
-      roleCapabilityCache.set(roleId, holds);
-      return holds;
-    };
 
     for (let i = 0; i < levels.length; i++) {
       const level = levels[i];
@@ -140,7 +130,9 @@ export class WorkflowDefinitionService {
 
       if (typeof level.roleId !== 'number' || !Number.isInteger(level.roleId) || !validRoleIds.has(level.roleId)) {
         problems.push(`${at}: unknown approver role "${String(level.roleId)}".`);
-      } else if (!(await roleHasApproveCapability(level.roleId))) {
+      } else if (existingRoles.find((r) => r.id === level.roleId)?.roleName === ROLES.SUPER_ADMIN) {
+        problems.push(`${at}: SUPER_ADMIN is a system-administration role and cannot be a workflow approver — choose a business role.`);
+      } else if (!eligibleRoleIds.has(level.roleId)) {
         const roleName = existingRoles.find((r) => r.id === level.roleId)?.roleName ?? String(level.roleId);
         problems.push(
           `${at}: role "${roleName}" does not currently hold the real approve permission for ${workflowType} — grant it first (Roles & Permissions), or choose a different role.`,

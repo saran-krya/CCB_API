@@ -19,6 +19,8 @@ import {
 import { SubModule } from './entities/sub-module.entity';
 import { PModule } from '../pmodules/entities/pmodule.entity';
 import { SUB_MODULES } from '../../bootstrap/seed-data';
+import { ERROR_MESSAGES } from '../../common/constants/error-messages.constants';
+import { SORT_ORDER } from '../../common/constants/sort.constants';
 
 @Injectable()
 export class SubModulesService {
@@ -44,7 +46,7 @@ export class SubModulesService {
 
     if (!pModule) {
       throw new NotFoundException(
-        'Permission module not found',
+        ERROR_MESSAGES.PERMISSION_MODULE_NOT_FOUND,
       );
     }
 
@@ -62,7 +64,7 @@ export class SubModulesService {
 
     if (exists) {
       throw new ConflictException(
-        'Sub module already exists',
+        ERROR_MESSAGES.SUB_MODULE_ALREADY_EXISTS,
       );
     }
 
@@ -94,7 +96,7 @@ export class SubModulesService {
       },
     },
     order: {
-      displayOrder: 'ASC',
+      displayOrder: SORT_ORDER.ASC,
     },
   });
 }
@@ -114,7 +116,7 @@ export class SubModulesService {
 
     if (!subModule) {
       throw new NotFoundException(
-        'Sub module not found',
+        ERROR_MESSAGES.SUB_MODULE_NOT_FOUND,
       );
     }
 
@@ -142,7 +144,7 @@ export class SubModulesService {
 
       if (!pModule) {
         throw new NotFoundException(
-          'Permission module not found',
+          ERROR_MESSAGES.PERMISSION_MODULE_NOT_FOUND,
         );
       }
     }
@@ -160,7 +162,7 @@ export class SubModulesService {
 
       if (exists) {
         throw new ConflictException(
-          'Sub module already exists',
+          ERROR_MESSAGES.SUB_MODULE_ALREADY_EXISTS,
         );
       }
     }

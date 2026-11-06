@@ -1,6 +1,8 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import { IsIn, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
+import { DEFAULT_PAGE, MIN_PAGE, SHORT_LIST_DEFAULT_LIMIT, MIN_LIMIT, MAX_LIMIT } from '../../../common/constants/pagination.constants';
+import { SORT_ORDER_VALUES, SORT_ORDER, SortOrder } from '../../../common/constants/sort.constants';
 
 export const USER_PERMISSION_KINDS = ['role', 'inline'] as const;
 export type UserPermissionKind = (typeof USER_PERMISSION_KINDS)[number];
@@ -9,20 +11,20 @@ export const USER_PERMISSION_SORT_COLUMNS = ['name', 'type', 'attachedVia'] as c
 export type UserPermissionSortColumn = (typeof USER_PERMISSION_SORT_COLUMNS)[number];
 
 export class UserPermissionsQueryDto {
-  @ApiPropertyOptional({ default: 1, minimum: 1 })
+  @ApiPropertyOptional({ default: DEFAULT_PAGE, minimum: MIN_PAGE })
   @Type(() => Number)
   @IsInt()
-  @Min(1)
+  @Min(MIN_PAGE)
   @IsOptional()
-  page = 1;
+  page = DEFAULT_PAGE;
 
-  @ApiPropertyOptional({ default: 10, minimum: 1, maximum: 100 })
+  @ApiPropertyOptional({ default: SHORT_LIST_DEFAULT_LIMIT, minimum: MIN_LIMIT, maximum: MAX_LIMIT })
   @Type(() => Number)
   @IsInt()
-  @Min(1)
-  @Max(100)
+  @Min(MIN_LIMIT)
+  @Max(MAX_LIMIT)
   @IsOptional()
-  limit = 10;
+  limit = SHORT_LIST_DEFAULT_LIMIT;
 
   @ApiPropertyOptional({ description: 'Matches the name, type, how it is attached, or (roles) the user category' })
   @IsOptional()
@@ -39,8 +41,8 @@ export class UserPermissionsQueryDto {
   @IsIn(USER_PERMISSION_SORT_COLUMNS)
   sortBy: UserPermissionSortColumn = 'name';
 
-  @ApiPropertyOptional({ enum: ['ASC', 'DESC'], default: 'ASC' })
+  @ApiPropertyOptional({ enum: SORT_ORDER_VALUES, default: SORT_ORDER.ASC })
   @IsOptional()
-  @IsIn(['ASC', 'DESC'])
-  sortOrder: 'ASC' | 'DESC' = 'ASC';
+  @IsIn(SORT_ORDER_VALUES)
+  sortOrder: SortOrder = SORT_ORDER.ASC;
 }

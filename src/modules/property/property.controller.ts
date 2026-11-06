@@ -27,6 +27,7 @@ import {
 } from './dto/create-property.dto';
 import { PropertyDetailDto, PropertyListDto } from './dto/property-response.dto';
 import { PropertyService } from './property.service';
+import { ACTION_CODES } from '../../common/constants/action-codes.constants';
 
 @ApiBearerAuth()
 @ApiTags('Properties')
@@ -35,7 +36,7 @@ export class PropertyController {
   constructor(private readonly properties: PropertyService) {}
 
   @Post()
-  @Permission('CREATE_PROPERTY')
+  @Permission(ACTION_CODES.CREATE_PROPERTY)
   @ApiOperation({ summary: 'Create a property' })
   create(
     @Body() dto: CreatePropertyDto,
@@ -49,7 +50,7 @@ export class PropertyController {
   // creation's applicability picker read this list as reference data, not to manage Property as a
   // module. Does NOT grant create/edit/delete.
   @Get()
-  @Permission('VIEW_PROPERTY', 'CREATE_REGISTRATION_REQUEST', 'EDIT_REGISTRATION_REQUEST', 'TARIFF_CREATE', 'TARIFF_EDIT')
+  @Permission(ACTION_CODES.VIEW_PROPERTY, ACTION_CODES.CREATE_REGISTRATION_REQUEST, ACTION_CODES.EDIT_REGISTRATION_REQUEST, ACTION_CODES.TARIFF_CREATE, ACTION_CODES.TARIFF_EDIT)
   @ApiOperation({ summary: 'List all properties with pagination and filters' })
   @ApiOkResponse({ type: PropertyListDto, isArray: true, description: 'Paginated list of properties' })
   findAll(@Query() query: PropertyQueryDto) {
@@ -70,7 +71,7 @@ export class PropertyController {
   // applicability picker only calls the LIST endpoint above, never this by-id route, so
   // TARIFF_CREATE/TARIFF_EDIT are deliberately not added here.
   @Get(':id')
-  @Permission('VIEW_PROPERTY', 'VIEW_COMMUNITY', 'CREATE_REGISTRATION_REQUEST', 'EDIT_REGISTRATION_REQUEST')
+  @Permission(ACTION_CODES.VIEW_PROPERTY, ACTION_CODES.VIEW_COMMUNITY, ACTION_CODES.CREATE_REGISTRATION_REQUEST, ACTION_CODES.EDIT_REGISTRATION_REQUEST)
   @ApiOperation({ summary: 'Get property detail with stats and units' })
   @ApiOkResponse({ type: PropertyDetailDto })
   @ApiParam({ name: 'id', type: Number })
@@ -79,7 +80,7 @@ export class PropertyController {
   }
 
   @Patch(':id')
-  @Permission('EDIT_PROPERTY')
+  @Permission(ACTION_CODES.EDIT_PROPERTY)
   @ApiOperation({ summary: 'Update property' })
   @ApiParam({ name: 'id', type: Number })
   update(
@@ -91,7 +92,7 @@ export class PropertyController {
   }
 
   @Patch(':id/status')
-  @Permission('PROPERTY_STATUS')
+  @Permission(ACTION_CODES.PROPERTY_STATUS)
   @ApiOperation({ summary: 'Update property status' })
   @ApiParam({ name: 'id', type: Number })
   updateStatus(
@@ -103,7 +104,7 @@ export class PropertyController {
   }
 
   @Delete(':id')
-  @Permission('DELETE_PROPERTY')
+  @Permission(ACTION_CODES.DELETE_PROPERTY)
   @ApiOperation({ summary: 'Soft-delete a property' })
   @ApiParam({ name: 'id', type: Number })
   remove(

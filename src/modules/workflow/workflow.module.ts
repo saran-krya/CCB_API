@@ -4,6 +4,7 @@ import { Action } from '../actions/entities/action.entity';
 import { RolePermission } from '../role-permissions/entities/role-permission.entity';
 import { RolePermissionsModule } from '../role-permissions/role-permissions.module';
 import { Role } from '../role/entities/role.entity';
+import { SettingsModule } from '../settings/settings.module';
 import { User } from '../user/entities/user.entity';
 import { UserRoleModule } from '../user-role/user-role.module';
 import { WorkflowApprovalLevel } from './entities/workflow-approval-level.entity';
@@ -27,7 +28,9 @@ import { WorkflowSlaSchedulerService } from './workflow-sla-scheduler.service';
 // WorkflowDefinitionService/WorkflowOrchestrationService are the real engine: versioned
 // definitions + execution instances. RolePermissionsModule is imported for the definition
 // service's save-time "does this role actually hold the approve permission" check (§J);
-// UserRoleModule for the orchestration service's role-resolution (never users.role_id).
+// UserRoleModule for the orchestration service's role-resolution (never users.role_id);
+// SettingsModule for WorkflowSlaSchedulerService's notification policy (may this approver be e-mailed?) — it imports only
+// Attribute/Lov/Config, so it adds no cycle.
 //
 // Deliberately imports NONE of Tariff/BillRun/BillingCycleModule, even though
 // WorkflowSlaSchedulerService's AUTO_APPROVE path needs to call each domain's own approve()
@@ -57,6 +60,7 @@ import { WorkflowSlaSchedulerService } from './workflow-sla-scheduler.service';
     ]),
     RolePermissionsModule,
     UserRoleModule,
+    SettingsModule,
   ],
   controllers: [WorkflowController],
   providers: [WorkflowService, WorkflowDefinitionService, WorkflowOrchestrationService, WorkflowSlaSchedulerService],

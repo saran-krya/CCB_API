@@ -5,6 +5,7 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Permission } from '../../common/decorators/permission.decorator';
 import { UserPermissionsQueryDto } from './dto/user-permissions-query.dto';
 import { UserPermissionsService } from './user-permissions.service';
+import { ACTION_CODES } from '../../common/constants/action-codes.constants';
 
 @ApiBearerAuth()
 @ApiTags('IAM User Permissions')
@@ -13,7 +14,7 @@ export class UserPermissionsController {
   constructor(private readonly permissions: UserPermissionsService) {}
 
   @Get()
-  @Permission('VIEW_USER')
+  @Permission(ACTION_CODES.VIEW_USER)
   @ApiOperation({
     summary:
       "A user's roles and (SUPER_ADMIN viewers only) inline policies as one searchable, filterable, sortable, paged list, plus the type filter options.",
