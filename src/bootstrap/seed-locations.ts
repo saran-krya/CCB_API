@@ -51,8 +51,8 @@ export interface SeedUnit {
   unitSize: number
   occupancyStatus: OccupancyStatus
   status: UnitStatus
-  bedrooms: number
-  bathrooms: number
+  bedrooms: number | null
+  bathrooms: number | null
   balcony: boolean
   parkingSpaces: number
   monthlyRent: number
