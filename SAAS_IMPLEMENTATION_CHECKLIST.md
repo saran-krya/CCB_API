@@ -61,14 +61,14 @@ Tracks Phase 2 implementation against the approved architecture (Phase 1 audit �
 
 **Still not executed:** no database/migration changes in this phase at all (Phase D was entity/service/guard logic only, built entirely on Phase B's already-written-but-unexecuted schema).
 
-## Phase E — Tenant Isolation Enforcement (backend)
-- [ ] E1. Base repository / query-builder helper enforcing `organization_id`
-- [ ] E2. Apply it across every existing service (Community, Property, Unit, Customer, Tariff, BillingCycle, Meter, Bill, RegistrationRequest, Role, Policy, …)
-- [ ] E3. IDOR checks on every find-by-id endpoint
-- [ ] E4. Explicit, time-limited, audited Support Access (SUPER_ADMIN never silently bypasses isolation)
-- [ ] E5. Background jobs / Redis cache keys / SFTP / file storage made organization-aware (verify what actually exists first)
-- [ ] E6. Subscription plan-limit enforcement (e.g. reject the 11th user over a 10-user plan)
-- [ ] E7. Build + test
+## Phase E — Tenant Isolation Enforcement (backend) — IN PROGRESS
+Running as a 6-domain fix+independent-verify workflow (worktree-isolated): core entities (Community/Property/Unit/Meter/LOV/Attribute), Customer/Registration/Field-Inspection, Billing (Tariff/BillingCycle/BillRun/BillingManagement/BillingReadiness), SFTP reporting + Workflow engine, Global Search (13 providers — confirmed real leak, predates org_id existing), and leftover raw-SQL in Role/IAM. Per-service pattern (no shared base class, matches Phase D precedent), not E1's original "base repository" idea — deliberate deviation, same reasoning as Phase D's D1. E4 (Support Access) and E6 (plan-limit enforcement) confirmed out of scope for E, correctly belong in Phase F below. Final results/numbers land here once the workflow completes.
+
+## New schema gaps found and fixed this phase (not in original Phase B's 26-entity list)
+- `FieldInspectionRequest`: real gap, non-nullable FK to Property, no organization_id — added (non-nullable), migration written.
+- `Attribute`: finalized decision — custom attributes per-organization (nullable column, like Role/Policy), system-defined stay global.
+- `WorkflowDefinition`/`WorkflowDefinitionLevel`/`WorkflowApprovalLevel`: finalized decision — per-organization (non-nullable), instances/steps still inherit transitively, no column on those.
+- `RegistrationDocumentRule`, `LovCategory`/`LovValue`: finalized decision — shared platform-wide, no schema change.
 
 ## Phase F — Platform Administration + Invitation Flow
 - [ ] F1. Platform Administration controller/service: dashboard metrics, Organization CRUD, subscription assignment/renewal, invitations, Support Access start/end
@@ -82,8 +82,31 @@ Tracks Phase 2 implementation against the approved architecture (Phase 1 audit �
 - [ ] G2. Build + test
 
 ## Phase H — Multi-Organization Verification
-- [ ] H1. Org A / Org B test fixtures
-- [ ] H2. Cross-tenant isolation integration-test suite (list/by-id/search/export/file-download, each checked both ways)
+- [x] H1/H2 largely absorbed into Phase E (Org A/B tests landed per-domain instead of as a separate later pass). What's left here: one final full-suite regression run after every Phase E domain merges, before frontend work starts.
+
+## Phase J — Frontend: SUPER_ADMIN Platform Administration (not started, scope only)
+Gated behind Phase E (isolation) + ideally F (the APIs below marked "pending") being done. Reuses existing Next.js/Zustand/React Query architecture, AppDataTable, forms, dialogs, filters, nav patterns — no new UI framework.
+| Screen | Backend API | Status |
+|---|---|---|
+| Platform Dashboard (org/subscription metrics) | dashboard metrics endpoint | **Pending** — no endpoint exists yet (Phase F) |
+| Organization Management (list/create/view/edit/activate/suspend) | `/platform/organizations` (GET/POST/PATCH/:id/status) | Exists (Phase A) |
+| Subscription Plan Management | `/platform/organizations/subscription-plans*` | Exists (Phase A) |
+| Subscription assignment/renewal/expiry | `/platform/organizations/:id/subscription` | Exists (Phase A); expiry-warning job not built |
+| Tenant ADMIN invitation + management | invitation send/accept endpoints | **Pending** — `UserInvitation` entity exists, no service/controller yet (Phase F) |
+| Support Access + visible Support Mode banner | elevation + audit-trail endpoints | **Pending** — not built anywhere yet (Phase F); until then SUPER_ADMIN is simply denied tenant data by default (Phase E), by design |
+| Platform Settings | platform-level settings split | **Pending** (Phase G) |
+Plus: auth store + post-login redirect (SUPER_ADMIN → platform admin shell), role-based route guards, nav kept fully separate from tenant nav.
+
+## Phase K — Frontend: Tenant ADMIN Organization Application (not started, scope only)
+Gated the same as Phase J.
+| Screen | Backend API | Status |
+|---|---|---|
+| Organization dashboard | org-scoped metrics endpoint | **Pending** (Phase F/G) |
+| Org-specific user + role management | existing user/role endpoints, now org-scoped by Phase E/D | Exists |
+| Existing business modules, scoped to authenticated org | existing endpoints, now org-scoped by Phase E | Exists once E lands |
+| Organization settings | org-scoped settings split | **Pending** (Phase G) |
+| Read-only subscription info | `/platform/organizations/:id` (read-only projection) | Exists (Phase A), needs a read-only tenant-facing route |
+Hard rule carried into every screen above: organization context is always resolved server-side from the authenticated profile (Phase C) — the frontend never sends or trusts an org id of its own. Customer portal: no changes planned, preserved as-is.
 
 ## Phase I — Hardening
 - [ ] I1. `DB_SYNCHRONIZE` review/disable recommendation
