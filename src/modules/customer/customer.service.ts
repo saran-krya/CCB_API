@@ -412,6 +412,20 @@ export class CustomerService {
     return customer;
   }
 
+  /** What a signed-in Customer request needs on every request — mirrors UserService.findAuthState's
+   *  shape/intent for the other principal type: a lean select, re-read live (never cached, never
+   *  trusted from the JWT), called by JwtStrategy.validate. `organizationId` is the Customer's own
+   *  denormalized column (set from their Unit/Property/Community at creation time) — "the appropriate
+   *  Customer ownership relationship" already resolved onto the row, not re-derived via a join here. */
+  async findAuthState(id: number): Promise<{ id: number; accountStatus: CustomerAccountStatus; organizationId: number }> {
+    const customer = await this.customers.findOne({
+      where: { id },
+      select: { id: true, accountStatus: true, organizationId: true },
+    });
+    if (!customer) throw new NotFoundException(ERROR_MESSAGES.CUSTOMER_NOT_FOUND);
+    return { id: customer.id, accountStatus: customer.accountStatus, organizationId: customer.organizationId };
+  }
+
   async update(id: number, dto: UpdateCustomerDto, actorId?: number) {
     const customer = await this.customers.findOne({
       where: { id },

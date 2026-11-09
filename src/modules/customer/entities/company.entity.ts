@@ -27,6 +27,11 @@ import { Customer, CustomerLegalStructure } from './customer.entity';
  */
 @Entity('company')
 export class Company extends BaseEntity {
+  // Denormalized from the owning Customer's organization — kept directly (not only reachable via
+  // customer_id) since Company is independently editable from a Customer's own detail screen.
+  @Column({ name: 'organization_id', type: 'int' })
+  organizationId!: number;
+
   @OneToOne(() => Customer, { nullable: false, onDelete: 'CASCADE' })
   @JoinColumn({ name: 'customer_id' })
   customer!: Customer;

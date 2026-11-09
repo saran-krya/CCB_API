@@ -3,6 +3,8 @@ import { ConfigModule } from '@nestjs/config';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { ScheduleModule } from '@nestjs/schedule';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { ClsModule } from 'nestjs-cls';
+import { OrganizationContextModule } from './common/organization-context/organization-context.module';
 import { AuditModule } from './audit/audit.module';
 import { RedisModule } from './redis/redis.module';
 import { AuthModule } from './auth/auth.module';
@@ -44,10 +46,17 @@ import { FieldInspectionModule } from './modules/field-inspection/field-inspecti
 import { WorkflowModule } from './modules/workflow/workflow.module';
 import { IamModule } from './modules/iam/iam.module';
 import { SettingsModule } from './modules/settings/settings.module';
+import { GlobalSearchModule } from './modules/global-search/global-search.module';
+import { OrganizationModule } from './modules/organization/organization.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true, envFilePath: resolveEnvFilePath(), validate: validateEnv }),
+    // Request-scoped (AsyncLocalStorage-backed) context — today, only the organization-isolation
+    // context (see common/organization-context/). Mounted as global middleware so the context exists
+    // before ANY guard runs, not just the ones that happen to come after some other module's setup.
+    ClsModule.forRoot({ global: true, middleware: { mount: true } }),
+    OrganizationContextModule,
     EventEmitterModule.forRoot(),
     ScheduleModule.forRoot(),
     TypeOrmModule.forRootAsync(typeOrmConfig),
@@ -58,6 +67,7 @@ import { SettingsModule } from './modules/settings/settings.module';
     RoleModule,
     UserModule,
     UserRoleModule,
+    OrganizationModule,
     CommunityModule,
     PropertyModule,
     UnitModule,
@@ -89,6 +99,7 @@ import { SettingsModule } from './modules/settings/settings.module';
     WorkflowModule,
     IamModule,
     SettingsModule,
+    GlobalSearchModule,
   ],
 })
 export class AppModule {}

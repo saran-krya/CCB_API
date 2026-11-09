@@ -130,7 +130,7 @@ describe('UserInlinePolicyService', () => {
 
       const result = await service.create(TARGET, DTO, ACTOR);
 
-      expect(policiesRepo.create).toHaveBeenCalledWith({ userId: TARGET, name: DTO.name, description: DTO.description });
+      expect(policiesRepo.create).toHaveBeenCalledWith({ userId: TARGET, name: DTO.name, description: DTO.description, organizationId: null });
       expect(statementsRepo.save).toHaveBeenCalledWith([{ policyId: 100, resourceId: 10, effect: 'Allow', actions: ['TARIFF_VIEW'] }]);
       expect(policiesRepo.findOneOrFail).toHaveBeenCalledWith({ where: { id: 100 }, relations: { statements: { resource: true } } });
       expect(result).toBe(created);

@@ -5,7 +5,7 @@ import { IamService } from './iam.service';
 // the type label read from the persisted isSystem flag (never guessed from the policy's name).
 describe('IamService.getPoliciesForRolePage', () => {
   let service: IamService;
-  let rolesRepo: { exist: jest.Mock };
+  let rolesRepo: { findOne: jest.Mock };
   let andWhereCalls: { sql: string; params?: Record<string, unknown> }[];
   let orderByCalls: { column: string; order?: string }[];
   let addOrderByCalls: { column: string; order?: string }[];
@@ -18,7 +18,7 @@ describe('IamService.getPoliciesForRolePage', () => {
     addOrderByCalls = [];
     items = [];
     attachedCounts = [];
-    rolesRepo = { exist: jest.fn().mockResolvedValue(true) };
+    rolesRepo = { findOne: jest.fn().mockResolvedValue({ id: 1, organizationId: 1 }) };
 
     const qb: any = {
       innerJoin: () => qb,
@@ -54,14 +54,20 @@ describe('IamService.getPoliciesForRolePage', () => {
       {} as any,
       {} as any,
       {} as any, // roleInlinePolicies — not exercised by this spec
+      { getOrganizationId: jest.fn().mockReturnValue(1) } as any,
     );
   });
 
   const q = (over: Record<string, unknown> = {}) => ({ page: 1, limit: 10, sortBy: 'name', sortOrder: 'ASC', ...over }) as any;
 
   it('404s for a role that does not exist', async () => {
-    rolesRepo.exist.mockResolvedValue(false);
+    rolesRepo.findOne.mockResolvedValue(null);
     await expect(service.getPoliciesForRolePage(99, q())).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it('404s for a role that belongs to a different organization, never confirming it exists', async () => {
+    rolesRepo.findOne.mockResolvedValue({ id: 1, organizationId: 999 });
+    await expect(service.getPoliciesForRolePage(1, q())).rejects.toBeInstanceOf(NotFoundException);
   });
 
   it('searches the name or description, and filters by type through the persisted flag', async () => {

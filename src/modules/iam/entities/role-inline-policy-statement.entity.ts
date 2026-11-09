@@ -13,6 +13,10 @@ import { RoleInlinePolicy } from './role-inline-policy.entity';
  */
 @Entity('role_inline_policy_statements')
 export class RoleInlinePolicyStatement extends BaseEntity {
+  // Mirrors the owning RoleInlinePolicy's organization_id.
+  @Column({ name: 'organization_id', type: 'int', nullable: true })
+  organizationId?: number | null;
+
   @Column()
   policyId!: number;
 

@@ -13,6 +13,10 @@ export enum BillingCycleStatus {
 
 @Entity('billing_cycle_versions')
 export class BillingCycleVersion extends BaseEntity {
+  // Denormalized from the owning BillingCycleMaster.
+  @Column({ name: 'organization_id', type: 'int' })
+  organizationId!: number;
+
   @ManyToOne(() => BillingCycleMaster, (master) => master.versions, { nullable: false })
   @JoinColumn({ name: 'master_id' })
   master!: BillingCycleMaster;

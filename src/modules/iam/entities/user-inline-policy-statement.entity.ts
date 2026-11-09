@@ -12,6 +12,10 @@ import { UserInlinePolicy } from './user-inline-policy.entity';
  */
 @Entity('user_inline_policy_statements')
 export class UserInlinePolicyStatement extends BaseEntity {
+  // Mirrors the owning UserInlinePolicy's organization_id.
+  @Column({ name: 'organization_id', type: 'int', nullable: true })
+  organizationId?: number | null;
+
   @Column()
   policyId!: number;
 

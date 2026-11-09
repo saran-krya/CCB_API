@@ -17,6 +17,7 @@ import { RESOURCES } from './resource-catalog';
 import { ACTIONS } from '../../bootstrap/seed-data';
 import { BUSINESS_APPROVAL_ACTION_CODES } from './business-approval-actions';
 import { CreatePolicyDto } from './dto/policy.dto';
+import { OrganizationContextService } from '../../common/organization-context/organization-context.service';
 
 // SUPER_ADMIN is a system-administration role: it never receives a business-approval code (tariff, billing cycle,
 // bill run, registration, meter reading approve/reject), however a grant reaches it. Every dependency is mocked;
@@ -43,6 +44,7 @@ describe('IamService — SUPER_ADMIN business-approval restriction', () => {
   let auditService: { record: jest.Mock };
   let manager: { getRepository: jest.Mock; createQueryBuilder: jest.Mock; connection: { getMetadata: jest.Mock }; query: jest.Mock };
   let dataSource: { transaction: jest.Mock; manager: unknown; query: jest.Mock };
+  let context: { getOrganizationId: jest.Mock };
 
   // The fake database the repositories read from.
   let roleRows: { id: number; roleName: string }[];
@@ -115,6 +117,7 @@ describe('IamService — SUPER_ADMIN business-approval restriction', () => {
     };
     actionsRepo = { find: jest.fn().mockResolvedValue([]) };
     auditService = { record: jest.fn().mockResolvedValue(undefined) };
+    context = { getOrganizationId: jest.fn().mockReturnValue(1) };
 
     const releaseQuery = {
       update: jest.fn().mockReturnThis(),
@@ -160,6 +163,7 @@ describe('IamService — SUPER_ADMIN business-approval restriction', () => {
         { provide: getRepositoryToken(Action), useValue: actionsRepo },
         { provide: DataSource, useValue: dataSource },
         { provide: AuditService, useValue: auditService },
+        { provide: OrganizationContextService, useValue: context },
       ],
     }).compile();
 
@@ -395,7 +399,11 @@ describe('IamService — SUPER_ADMIN business-approval restriction', () => {
   // ─────────────────────────────────────────────────────────────────────────────────────────────
   describe('writes: SUPER_ADMIN cannot be handed an approval through a policy', () => {
     describe('attachPolicyToRole', () => {
-      const approvalPolicy = { id: 7, name: 'Billing approvers' };
+      // Organization-id pairing per scenario: SUPER_ADMIN's own role is platform-level (organization_id
+      // NULL), so attaching to it only makes sense from a platform-level (null-context) actor — the
+      // policy being attached is modeled as platform-level too, consistent with that. The business-role
+      // scenario instead models an ordinary tenant-scoped actor attaching a same-tenant policy.
+      const approvalPolicy = { id: 7, name: 'Billing approvers', organizationId: 1 };
 
       beforeEach(() => {
         policiesRepo.findOne.mockResolvedValue(approvalPolicy);
@@ -403,7 +411,9 @@ describe('IamService — SUPER_ADMIN business-approval restriction', () => {
       });
 
       it('refuses to attach a policy that lists a business-approval code to SUPER_ADMIN, and attaches nothing', async () => {
-        rolesRepo.findOne.mockResolvedValue({ id: SUPER_ADMIN, roleName: 'SUPER_ADMIN' });
+        context.getOrganizationId.mockReturnValue(null);
+        policiesRepo.findOne.mockResolvedValue({ ...approvalPolicy, organizationId: null });
+        rolesRepo.findOne.mockResolvedValue({ id: SUPER_ADMIN, roleName: 'SUPER_ADMIN', organizationId: null });
         statementsRepo.find.mockResolvedValue([{ effect: 'Allow', actions: ['BILL_RUN_VIEW', 'BILL_RUN_APPROVE'] }]);
 
         await expect(service.attachPolicyToRole(SUPER_ADMIN, 7, 99)).rejects.toThrow(
@@ -415,27 +425,29 @@ describe('IamService — SUPER_ADMIN business-approval restriction', () => {
       });
 
       it('still attaches a policy with only administrative or view codes to SUPER_ADMIN', async () => {
-        rolesRepo.findOne.mockResolvedValue({ id: SUPER_ADMIN, roleName: 'SUPER_ADMIN' });
+        context.getOrganizationId.mockReturnValue(null);
+        policiesRepo.findOne.mockResolvedValue({ ...approvalPolicy, organizationId: null });
+        rolesRepo.findOne.mockResolvedValue({ id: SUPER_ADMIN, roleName: 'SUPER_ADMIN', organizationId: null });
         statementsRepo.find.mockResolvedValue([{ effect: 'Allow', actions: ['VIEW_USER', 'WORKFLOW_MANAGE_APPROVERS'] }]);
 
         await service.attachPolicyToRole(SUPER_ADMIN, 7, 99);
 
-        expect(rolePoliciesRepo.save).toHaveBeenCalledWith({ roleId: SUPER_ADMIN, policyId: 7 });
+        expect(rolePoliciesRepo.save).toHaveBeenCalledWith({ roleId: SUPER_ADMIN, policyId: 7, organizationId: null });
       });
 
       it('attaches the same approval policy to a business role without any restriction', async () => {
-        rolesRepo.findOne.mockResolvedValue({ id: FINANCE, roleName: 'FINANCE' });
+        rolesRepo.findOne.mockResolvedValue({ id: FINANCE, roleName: 'FINANCE', organizationId: 1 });
         statementsRepo.find.mockResolvedValue([{ effect: 'Allow', actions: ['BILL_RUN_APPROVE'] }]);
 
         await service.attachPolicyToRole(FINANCE, 7, 99);
 
-        expect(rolePoliciesRepo.save).toHaveBeenCalledWith({ roleId: FINANCE, policyId: 7 });
+        expect(rolePoliciesRepo.save).toHaveBeenCalledWith({ roleId: FINANCE, policyId: 7, organizationId: 1 });
       });
     });
 
     describe('updatePolicy', () => {
       const RESOURCE_TARIFF = { id: 10, code: 'TARIFF' };
-      const policy = { id: 7, name: 'Tariff team', description: 'd', isSystem: false };
+      const policy = { id: 7, name: 'Tariff team', description: 'd', isSystem: false, organizationId: 1 };
       const dto = (...actionCodes: string[]) => ({ name: 'Tariff team', description: 'd', statements: [{ resourceCode: 'TARIFF', actionCodes }] });
 
       beforeEach(() => {
@@ -629,7 +641,7 @@ describe('IamService — SUPER_ADMIN business-approval restriction', () => {
   describe('the revoking paths run that check', () => {
     it('detaching a policy with an approve code runs the removal in a transaction and lets the 409 roll it back', async () => {
       rolePoliciesRepo.findOne.mockResolvedValue({ id: 1, roleId: FINANCE, policyId: 7 });
-      rolesRepo.findOne.mockResolvedValue({ id: FINANCE, roleName: 'FINANCE' });
+      rolesRepo.findOne.mockResolvedValue({ id: FINANCE, roleName: 'FINANCE', organizationId: 1 });
       statementsRepo.find.mockResolvedValue([{ effect: 'Allow', actions: ['TARIFF_VIEW', 'TARIFF_APPROVE'] }]);
       const guard = jest.spyOn(service, 'assertApproverEligibilityKept').mockRejectedValue(new ConflictException('would strand an approver'));
 
@@ -643,7 +655,7 @@ describe('IamService — SUPER_ADMIN business-approval restriction', () => {
     it('detaching a policy without any approve code is the plain removal it always was — no transaction, no check', async () => {
       const attachment = { id: 1, roleId: FINANCE, policyId: 7 };
       rolePoliciesRepo.findOne.mockResolvedValue(attachment);
-      rolesRepo.findOne.mockResolvedValue({ id: FINANCE, roleName: 'FINANCE' });
+      rolesRepo.findOne.mockResolvedValue({ id: FINANCE, roleName: 'FINANCE', organizationId: 1 });
       statementsRepo.find.mockResolvedValue([{ effect: 'Allow', actions: ['TARIFF_VIEW', 'BILL_RUN_VIEW'] }]);
       const guard = jest.spyOn(service, 'assertApproverEligibilityKept');
 
@@ -658,7 +670,7 @@ describe('IamService — SUPER_ADMIN business-approval restriction', () => {
     describe('editing a managed policy', () => {
       beforeEach(() => {
         policiesRepo.findOne.mockImplementation(({ where }: { where: { name?: string } }) =>
-          Promise.resolve(where.name !== undefined ? null : { id: 7, name: 'Tariff team', description: 'd', isSystem: false }),
+          Promise.resolve(where.name !== undefined ? null : { id: 7, name: 'Tariff team', description: 'd', isSystem: false, organizationId: 1 }),
         );
         resourcesRepo.find.mockResolvedValue([{ id: 10, code: 'TARIFF' }]);
         actionsRepo.find.mockResolvedValue(['TARIFF_VIEW', 'TARIFF_APPROVE'].map((code, i) => ({ id: i + 1, code, isActive: true })));

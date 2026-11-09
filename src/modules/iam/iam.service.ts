@@ -1,6 +1,6 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, EntityManager, In, Repository } from 'typeorm';
+import { DataSource, EntityManager, In, IsNull, Repository } from 'typeorm';
 import { Resource } from './entities/resource.entity';
 import { Policy, POLICY_TYPE_LABEL } from './entities/policy.entity';
 import { PolicyStatement } from './entities/policy-statement.entity';
@@ -23,6 +23,7 @@ import { SORT_ORDER } from '../../common/constants/sort.constants';
 import { ERROR_MESSAGES } from '../../common/constants/error-messages.constants';
 import { AUDIT_MODULE, AUDIT_ACTION } from '../../audit/audit.constants';
 import { POLICY_EFFECT } from './iam.constants';
+import { OrganizationContextService } from '../../common/organization-context/organization-context.service';
 
 // Every code that lets a role approve some workflow — what a role must keep while it is a configured approver.
 const WORKFLOW_APPROVE_CODES: ReadonlySet<string> = new Set(Object.values(APPROVE_ACTION_CODES).flat());
@@ -55,7 +56,16 @@ export class IamService {
     private readonly audit: AuditService,
     @InjectRepository(UserInlinePolicy) private readonly userInlinePolicies: Repository<UserInlinePolicy>,
     @InjectRepository(RoleInlinePolicy) private readonly roleInlinePolicies: Repository<RoleInlinePolicy>,
+    private readonly context: OrganizationContextService,
   ) {}
+
+  /** Same "organization-scoped, including the platform SUPER_ADMIN's own null case" posture as
+   *  RoleService.applyOrganizationFilter — see that method's own doc comment for why `=` would
+   *  silently never match a NULL column. */
+  private organizationWhere(): Record<string, unknown> {
+    const organizationId = this.context.getOrganizationId();
+    return organizationId === null ? { organizationId: IsNull() } : { organizationId };
+  }
 
   // ── Resource catalog bootstrap (idempotent, same pattern as ActionsService.ensureCriticalDefaults) ──
 
@@ -188,7 +198,14 @@ export class IamService {
   }
 
   async createPolicy(dto: CreatePolicyDto, actorId?: number): Promise<Policy> {
-    const existing = await this.policies.findOne({ where: { name: dto.name } });
+    const organizationId = this.context.getOrganizationId();
+    if (organizationId === null) {
+      throw new ForbiddenException('Creating a policy requires an organization context.');
+    }
+
+    // Uniqueness is organization-scoped (see the migration that replaced the old global unique index) —
+    // two different organizations may each have their own policy of the same name.
+    const existing = await this.policies.findOne({ where: { name: dto.name, organizationId } });
     if (existing) throw new ConflictException(ERROR_MESSAGES.POLICY_NAME_ALREADY_EXISTS);
 
     const resolvedStatements = await this.validateStatements(dto.statements);
@@ -200,11 +217,11 @@ export class IamService {
       // A deleted policy keeps its name reserved at the unique index; free it so the name is reusable.
       await releaseSoftDeletedUnique(manager, Policy, 'name', dto.name, { keepChars: 120 });
       const policy = await policyRepo.save(
-        policyRepo.create({ name: dto.name, description: dto.description }),
+        policyRepo.create({ name: dto.name, description: dto.description, organizationId }),
       );
 
       const statementRows = resolvedStatements.map((s) =>
-        statementRepo.create({ policyId: policy.id, resourceId: s.resourceId, effect: POLICY_EFFECT.ALLOW, actions: s.actions }),
+        statementRepo.create({ policyId: policy.id, resourceId: s.resourceId, effect: POLICY_EFFECT.ALLOW, actions: s.actions, organizationId }),
       );
       await statementRepo.save(statementRows);
 
@@ -227,13 +244,17 @@ export class IamService {
    */
   async updatePolicy(id: number, dto: UpdatePolicyDto, actorId?: number): Promise<Policy> {
     const policy = await this.policies.findOne({ where: { id } });
-    if (!policy) throw new NotFoundException(ERROR_MESSAGES.POLICY_NOT_FOUND);
+    // A policy belonging to a different organization is reported exactly like one that doesn't exist —
+    // never a 403, which would confirm its existence to someone who shouldn't know about it.
+    if (!policy || policy.organizationId !== this.context.getOrganizationId()) {
+      throw new NotFoundException(ERROR_MESSAGES.POLICY_NOT_FOUND);
+    }
 
     if (policy.isSystem) {
       throw new ForbiddenException('This policy is system-managed and cannot be edited.');
     }
 
-    const nameConflict = await this.policies.findOne({ where: { name: dto.name } });
+    const nameConflict = await this.policies.findOne({ where: { name: dto.name, ...this.organizationWhere() } });
     if (nameConflict && nameConflict.id !== id) throw new ConflictException(ERROR_MESSAGES.POLICY_NAME_ALREADY_EXISTS);
 
     const resolvedStatements = await this.validateStatements(dto.statements);
@@ -257,7 +278,7 @@ export class IamService {
 
       await statementRepo.delete({ policyId: id });
       const statementRows = resolvedStatements.map((s) =>
-        statementRepo.create({ policyId: id, resourceId: s.resourceId, effect: POLICY_EFFECT.ALLOW, actions: s.actions }),
+        statementRepo.create({ policyId: id, resourceId: s.resourceId, effect: POLICY_EFFECT.ALLOW, actions: s.actions, organizationId: policy.organizationId }),
       );
       await statementRepo.save(statementRows);
 
@@ -290,7 +311,11 @@ export class IamService {
   }
 
   async findAllPolicies(): Promise<Policy[]> {
-    return this.policies.find({ relations: { statements: { resource: true } }, order: { name: SORT_ORDER.ASC } });
+    return this.policies.find({
+      where: this.organizationWhere(),
+      relations: { statements: { resource: true } },
+      order: { name: SORT_ORDER.ASC },
+    });
   }
 
   async findOnePolicy(id: number, manager = this.dataSource.manager): Promise<Policy> {
@@ -298,7 +323,9 @@ export class IamService {
       where: { id },
       relations: { statements: { resource: true } },
     });
-    if (!policy) throw new NotFoundException(ERROR_MESSAGES.POLICY_NOT_FOUND);
+    if (!policy || policy.organizationId !== this.context.getOrganizationId()) {
+      throw new NotFoundException(ERROR_MESSAGES.POLICY_NOT_FOUND);
+    }
     return policy;
   }
 
@@ -309,7 +336,9 @@ export class IamService {
    */
   async removePolicy(id: number, actorId?: number): Promise<{ message: string }> {
     const policy = await this.policies.findOne({ where: { id } });
-    if (!policy) throw new NotFoundException(ERROR_MESSAGES.POLICY_NOT_FOUND);
+    if (!policy || policy.organizationId !== this.context.getOrganizationId()) {
+      throw new NotFoundException(ERROR_MESSAGES.POLICY_NOT_FOUND);
+    }
 
     if (policy.isSystem) {
       throw new ForbiddenException('This policy is system-managed and cannot be deleted.');
@@ -349,7 +378,10 @@ export class IamService {
    *  the Type filter's options come back in `meta`, so the client hardcodes neither. Attached-entities is a
    *  correlated subquery exposed as an alias (no join on the many side, so a page holds one row per policy). */
   async getPoliciesForRolePage(roleId: number, query: RolePoliciesQueryDto) {
-    if (!(await this.roles.exist({ where: { id: roleId } }))) throw new NotFoundException(ERROR_MESSAGES.ROLE_NOT_FOUND);
+    const role = await this.roles.findOne({ where: { id: roleId }, select: { id: true, organizationId: true } });
+    if (!role || role.organizationId !== this.context.getOrganizationId()) {
+      throw new NotFoundException(ERROR_MESSAGES.ROLE_NOT_FOUND);
+    }
 
     const qb = this.policies
       .createQueryBuilder('policy')
@@ -435,10 +467,21 @@ export class IamService {
   }
 
   async attachPolicyToRole(roleId: number, policyId: number, actorId?: number): Promise<void> {
+    const contextOrganizationId = this.context.getOrganizationId();
     const role = await this.roles.findOne({ where: { id: roleId } });
-    if (!role) throw new NotFoundException(ERROR_MESSAGES.ROLE_NOT_FOUND);
+    if (!role || role.organizationId !== contextOrganizationId) {
+      throw new NotFoundException(ERROR_MESSAGES.ROLE_NOT_FOUND);
+    }
     const policy = await this.policies.findOne({ where: { id: policyId } });
-    if (!policy) throw new NotFoundException(ERROR_MESSAGES.POLICY_NOT_FOUND);
+    if (!policy || policy.organizationId !== contextOrganizationId) {
+      throw new NotFoundException(ERROR_MESSAGES.POLICY_NOT_FOUND);
+    }
+    // Both already match the caller's own context above, which transitively guarantees they match
+    // each other too — stated explicitly (rather than left implicit) since this is the one place a
+    // Role and a Policy from two different organizations could otherwise be cross-wired together.
+    if (role.organizationId !== policy.organizationId) {
+      throw new ForbiddenException('A role and a policy from different organizations cannot be attached together.');
+    }
 
     // SUPER_ADMIN is a system-administration role: a policy that lists business-approval codes can never be attached
     // to it (the resolver would ignore them anyway — refusing says so instead of pretending the grant works).
@@ -450,7 +493,7 @@ export class IamService {
     if (existing) return; // already attached — idempotent, not an error
 
     try {
-      await this.rolePolicies.save(this.rolePolicies.create({ roleId, policyId }));
+      await this.rolePolicies.save(this.rolePolicies.create({ roleId, policyId, organizationId: role.organizationId }));
     } catch (err) {
       // An identical attach committed between the check above and this insert (a double-click, or two
       // admins at once). The unique (roleId, policyId) index is the real arbiter: the policy IS attached
@@ -468,6 +511,11 @@ export class IamService {
   }
 
   async detachPolicyFromRole(roleId: number, policyId: number, actorId?: number): Promise<void> {
+    const role0 = await this.roles.findOne({ where: { id: roleId }, select: { id: true, organizationId: true } });
+    if (!role0 || role0.organizationId !== this.context.getOrganizationId()) {
+      throw new NotFoundException(ERROR_MESSAGES.ROLE_NOT_FOUND);
+    }
+
     const existing = await this.rolePolicies.findOne({ where: { roleId, policyId } });
     if (!existing) return; // already detached — idempotent, not an error
 
@@ -712,7 +760,9 @@ export class IamService {
         policy.isSystem = true;
         policy = await this.policies.save(policy);
       }
-      await this.rolePolicies.save(this.rolePolicies.create({ roleId: role.id, policyId: policy.id }));
+      // SUPER_ADMIN's own role/policy pairing is platform-level (organization_id NULL on both sides),
+      // same as `role.organizationId` resolved earlier in this method.
+      await this.rolePolicies.save(this.rolePolicies.create({ roleId: role.id, policyId: policy.id, organizationId: role.organizationId ?? null }));
       this.logger.log(
         `ensureAdminPolicyGrants: created "${policyName}" and attached it to "${role.roleName}" — no Policy ` +
           'existed yet (expected on a fresh install, before the role has any legacy grants for the one-time ' +

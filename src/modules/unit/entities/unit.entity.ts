@@ -23,6 +23,10 @@ export enum UnitStatus {
 
 @Entity('units')
 export class Unit extends BaseEntity {
+  // Denormalized from the owning Property/Community — see Community's own doc comment.
+  @Column({ name: 'organization_id', type: 'int' })
+  organizationId!: number;
+
   @ManyToOne(() => Property, (property) => property.units, { nullable: false })
   @JoinColumn({ name: 'property_id' })
   property!: Property;

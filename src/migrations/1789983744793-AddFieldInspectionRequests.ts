@@ -1,29 +1,11 @@
 import { MigrationInterface, QueryRunner } from "typeorm";
 
-/**
- * Adds the Field Inspection feature's two tables: `field_inspection_requests` (one row per
- * submitted "Request Field Inspection" form — property, inspection details, assignee, notify
- * list, status) and `field_inspection_request_readings` (many-to-many join to `meter_readings`,
- * the specific anomalous readings a request covers — once a reading is linked here it's excluded
- * from being selectable again, the real equivalent of the Template's in-memory "locked" rule).
- * Also adds `roles.can_be_field_inspector` (mirrors the existing `can_be_reporting_manager` flag)
- * so "Assign To" targets real, role-eligible staff users rather than a fictional Team concept.
- *
- * Foreign keys added WITHOUT explicit CONSTRAINT names, matching AddBillRunTables's own established
- * reasoning (avoids a synchronize:true dev-setting name collision — see that migration's comment).
- * Idempotent against re-running.
- */
+
 export class AddFieldInspectionRequests1789983744793 implements MigrationInterface {
     name = 'AddFieldInspectionRequests1789983744793'
 
     public async up(queryRunner: QueryRunner): Promise<void> {
-        // Fresh install: `roles` doesn't exist yet (migrations run before `synchronize: true`
-        // does — see 1788342228029's own comment for the confirmed cold-start evidence), which
-        // would fail the ALTER TABLE roles below outright, and the FKs further down reference
-        // `properties`/`users`/`meter_readings`, equally absent at this point. Safe to skip
-        // entirely: `synchronize` creates `roles` (with `can_be_field_inspector` already on it from
-        // the current Role entity) and both new tables (from the current FieldInspectionRequest/
-        // FieldInspectionRequestReading entity definitions, FKs included) right after migrations finish.
+
         if (!(await queryRunner.hasTable('roles'))) return;
 
         const roleColumns = await queryRunner.query(

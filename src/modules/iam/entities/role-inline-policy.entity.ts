@@ -23,6 +23,10 @@ import { RoleInlinePolicyStatement } from './role-inline-policy-statement.entity
 @Entity('role_inline_policies')
 @Index(['roleId', 'name'], { unique: true })
 export class RoleInlinePolicy extends BaseEntity {
+  // Mirrors the owning Role's organization_id (nullable only for the SUPER_ADMIN role's own case).
+  @Column({ name: 'organization_id', type: 'int', nullable: true })
+  organizationId?: number | null;
+
   @Column()
   roleId!: number;
 

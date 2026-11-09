@@ -1,4 +1,4 @@
-import { AfterLoad, Column, Entity, OneToMany } from 'typeorm';
+import { AfterLoad, Column, Entity, Index, OneToMany } from 'typeorm';
 import { BaseEntity } from '../../../common/entities/base.entity';
 import { PolicyStatement } from './policy-statement.entity';
 
@@ -11,9 +11,20 @@ export const POLICY_TYPE_LABEL = { system: 'System', custom: 'Custom' } as const
  * own "can't delete a role with assigned users" precedent) rather than silently cascading, since a
  * silent cascade here would silently revoke access from every role holding it.
  */
+// Organization-scoped uniqueness: two different organizations may each have their own policy named
+// the same thing (e.g. "Finance Manager") — only `organization_id IS NULL` (the one SUPER_ADMIN
+// system policy) is exempt from colliding with a real organization's policy of the same name, since
+// NULL never equals NULL in a unique index. Replaces the old plain `unique: true` on `name` alone.
 @Entity('policies')
+@Index(['organizationId', 'name'], { unique: true })
 export class Policy extends BaseEntity {
-  @Column({ unique: true, length: 150 })
+  // NULL reserved exclusively for the one SUPER_ADMIN system-managed policy (see
+  // IamService.ensureAdminPolicyGrants) — every organization-scoped policy carries a real
+  // organization_id.
+  @Column({ name: 'organization_id', type: 'int', nullable: true })
+  organizationId?: number | null;
+
+  @Column({ length: 150 })
   name!: string;
 
   @Column({ nullable: true, length: 500 })

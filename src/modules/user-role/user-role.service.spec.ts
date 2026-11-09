@@ -8,6 +8,7 @@ import {
 import { UserRoleService } from './user-role.service';
 import { UserRole } from './entities/user-role.entity';
 import { Role } from '../role/entities/role.entity';
+import { User } from '../user/entities/user.entity';
 
 // Isolated unit tests for UserRoleService's write paths — the multi-role assignment model: a user holds
 // MANY roles, roles are only ever added (idempotently) or revoked one at a time, and the business rules on
@@ -123,8 +124,18 @@ function arrange(initialRows: Row[], userStates: Record<number, Partial<UserStat
     // `where: { id: In([...]) }` — TypeORM's FindOperator exposes the list as `.value`.
     find: jest.fn(async ({ where }: { where: { id: { value: number[] } } }) => ROLE_TABLE.filter((r) => where.id.value.includes(r.id))),
   };
+  // Every test user here is organization-less (undefined, normalized to null the same way a role's
+  // own unset organizationId is) — none of these tests concern cross-organization behavior, which has
+  // its own dedicated tests below.
+  const txUsers = {
+    findOne: jest.fn(async ({ where }: { where: { id: number } }): Promise<{ id: number; organizationId: number | undefined }> =>
+      ({ id: where.id, organizationId: undefined }),
+    ),
+  };
   const txManager = {
-    getRepository: jest.fn((entity: unknown) => (entity === UserRole ? txUserRoles : entity === Role ? txRoles : undefined)),
+    getRepository: jest.fn((entity: unknown) =>
+      entity === UserRole ? txUserRoles : entity === Role ? txRoles : entity === User ? txUsers : undefined,
+    ),
   };
   // EntityManager.transaction commits when its callback resolves and rolls back when it throws —
   // modelled by restoring the table on a throw.
@@ -147,6 +158,7 @@ function arrange(initialRows: Row[], userStates: Record<number, Partial<UserStat
     txManager,
     txUserRoles,
     txRoles,
+    txUsers,
     transaction,
     events,
     lockQueries,
@@ -462,6 +474,48 @@ describe('UserRoleService.addRolesToUser', () => {
       expect(t.audit.record).not.toHaveBeenCalled();
     });
   });
+
+  describe('cross-organization assignment', () => {
+    const ORG_A_ROLE = { id: 20, roleName: 'ORG_A_FINANCE', organizationId: 1 };
+    const ORG_B_ROLE = { id: 21, roleName: 'ORG_B_FINANCE', organizationId: 2 };
+
+    it('refuses to assign a role belonging to a different organization than the target user, and writes nothing', async () => {
+      const t = arrange([], { 55: {} });
+      t.txRoles.findOne.mockImplementation(({ where }: { where: { id?: number } }) =>
+        Promise.resolve([ORG_A_ROLE, ORG_B_ROLE].find((r) => r.id === where.id) ?? null),
+      );
+      t.txRoles.find.mockResolvedValue([ORG_A_ROLE, ORG_B_ROLE]);
+      t.txUsers.findOne.mockResolvedValue({ id: 55, organizationId: 1 });
+
+      await expect(t.service.addRolesToUser(55, [ORG_B_ROLE.id], undefined, STAFF)).rejects.toThrow(
+        /ORG_B_FINANCE" belongs to a different organization/,
+      );
+      expect(t.txUserRoles.save).not.toHaveBeenCalled();
+      expect(t.audit.record).not.toHaveBeenCalled();
+    });
+
+    it('allows assigning a role belonging to the SAME organization as the target user', async () => {
+      const t = arrange([], { 55: {} });
+      t.txRoles.findOne.mockImplementation(({ where }: { where: { id?: number } }) =>
+        Promise.resolve([ORG_A_ROLE, ORG_B_ROLE].find((r) => r.id === where.id) ?? null),
+      );
+      t.txRoles.find.mockResolvedValue([ORG_A_ROLE]);
+      t.txUsers.findOne.mockResolvedValue({ id: 55, organizationId: 1 });
+
+      const added = await t.service.addRolesToUser(55, [ORG_A_ROLE.id], undefined, STAFF);
+
+      expect(added).toEqual([ORG_A_ROLE.id]);
+    });
+
+    it('a SUPER_ADMIN actor granting SUPER_ADMIN (organization_id NULL) to a tenant-scoped user is never treated as a cross-organization mismatch', async () => {
+      const t = arrange([], { 55: {} });
+      t.txUsers.findOne.mockResolvedValue({ id: 55, organizationId: 1 });
+
+      const added = await t.service.addRolesToUser(55, [SUPER_ADMIN.id], undefined, ROOT);
+
+      expect(added).toEqual([SUPER_ADMIN.id]);
+    });
+  });
 });
 
 describe('UserRoleService.removeRoleFromUser', () => {
@@ -775,6 +829,61 @@ describe('UserRoleService.removeRoleFromUser', () => {
 
     expect(t.transaction).not.toHaveBeenCalled();
     expect(t.audit.record).toHaveBeenCalledWith(expect.any(Object), t.txManager);
+  });
+
+  describe('last-active-ADMIN-per-organization protection', () => {
+    // Org 1's own "ADMIN" role — identified by name (canonicalized), scoped to organization_id 1, per
+    // lockActiveOrgAdminHolders's own documented, deliberately interim convention. FINANCE has no
+    // organization at all and must never trigger this check.
+    const ORG_ADMIN_ROLE = { id: 50, roleName: 'ADMIN', organizationId: 1 };
+
+    function arrangeWithOrgAdmin(rows: Row[]) {
+      const t = arrange(rows);
+      t.txRoles.findOne.mockImplementation(({ where }: { where: { id?: number } }) =>
+        Promise.resolve([ORG_ADMIN_ROLE, ...ROLE_TABLE].find((r) => r.id === where.id) ?? null),
+      );
+      // lockActiveOrgAdminHolders queries `where: { organizationId }` — a different shape than the
+      // default mock (which expects an `id: In([...])` FindOperator) — so this scenario needs its own.
+      (t.txRoles.find as jest.Mock).mockImplementation(({ where }: { where: { organizationId?: number } }) =>
+        Promise.resolve([ORG_ADMIN_ROLE, ...ROLE_TABLE].filter((r) => 'organizationId' in r && r.organizationId === where.organizationId)),
+      );
+      return t;
+    }
+
+    it('refuses to remove the last active holder of an organization\'s own ADMIN role', async () => {
+      // User 101 is the ONLY holder of ORG_ADMIN_ROLE anywhere.
+      const t = arrangeWithOrgAdmin([
+        { id: 210, userId: 101, roleId: ORG_ADMIN_ROLE.id },
+        { id: 211, userId: 101, roleId: BILLING.id },
+      ]);
+
+      await expect(t.service.removeRoleFromUser(101, ORG_ADMIN_ROLE.id, undefined, ROOT)).rejects.toThrow(
+        'Cannot remove the last active ADMIN of this organization — at least one active user must hold this role.',
+      );
+    });
+
+    it('allows removing it while another active holder remains in the SAME organization', async () => {
+      // Both user 100 and user 101 hold ORG_ADMIN_ROLE — removing it from one still leaves the other.
+      const t = arrangeWithOrgAdmin([
+        { id: 200, userId: 100, roleId: ORG_ADMIN_ROLE.id },
+        { id: 201, userId: 100, roleId: FINANCE.id },
+        { id: 210, userId: 101, roleId: ORG_ADMIN_ROLE.id },
+        { id: 211, userId: 101, roleId: BILLING.id },
+      ]);
+
+      await expect(t.service.removeRoleFromUser(100, ORG_ADMIN_ROLE.id, undefined, ROOT)).resolves.toBe(true);
+    });
+
+    it('never applies to a role with no organization at all (e.g. FINANCE), even for its own last holder', async () => {
+      // User 100 is the only holder of FINANCE (no organization) — removing it must never consult the
+      // org-admin lock, only the ordinary "no dedicated FINANCE protection exists" path.
+      const t = arrangeWithOrgAdmin([
+        { id: 200, userId: 100, roleId: ORG_ADMIN_ROLE.id },
+        { id: 201, userId: 100, roleId: FINANCE.id },
+      ]);
+
+      await expect(t.service.removeRoleFromUser(100, FINANCE.id, undefined, ROOT)).resolves.toBe(true);
+    });
   });
 });
 

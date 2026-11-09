@@ -16,6 +16,11 @@ export enum PropertyType {
 
 @Entity('properties')
 export class Property extends BaseEntity {
+  // Denormalized from the owning Community — see Community's own doc comment on why every tenant-
+  // owned table carries this directly rather than only being reachable via a join.
+  @Column({ name: 'organization_id', type: 'int' })
+  organizationId!: number;
+
   @ManyToOne(() => Community, (community) => community.properties, { nullable: false })
   @JoinColumn({ name: 'community_id' })
   community!: Community;

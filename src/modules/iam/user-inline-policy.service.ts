@@ -62,7 +62,7 @@ export class UserInlinePolicyService {
 
   async create(userId: number, dto: CreatePolicyDto, actorId?: number): Promise<UserInlinePolicy> {
     this.assertNotOwnAccount(userId, actorId);
-    await this.assertUserExists(userId);
+    const user = await this.getUserOrThrow(userId);
 
     const name = dto.name.trim();
     if (!name) throw new BadRequestException(ERROR_MESSAGES.POLICY_NAME_REQUIRED);
@@ -78,7 +78,11 @@ export class UserInlinePolicyService {
         const policyRepo = manager.getRepository(UserInlinePolicy);
         const statementRepo = manager.getRepository(UserInlinePolicyStatement);
 
-        const policy = await policyRepo.save(policyRepo.create({ userId, name, description: dto.description }));
+        // Mirrors the owning User's organizationId — never a cross-organization risk the way attaching
+        // a shared Policy is (see IamService.attachPolicyToRole): there is no "attach" step here.
+        const policy = await policyRepo.save(
+          policyRepo.create({ userId, name, description: dto.description, organizationId: user.organizationId ?? null }),
+        );
         await statementRepo.save(
           resolved.map((s) =>
             statementRepo.create({ policyId: policy.id, resourceId: s.resourceId, effect: POLICY_EFFECT.ALLOW, actions: s.actions }),
@@ -221,5 +225,13 @@ export class UserInlinePolicyService {
   private async assertUserExists(userId: number): Promise<void> {
     const user = await this.users.findOne({ where: { id: userId }, select: { id: true } });
     if (!user) throw new NotFoundException(ERROR_MESSAGES.USER_NOT_FOUND);
+  }
+
+  /** Same existence check as assertUserExists, but also returns the user's own organizationId so a
+   *  newly-created inline policy can mirror it. */
+  private async getUserOrThrow(userId: number): Promise<Pick<User, 'id' | 'organizationId'>> {
+    const user = await this.users.findOne({ where: { id: userId }, select: { id: true, organizationId: true } });
+    if (!user) throw new NotFoundException(ERROR_MESSAGES.USER_NOT_FOUND);
+    return user;
   }
 }

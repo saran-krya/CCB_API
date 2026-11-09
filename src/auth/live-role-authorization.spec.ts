@@ -94,6 +94,7 @@ describe('Live role authorization — the same token, re-evaluated against curre
       // This spec never exercises a role's OWN inline policies — only the user's — so an always-empty
       // mock preserves every existing assertion in this file exactly.
       { find: () => Promise.resolve([]) } as never,
+      { getOrganizationId: () => null } as never,
     );
     rolePermissions = new RolePermissionsService(legacyTable as never, {} as never, {} as never, {} as never, {} as never, {} as never, {} as never, {} as never, iam);
 

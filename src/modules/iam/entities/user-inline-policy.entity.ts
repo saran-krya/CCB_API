@@ -19,6 +19,10 @@ import { UserInlinePolicyStatement } from './user-inline-policy-statement.entity
 @Entity('user_inline_policies')
 @Index(['userId', 'name'], { unique: true })
 export class UserInlinePolicy extends BaseEntity {
+  // Mirrors the owning User's organization_id (nullable only for a SUPER_ADMIN user's own case).
+  @Column({ name: 'organization_id', type: 'int', nullable: true })
+  organizationId?: number | null;
+
   @Column()
   userId!: number;
 

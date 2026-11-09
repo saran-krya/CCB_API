@@ -14,6 +14,13 @@ import { BaseEntity } from "../../../common/entities/base.entity";
 // virtuals (see UserWithRoles), NOT this entity's own columns or relations.
 @Entity("users")
 export class User extends BaseEntity {
+  // NULL = platform-level staff (SUPER_ADMIN only) — every tenant-scoped user belongs to exactly one
+  // Organization, resolved server-side (JwtStrategy re-reads it live, same as roleIds) and never
+  // accepted from the client. Plain column, no @ManyToOne relation, to avoid a circular import with
+  // the organization module (same convention as Customer.registrationDemandId elsewhere).
+  @Column({ name: "organization_id", type: "int", nullable: true })
+  organizationId?: number | null;
+
   @ManyToOne(
     () => User,
     {

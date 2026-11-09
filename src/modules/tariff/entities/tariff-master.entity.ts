@@ -4,6 +4,9 @@ import { TariffVersion } from './tariff-version.entity';
 
 @Entity('tariff_masters')
 export class TariffMaster extends BaseEntity {
+  @Column({ name: 'organization_id', type: 'int' })
+  organizationId!: number;
+
   @Column({ name: 'business_code', type: 'varchar', length: 20, unique: true, nullable: true })
   businessCode?: string | null;
 

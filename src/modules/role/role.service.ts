@@ -6,7 +6,8 @@ import {
 } from '@nestjs/common';
 
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, IsNull, Repository, SelectQueryBuilder } from 'typeorm';
+import { OrganizationContextService } from '../../common/organization-context/organization-context.service';
 
 import { AuditService } from '../../audit/audit.service';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
@@ -81,12 +82,34 @@ export class RoleService {
     // module just for an existence check, and the risk of a circular module dependency that would
     // bring (Role -> Workflow -> ... -> Role already depends on Role the other way).
     private readonly dataSource: DataSource,
+
+    private readonly context: OrganizationContextService,
   ) { }
+
+  /** Every tenant-facing Role query is scoped to the CALLER's own organization — including the one
+   *  platform SUPER_ADMIN, whose own context is `null` and who therefore only ever sees the one role
+   *  that also has `organization_id IS NULL` (its own) through this ordinary API, never another
+   *  organization's roles. Broader platform-level visibility is an explicit, separately-audited
+   *  Support Access concern, never a side effect of widening this filter. `=` would silently never
+   *  match a NULL column in MySQL, so the NULL case is its own branch rather than one bound parameter. */
+  private applyOrganizationFilter(qb: SelectQueryBuilder<Role>, alias = 'role'): void {
+    const organizationId = this.context.getOrganizationId();
+    if (organizationId === null) {
+      qb.andWhere(`${alias}.organization_id IS NULL`);
+    } else {
+      qb.andWhere(`${alias}.organization_id = :organizationId`, { organizationId });
+    }
+  }
 
   async create(
     dto: CreateRoleDto,
     actorId?: number,
   ) {
+    const organizationId = this.context.getOrganizationId();
+    if (organizationId === null) {
+      throw new ForbiddenException('Creating a role requires an organization context.');
+    }
+
     const roleName = dto.roleName.trim();
     if (isReservedRoleName(roleName)) {
       throw new ForbiddenException(
@@ -94,10 +117,13 @@ export class RoleService {
       );
     }
 
+    // Uniqueness is organization-scoped (see the migration that replaced the old global unique index) —
+    // two different organizations may each have their own role of the same name.
     const existingRole =
       await this.roles.findOne({
         where: {
           roleName,
+          organizationId,
         },
       });
 
@@ -116,6 +142,7 @@ export class RoleService {
       canBeReportingManager:
         dto.canBeReportingManager ??
         false,
+      organizationId,
     });
 
     // A deleted role keeps its name reserved at the database index; release it so the name is reusable.
@@ -148,6 +175,7 @@ export class RoleService {
       .leftJoinAndSelect("role.userCategory", "userCategory")
       .addSelect(ASSIGNED_USER_COUNT_SQL, "assigned_user_count")
       .addSelect(POLICY_COUNT_SQL, "policy_count");
+    this.applyOrganizationFilter(qb);
 
     const term = query["search.query"]?.trim();
     if (term) {
@@ -266,6 +294,7 @@ export class RoleService {
     const qb = this.roles
       .createQueryBuilder('role')
       .leftJoinAndSelect('role.userCategory', 'userCategory');
+    this.applyOrganizationFilter(qb);
 
     if (userCategoryId) {
       qb.andWhere('role.userCategoryId = :userCategoryId', { userCategoryId });
@@ -306,6 +335,7 @@ export class RoleService {
       .createQueryBuilder('role')
       .leftJoinAndSelect('role.userCategory', 'userCategory')
       .addSelect(ASSIGNED_USER_COUNT_SQL, 'assigned_user_count');
+    this.applyOrganizationFilter(qb);
 
     const term = query['search.query']?.trim();
     if (term) {
@@ -349,12 +379,14 @@ export class RoleService {
   }
 
   async getRoleFilter() {
-    const roles = await this.roles
+    const qb = this.roles
       .createQueryBuilder("role")
       .select([
         "role.id",
         "role.roleName",
-      ])
+      ]);
+    this.applyOrganizationFilter(qb);
+    const roles = await qb
       .orderBy(
         "role.roleName",
         SORT_ORDER.ASC,
@@ -384,7 +416,9 @@ export class RoleService {
         },
       });
 
-    if (!role) {
+    // A role belonging to a different organization is reported exactly like one that doesn't exist —
+    // never a 403 (which would confirm its existence to someone who shouldn't know about it).
+    if (!role || role.organizationId !== this.context.getOrganizationId()) {
       throw new NotFoundException(
         ERROR_MESSAGES.ROLE_NOT_FOUND,
       );
@@ -418,7 +452,7 @@ export class RoleService {
     // explicit `relations` needed here (same reason RoleLists' own leftJoinAndSelect would be
     // redundant, if this read ever switched to a query builder).
     const role = await this.roles.findOne({ where: { id } });
-    if (!role) {
+    if (!role || role.organizationId !== this.context.getOrganizationId()) {
       throw new NotFoundException(ERROR_MESSAGES.ROLE_NOT_FOUND);
     }
 
@@ -483,6 +517,7 @@ export class RoleService {
           roleName:
             requestedName ??
             role.roleName,
+          organizationId: role.organizationId === null ? IsNull() : role.organizationId,
         },
       });
 
