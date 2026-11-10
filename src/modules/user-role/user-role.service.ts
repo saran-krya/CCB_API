@@ -11,7 +11,6 @@ import {
 } from '../../common/security/actor';
 import { UserRole } from './entities/user-role.entity';
 import { Role } from '../role/entities/role.entity';
-import { User } from '../user/entities/user.entity';
 import { AuditService } from '../../audit/audit.service';
 import { MYSQL_ERROR_CODE, LOCK_MODE } from '../../common/constants/database.constants';
 import { SORT_ORDER } from '../../common/constants/sort.constants';
@@ -22,13 +21,6 @@ import { ACTOR_KIND } from '../../common/constants/auth.constants';
 // Same MySQL duplicate-key idiom MeterService/IngestionService use for their own unique-index races.
 const isDuplicateKeyError = (err: unknown): boolean =>
   /duplicate entry/i.test(err instanceof Error ? err.message : '') || (err as { code?: string })?.code === MYSQL_ERROR_CODE.DUP_ENTRY;
-
-// Identical to RoleService's own canonicalRoleName — duplicated rather than imported to avoid a
-// circular import (RoleService already depends on UserRoleService). See that file's own doc comment
-// for why this normalization exists (MySQL's collation already compares role names case/accent-
-// insensitively, so a look-alike must be treated the same way here).
-const canonicalRoleName = (name: string): string =>
-  name.normalize('NFKD').replace(/[\p{M}\p{Cc}\p{Cf}]/gu, '').trim().toUpperCase();
 
 /**
  * The SINGLE source of truth for "which roles does this user hold" — `users.role_id` no longer
@@ -247,34 +239,6 @@ export class UserRoleService {
     return rows.map((row) => row.userId);
   }
 
-  /** Per-organization mirror of lockActiveSuperAdminHolders — the ids of every ACTIVE, non-deleted
-   *  holder of ONE organization's own "ADMIN" role, read with a pessimistic write lock inside `tx`.
-   *
-   *  INTERIM, name-based identification: there is no dedicated "this is the organization's bootstrap
-   *  admin role" flag yet (that lands with the actual Organization-onboarding/role-bootstrap flow,
-   *  not yet built) — a role is treated as this organization's admin role when its name canonicalizes
-   *  to "ADMIN", scoped to one organization_id (never a global match the way SUPER_ADMIN is). This is
-   *  a deliberate, documented convention to harden into a persisted flag once that bootstrap flow
-   *  exists, not a permanent design. */
-  async lockActiveOrgAdminHolders(tx: EntityManager, organizationId: number): Promise<number[]> {
-    const roles = await tx.getRepository(Role).find({
-      where: { organizationId },
-      select: { id: true, roleName: true },
-      loadEagerRelations: false,
-    });
-    const adminRole = roles.find((role) => canonicalRoleName(role.roleName) === canonicalRoleName('ADMIN'));
-    if (!adminRole) return [];
-
-    const rows = await tx
-      .getRepository(UserRole)
-      .createQueryBuilder('ur')
-      .innerJoin('ur.user', 'user', 'user.active = :active AND user.deletedAt IS NULL', { active: true })
-      .where('ur.roleId = :roleId', { roleId: adminRole.id })
-      .setLock(LOCK_MODE.PESSIMISTIC_WRITE)
-      .getMany();
-    return rows.map((row) => row.userId);
-  }
-
   /** Refuses (403) an operation that would leave the system with no active SUPER_ADMIN: if `userId` is
    *  currently an active SUPER_ADMIN and nobody else is, they cannot be deleted, deactivated, demoted or
    *  have their sign-in disabled. Must run inside the same transaction as the change it guards. */
@@ -283,22 +247,6 @@ export class UserRoleService {
     if (holders.includes(userId) && !holders.some((holder) => holder !== userId)) {
       throw new ForbiddenException(
         `Cannot ${action} the last active SUPER_ADMIN — at least one active user must hold this role.`,
-      );
-    }
-  }
-
-  /** Per-organization mirror of assertNotLastActiveSuperAdmin — if `userId` is currently an active
-   *  holder of their OWN organization's "ADMIN" role (see lockActiveOrgAdminHolders's own doc comment
-   *  on how that role is identified today) and nobody else in that organization is, they cannot be
-   *  deleted, deactivated or demoted. A user with no organization (the platform SUPER_ADMIN) is never
-   *  subject to this — there is no organization to check. Must run inside the same transaction as the
-   *  change it guards. */
-  async assertNotLastActiveOrgAdmin(userId: number, organizationId: number | null, tx: EntityManager, action: string): Promise<void> {
-    if (organizationId === null) return;
-    const holders = await this.lockActiveOrgAdminHolders(tx, organizationId);
-    if (holders.includes(userId) && !holders.some((holder) => holder !== userId)) {
-      throw new ForbiddenException(
-        `Cannot ${action} the last active ADMIN of this organization — at least one active user must hold this role.`,
       );
     }
   }
@@ -333,33 +281,15 @@ export class UserRoleService {
       const missing = requested.filter((roleId) => !heldRoleIds.includes(roleId));
       if (missing.length === 0) return [];
 
-      const involved = await tx.getRepository(Role).find({
-        where: { id: In([...heldRoleIds, ...missing]) },
-        select: { id: true, roleName: true, organizationId: true },
-        loadEagerRelations: false,
-      });
-
       if (!isSuperAdminActor(actor)) {
+        const involved = await tx.getRepository(Role).find({
+          where: { id: In([...heldRoleIds, ...missing]) },
+          select: { id: true, roleName: true },
+          loadEagerRelations: false,
+        });
         const superAdmin = involved.find((role) => role.roleName === ROLES.SUPER_ADMIN);
         if (superAdmin && missing.includes(superAdmin.id)) throw new ForbiddenException(SUPER_ADMIN_ASSIGN_MESSAGE);
         if (superAdmin) throw new ForbiddenException(SUPER_ADMIN_MODIFY_MESSAGE);
-      }
-
-      // A role may only be granted to a user of the SAME organization — SUPER_ADMIN (organization_id
-      // NULL) is exempt from this check entirely, since it's already refused above for anyone but a
-      // SUPER_ADMIN actor, and a SUPER_ADMIN actor granting their own role to someone is a distinct,
-      // already-covered rule, not a cross-organization concern.
-      const targetUser = await tx.getRepository(User).findOne({
-        where: { id: userId },
-        select: { id: true, organizationId: true },
-        loadEagerRelations: false,
-      });
-      const targetOrganizationId = targetUser?.organizationId ?? null;
-      const crossOrgRole = involved.find(
-        (role) => missing.includes(role.id) && role.roleName !== ROLES.SUPER_ADMIN && (role.organizationId ?? null) !== targetOrganizationId,
-      );
-      if (crossOrgRole) {
-        throw new ForbiddenException(`Role "${crossOrgRole.roleName}" belongs to a different organization and cannot be assigned to this user.`);
       }
 
       if (actor.kind === ACTOR_KIND.USER && actor.id === userId) {
@@ -423,21 +353,12 @@ export class UserRoleService {
 
       const role = await tx.getRepository(Role).findOne({
         where: { id: roleId },
-        select: { id: true, roleName: true, organizationId: true },
+        select: { id: true, roleName: true },
         loadEagerRelations: false,
       });
       const removesSuperAdmin = role?.roleName === ROLES.SUPER_ADMIN;
-      // Per-organization mirror of SUPER_ADMIN's own protection — see lockActiveOrgAdminHolders's own
-      // doc comment for the (deliberately interim, name-based) way "this organization's admin role" is
-      // identified today. `?? null` normalizes a column that came back unset the same as a real NULL —
-      // only a role with a genuine, real organization_id is ever treated as an organization's own
-      // admin role, never one with no organization at all.
-      const roleOrganizationId = role?.organizationId ?? null;
-      const removesOrgAdmin =
-        role !== null && roleOrganizationId !== null && canonicalRoleName(role.roleName) === canonicalRoleName('ADMIN');
 
       const activeSuperAdminHolders = removesSuperAdmin ? await this.lockActiveSuperAdminHolders(tx) : [];
-      const activeOrgAdminHolders = removesOrgAdmin ? await this.lockActiveOrgAdminHolders(tx, roleOrganizationId!) : [];
       const held = await this.lockRowsOfUser(repo, userId);
 
       if (!held.some((row) => row.roleId === roleId)) return false;
@@ -456,13 +377,6 @@ export class UserRoleService {
         !activeSuperAdminHolders.some((holder) => holder !== userId)
       ) {
         throw new ForbiddenException('Cannot remove the last active SUPER_ADMIN — at least one active user must hold this role.');
-      }
-      if (
-        removesOrgAdmin &&
-        activeOrgAdminHolders.includes(userId) &&
-        !activeOrgAdminHolders.some((holder) => holder !== userId)
-      ) {
-        throw new ForbiddenException('Cannot remove the last active ADMIN of this organization — at least one active user must hold this role.');
       }
 
       await repo.delete({ userId, roleId });

@@ -31,10 +31,6 @@ export enum BillStatus {
 @Index('IDX_bills_bill_run_unit', ['billRunId', 'unitId'], { unique: true })
 @Index('IDX_bills_property', ['propertyId'])
 export class Bill extends BaseEntity {
-  // Denormalized from the owning Property/Unit/Customer.
-  @Column({ name: 'organization_id', type: 'int' })
-  organizationId!: number;
-
   @Column({ name: 'business_code', type: 'varchar', length: 20, unique: true, nullable: true })
   businessCode?: string | null;
 

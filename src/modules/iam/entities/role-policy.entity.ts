@@ -11,14 +11,6 @@ import { Policy } from './policy.entity';
 @Entity('role_policies')
 @Index(['roleId', 'policyId'], { unique: true })
 export class RolePolicy extends BaseEntity {
-  // Mirrors the organization_id of both sides (nullable only because the SUPER_ADMIN role/policy
-  // pairing is itself NULL) — kept directly on the join row, not just reachable via Role/Policy, so
-  // service-layer attach logic can assert role.organizationId === policy.organizationId before
-  // saving without an extra join, preventing a Role in one organization from ever being attached to
-  // a Policy belonging to a different one.
-  @Column({ name: 'organization_id', type: 'int', nullable: true })
-  organizationId?: number | null;
-
   @Column()
   roleId!: number;
 

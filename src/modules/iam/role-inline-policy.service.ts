@@ -70,7 +70,7 @@ export class RoleInlinePolicyService {
   }
 
   async create(roleId: number, dto: CreatePolicyDto, actorId?: number): Promise<RoleInlinePolicy> {
-    const role = await this.getRoleOrThrow(roleId);
+    await this.assertRoleExists(roleId);
     await this.assertNotOwnRole(roleId, actorId);
 
     const name = dto.name.trim();
@@ -87,12 +87,7 @@ export class RoleInlinePolicyService {
         const policyRepo = manager.getRepository(RoleInlinePolicy);
         const statementRepo = manager.getRepository(RoleInlinePolicyStatement);
 
-        // Mirrors the owning Role's organizationId — this policy belongs to that role alone, so it is
-        // never independently scoped, and never a cross-organization risk the way attaching a shared
-        // Policy is (see IamService.attachPolicyToRole): there is no "attach" step to validate here.
-        const policy = await policyRepo.save(
-          policyRepo.create({ roleId, name, description: dto.description, organizationId: role.organizationId ?? null }),
-        );
+        const policy = await policyRepo.save(policyRepo.create({ roleId, name, description: dto.description }));
         await statementRepo.save(
           resolved.map((s) =>
             statementRepo.create({ policyId: policy.id, resourceId: s.resourceId, effect: POLICY_EFFECT.ALLOW, actions: s.actions }),
@@ -261,13 +256,5 @@ export class RoleInlinePolicyService {
   private async assertRoleExists(roleId: number): Promise<void> {
     const role = await this.roles.findOne({ where: { id: roleId }, select: { id: true } });
     if (!role) throw new NotFoundException(ERROR_MESSAGES.ROLE_NOT_FOUND);
-  }
-
-  /** Same existence check as assertRoleExists, but also returns the role's own organizationId so a
-   *  newly-created inline policy can mirror it. */
-  private async getRoleOrThrow(roleId: number): Promise<Pick<Role, 'id' | 'organizationId'>> {
-    const role = await this.roles.findOne({ where: { id: roleId }, select: { id: true, organizationId: true } });
-    if (!role) throw new NotFoundException(ERROR_MESSAGES.ROLE_NOT_FOUND);
-    return role;
   }
 }

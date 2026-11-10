@@ -47,14 +47,11 @@ const DYNAMIC_FIELD_REQUIREMENTS: DynamicFieldRequirement[] = [
  *  multi-role. */
 export type UserWithRoles = User & { role: Role | null; roles: Role[] };
 
-/** What a signed-in request needs to know about its user, resolved on EVERY request by JwtStrategy.
- *  `organizationId` is `null` for the one platform SUPER_ADMIN user — never trusted from the JWT
- *  payload itself, re-read live here exactly like `active`/`roles` already are. */
+/** What a signed-in request needs to know about its user, resolved on EVERY request by JwtStrategy. */
 export interface UserAuthState {
   id: number;
   active: boolean;
   mustChangePassword: boolean;
-  organizationId: number | null;
   roles: Array<{ id: number; roleName: string }>;
 }
 
@@ -392,20 +389,14 @@ export class UserService {
   async findAuthState(id: number): Promise<UserAuthState> {
     const user = await this.users.findOne({
       where: { id },
-      select: { id: true, active: true, mustChangePassword: true, organizationId: true },
+      select: { id: true, active: true, mustChangePassword: true },
       loadEagerRelations: false,
     });
     if (!user) {
       throw new NotFoundException(ERROR_MESSAGES.USER_NOT_FOUND);
     }
     const roles = await this.userRoles.getRoleRefsForUser(id);
-    return {
-      id: user.id,
-      active: user.active,
-      mustChangePassword: user.mustChangePassword === true,
-      organizationId: user.organizationId ?? null,
-      roles,
-    };
+    return { id: user.id, active: user.active, mustChangePassword: user.mustChangePassword === true, roles };
   }
 
   private async getActiveUsersByRoleCapability(capability: 'canBeReportingManager' | 'canBeFieldInspector') {
@@ -774,7 +765,6 @@ export class UserService {
     return this.users.manager.transaction(async (manager) => {
       if (deactivating) {
         await this.userRoles.assertNotLastActiveSuperAdmin(id, manager, 'deactivate');
-        await this.userRoles.assertNotLastActiveOrgAdmin(id, user.organizationId ?? null, manager, 'deactivate');
       }
       await this.releaseDeletedHolders(manager, dto, id);
 
@@ -941,7 +931,6 @@ export class UserService {
 
     await this.users.manager.transaction(async (manager) => {
       await this.userRoles.assertNotLastActiveSuperAdmin(id, manager, 'delete');
-      await this.userRoles.assertNotLastActiveOrgAdmin(id, user.organizationId ?? null, manager, 'delete');
 
       await manager.getRepository(User).softRemove(user);
       await manager.getRepository(UserRole).delete({ userId: id });

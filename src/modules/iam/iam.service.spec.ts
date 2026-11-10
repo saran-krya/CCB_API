@@ -15,7 +15,6 @@ import { AuditService } from '../../audit/audit.service';
 import { RESOURCES } from './resource-catalog';
 import { ACTIONS } from '../../bootstrap/seed-data';
 import { BUSINESS_APPROVAL_ACTION_CODES } from './business-approval-actions';
-import { OrganizationContextService } from '../../common/organization-context/organization-context.service';
 
 // Isolated tests for IamService — Policy CRUD, statement validation against the real Resource/Action
 // catalogs (requirement: "validate every policy statement against existing Resource and Action
@@ -40,7 +39,6 @@ describe('IamService', () => {
   // The UPDATE a soft-deleted name release runs inside the creating/editing transaction.
   let releaseQuery: { update: jest.Mock; set: jest.Mock; where: jest.Mock; andWhere: jest.Mock; execute: jest.Mock };
   let dataSource: { transaction: jest.Mock; manager: unknown };
-  let context: { getOrganizationId: jest.Mock };
 
   const VIEW_CUSTOMER_ACTION = { id: 1, code: 'VIEW_CUSTOMER', isActive: true };
   const EDIT_CUSTOMER_ACTION = { id: 2, code: 'EDIT_CUSTOMER', isActive: true };
@@ -102,7 +100,6 @@ describe('IamService', () => {
       transaction: jest.fn().mockImplementation((cb: (m: unknown) => Promise<unknown>) => cb(manager)),
       manager,
     };
-    context = { getOrganizationId: jest.fn().mockReturnValue(1) };
 
     resourcesRepo.find.mockResolvedValue([CUSTOMER_RESOURCE, COMMUNITY_RESOURCE]);
 
@@ -119,7 +116,6 @@ describe('IamService', () => {
         { provide: getRepositoryToken(Action), useValue: actionsRepo },
         { provide: DataSource, useValue: dataSource },
         { provide: AuditService, useValue: auditService },
-        { provide: OrganizationContextService, useValue: context },
       ],
     }).compile();
 
@@ -223,8 +219,7 @@ describe('IamService', () => {
 
   describe('updatePolicy', () => {
     it('refuses to edit a system-managed policy', async () => {
-      context.getOrganizationId.mockReturnValue(null);
-      policiesRepo.findOne.mockResolvedValue({ id: 66, name: 'SUPER_ADMIN Policy', isSystem: true, organizationId: null });
+      policiesRepo.findOne.mockResolvedValue({ id: 66, name: 'SUPER_ADMIN Policy', isSystem: true });
 
       await expect(
         service.updatePolicy(66, { name: 'SUPER_ADMIN Policy', statements: [{ resourceCode: 'CUSTOMER', actionCodes: ['VIEW_CUSTOMER'] }] }, 7),
@@ -243,7 +238,7 @@ describe('IamService', () => {
     });
 
     it('still allows editing an ordinary, non-system policy', async () => {
-      policiesRepo.findOne.mockResolvedValueOnce({ id: 100, name: 'Custom Policy', isSystem: false, organizationId: 1 }).mockResolvedValueOnce(null);
+      policiesRepo.findOne.mockResolvedValueOnce({ id: 100, name: 'Custom Policy', isSystem: false }).mockResolvedValueOnce(null);
       statementsRepo.find.mockResolvedValue([]);
 
       const result = await service.updatePolicy(
@@ -257,7 +252,7 @@ describe('IamService', () => {
     });
 
     it("frees a soft-deleted holder of the new name but never the policy being edited (exceptId)", async () => {
-      policiesRepo.findOne.mockResolvedValueOnce({ id: 100, name: 'Old Name', isSystem: false, organizationId: 1 }).mockResolvedValueOnce(null);
+      policiesRepo.findOne.mockResolvedValueOnce({ id: 100, name: 'Old Name', isSystem: false }).mockResolvedValueOnce(null);
 
       await service.updatePolicy(
         100,
@@ -271,7 +266,7 @@ describe('IamService', () => {
 
     it('rejects a name another LIVE policy already uses', async () => {
       policiesRepo.findOne
-        .mockResolvedValueOnce({ id: 100, name: 'Old Name', isSystem: false, organizationId: 1 })
+        .mockResolvedValueOnce({ id: 100, name: 'Old Name', isSystem: false })
         .mockResolvedValueOnce({ id: 200, name: 'Taken' });
 
       await expect(
@@ -281,7 +276,7 @@ describe('IamService', () => {
     });
 
     it('replaces the statements and the policy row in ONE transaction, audited with the old and new statements', async () => {
-      policiesRepo.findOne.mockResolvedValueOnce({ id: 100, name: 'Custom Policy', isSystem: false, organizationId: 1 }).mockResolvedValueOnce(null);
+      policiesRepo.findOne.mockResolvedValueOnce({ id: 100, name: 'Custom Policy', isSystem: false }).mockResolvedValueOnce(null);
       statementsRepo.find.mockResolvedValue([{ resourceId: 10, actions: ['VIEW_CUSTOMER'] }]);
 
       await service.updatePolicy(
@@ -308,7 +303,7 @@ describe('IamService', () => {
 
   describe('removePolicy', () => {
     it('refuses to delete a policy that is still attached to any role', async () => {
-      policiesRepo.findOne.mockResolvedValue({ id: 100, name: 'Test Policy', organizationId: 1 });
+      policiesRepo.findOne.mockResolvedValue({ id: 100, name: 'Test Policy' });
       rolePoliciesRepo.count.mockResolvedValue(2);
 
       await expect(service.removePolicy(100, 7)).rejects.toThrow(ConflictException);
@@ -316,7 +311,7 @@ describe('IamService', () => {
     });
 
     it('deletes a policy with zero attachments', async () => {
-      policiesRepo.findOne.mockResolvedValue({ id: 100, name: 'Test Policy', organizationId: 1 });
+      policiesRepo.findOne.mockResolvedValue({ id: 100, name: 'Test Policy' });
       rolePoliciesRepo.count.mockResolvedValue(0);
 
       const result = await service.removePolicy(100, 7);
@@ -326,19 +321,19 @@ describe('IamService', () => {
     });
 
     it('removes the policy\'s statements in the SAME transaction as the soft delete — nothing is left pointing at a deleted policy', async () => {
-      policiesRepo.findOne.mockResolvedValue({ id: 100, name: 'Test Policy', organizationId: 1 });
+      policiesRepo.findOne.mockResolvedValue({ id: 100, name: 'Test Policy' });
       rolePoliciesRepo.count.mockResolvedValue(0);
 
       await service.removePolicy(100, 7);
 
       expect(dataSource.transaction).toHaveBeenCalledTimes(1);
       expect(statementsRepo.delete).toHaveBeenCalledWith({ policyId: 100 });
-      expect(policiesRepo.softRemove).toHaveBeenCalledWith({ id: 100, name: 'Test Policy', organizationId: 1 });
+      expect(policiesRepo.softRemove).toHaveBeenCalledWith({ id: 100, name: 'Test Policy' });
       expect(statementsRepo.delete.mock.invocationCallOrder[0]).toBeLessThan(policiesRepo.softRemove.mock.invocationCallOrder[0]);
     });
 
     it('a refusal (attached / system-managed / missing) deletes nothing at all — no statements, no transaction', async () => {
-      policiesRepo.findOne.mockResolvedValue({ id: 100, name: 'Test Policy', organizationId: 1 });
+      policiesRepo.findOne.mockResolvedValue({ id: 100, name: 'Test Policy' });
       rolePoliciesRepo.count.mockResolvedValue(1);
 
       await expect(service.removePolicy(100, 7)).rejects.toThrow(ConflictException);
@@ -352,14 +347,8 @@ describe('IamService', () => {
       await expect(service.removePolicy(999, 7)).rejects.toThrow(NotFoundException);
     });
 
-    it('throws NotFoundException for a policy belonging to a different organization, never confirming it exists', async () => {
-      policiesRepo.findOne.mockResolvedValue({ id: 100, name: 'Test Policy', organizationId: 999 });
-      await expect(service.removePolicy(100, 7)).rejects.toThrow(NotFoundException);
-    });
-
     it('refuses to delete a system-managed policy, even with zero role attachments', async () => {
-      context.getOrganizationId.mockReturnValue(null);
-      policiesRepo.findOne.mockResolvedValue({ id: 66, name: 'SUPER_ADMIN Policy', isSystem: true, organizationId: null });
+      policiesRepo.findOne.mockResolvedValue({ id: 66, name: 'SUPER_ADMIN Policy', isSystem: true });
       rolePoliciesRepo.count.mockResolvedValue(0);
 
       await expect(service.removePolicy(66, 7)).rejects.toThrow(ForbiddenException);
@@ -372,24 +361,20 @@ describe('IamService', () => {
   });
 
   describe('attachPolicyToRole / detachPolicyFromRole', () => {
-    // Every role/policy pair here belongs to the same organization as the ambient `context` mock
-    // (organizationId 1), except the dedicated SUPER_ADMIN tests below, which deliberately switch
-    // `context` to null — SUPER_ADMIN's own role is platform-level (organization_id NULL), so only a
-    // platform-level (null-context) actor can ever reach it at all.
     it('attaches a policy to a role', async () => {
-      rolesRepo.findOne.mockResolvedValue({ id: 5, roleName: 'TEST_ROLE', organizationId: 1 });
-      policiesRepo.findOne.mockResolvedValue({ id: 100, name: 'Test Policy', organizationId: 1 });
+      rolesRepo.findOne.mockResolvedValue({ id: 5, roleName: 'TEST_ROLE' });
+      policiesRepo.findOne.mockResolvedValue({ id: 100, name: 'Test Policy' });
       rolePoliciesRepo.findOne.mockResolvedValue(null);
 
       await service.attachPolicyToRole(5, 100, 7);
 
-      expect(rolePoliciesRepo.save).toHaveBeenCalledWith({ roleId: 5, policyId: 100, organizationId: 1 });
+      expect(rolePoliciesRepo.save).toHaveBeenCalledWith({ roleId: 5, policyId: 100 });
       expect(auditService.record).toHaveBeenCalledWith(expect.objectContaining({ action: 'ATTACH_POLICY' }));
     });
 
     it('attaching an already-attached policy is a no-op, not an error', async () => {
-      rolesRepo.findOne.mockResolvedValue({ id: 5, roleName: 'TEST_ROLE', organizationId: 1 });
-      policiesRepo.findOne.mockResolvedValue({ id: 100, name: 'Test Policy', organizationId: 1 });
+      rolesRepo.findOne.mockResolvedValue({ id: 5, roleName: 'TEST_ROLE' });
+      policiesRepo.findOne.mockResolvedValue({ id: 100, name: 'Test Policy' });
       rolePoliciesRepo.findOne.mockResolvedValue({ id: 1, roleId: 5, policyId: 100 });
 
       await service.attachPolicyToRole(5, 100, 7);
@@ -398,8 +383,8 @@ describe('IamService', () => {
     });
 
     it('a DOUBLE-SUBMIT racing past the existence check is a success, not a 500: the unique key rejected the duplicate, the policy IS attached, and nothing is audited twice', async () => {
-      rolesRepo.findOne.mockResolvedValue({ id: 5, roleName: 'TEST_ROLE', organizationId: 1 });
-      policiesRepo.findOne.mockResolvedValue({ id: 100, name: 'Test Policy', organizationId: 1 });
+      rolesRepo.findOne.mockResolvedValue({ id: 5, roleName: 'TEST_ROLE' });
+      policiesRepo.findOne.mockResolvedValue({ id: 100, name: 'Test Policy' });
       rolePoliciesRepo.findOne.mockResolvedValue(null);
       rolePoliciesRepo.save.mockRejectedValue(
         Object.assign(new Error("Duplicate entry '5-100' for key 'IDX_role_policy'"), { code: 'ER_DUP_ENTRY' }),
@@ -411,8 +396,8 @@ describe('IamService', () => {
     });
 
     it('any OTHER database failure while attaching is not swallowed', async () => {
-      rolesRepo.findOne.mockResolvedValue({ id: 5, roleName: 'TEST_ROLE', organizationId: 1 });
-      policiesRepo.findOne.mockResolvedValue({ id: 100, name: 'Test Policy', organizationId: 1 });
+      rolesRepo.findOne.mockResolvedValue({ id: 5, roleName: 'TEST_ROLE' });
+      policiesRepo.findOne.mockResolvedValue({ id: 100, name: 'Test Policy' });
       rolePoliciesRepo.findOne.mockResolvedValue(null);
       rolePoliciesRepo.save.mockRejectedValue(Object.assign(new Error('connection lost'), { code: 'PROTOCOL_CONNECTION_LOST' }));
 
@@ -422,8 +407,8 @@ describe('IamService', () => {
     });
 
     it('attaching the same policy twice in a row writes ONE attachment and ONE audit row', async () => {
-      rolesRepo.findOne.mockResolvedValue({ id: 5, roleName: 'TEST_ROLE', organizationId: 1 });
-      policiesRepo.findOne.mockResolvedValue({ id: 100, name: 'Test Policy', organizationId: 1 });
+      rolesRepo.findOne.mockResolvedValue({ id: 5, roleName: 'TEST_ROLE' });
+      policiesRepo.findOne.mockResolvedValue({ id: 100, name: 'Test Policy' });
       rolePoliciesRepo.findOne.mockResolvedValueOnce(null).mockResolvedValueOnce({ id: 1, roleId: 5, policyId: 100 });
 
       await service.attachPolicyToRole(5, 100, 7);
@@ -439,7 +424,7 @@ describe('IamService', () => {
     });
 
     it('throws NotFoundException attaching a policy that does not exist, writing nothing', async () => {
-      rolesRepo.findOne.mockResolvedValue({ id: 5, roleName: 'TEST_ROLE', organizationId: 1 });
+      rolesRepo.findOne.mockResolvedValue({ id: 5, roleName: 'TEST_ROLE' });
       policiesRepo.findOne.mockResolvedValue(null);
 
       await expect(service.attachPolicyToRole(5, 999, 7)).rejects.toThrow(NotFoundException);
@@ -447,15 +432,7 @@ describe('IamService', () => {
       expect(rolePoliciesRepo.save).not.toHaveBeenCalled();
     });
 
-    it('throws NotFoundException attaching a role or policy belonging to a different organization, never confirming it exists', async () => {
-      rolesRepo.findOne.mockResolvedValue({ id: 5, roleName: 'TEST_ROLE', organizationId: 999 });
-      policiesRepo.findOne.mockResolvedValue({ id: 100, name: 'Test Policy', organizationId: 1 });
-
-      await expect(service.attachPolicyToRole(5, 100, 7)).rejects.toThrow(NotFoundException);
-    });
-
     it('detaches a policy from a role', async () => {
-      rolesRepo.findOne.mockResolvedValue({ id: 5, roleName: 'TEST_ROLE', organizationId: 1 });
       rolePoliciesRepo.findOne.mockResolvedValue({ id: 1, roleId: 5, policyId: 100 });
 
       await service.detachPolicyFromRole(5, 100, 7);
@@ -465,7 +442,6 @@ describe('IamService', () => {
     });
 
     it('detaching an already-detached policy is a no-op, not an error', async () => {
-      rolesRepo.findOne.mockResolvedValue({ id: 5, roleName: 'TEST_ROLE', organizationId: 1 });
       rolePoliciesRepo.findOne.mockResolvedValue(null);
 
       await service.detachPolicyFromRole(5, 100, 7);
@@ -474,9 +450,8 @@ describe('IamService', () => {
     });
 
     it('refuses to detach any policy from the role named SUPER_ADMIN', async () => {
-      context.getOrganizationId.mockReturnValue(null);
-      rolesRepo.findOne.mockResolvedValue({ id: 1, roleName: 'SUPER_ADMIN', organizationId: null });
       rolePoliciesRepo.findOne.mockResolvedValue({ id: 1, roleId: 1, policyId: 100 });
+      rolesRepo.findOne.mockResolvedValue({ id: 1, roleName: 'SUPER_ADMIN' });
 
       await expect(service.detachPolicyFromRole(1, 100, 7)).rejects.toThrow(/must always retain full access/);
       expect(rolePoliciesRepo.remove).not.toHaveBeenCalled();
@@ -484,8 +459,8 @@ describe('IamService', () => {
     });
 
     it('still allows detaching from a role that is not SUPER_ADMIN', async () => {
-      rolesRepo.findOne.mockResolvedValue({ id: 5, roleName: 'OPERATIONS', organizationId: 1 });
       rolePoliciesRepo.findOne.mockResolvedValue({ id: 1, roleId: 5, policyId: 100 });
+      rolesRepo.findOne.mockResolvedValue({ id: 5, roleName: 'OPERATIONS' });
 
       await service.detachPolicyFromRole(5, 100, 7);
 
@@ -493,13 +468,13 @@ describe('IamService', () => {
     });
 
     it('allows attaching a system-managed policy to an ordinary (non-SUPER_ADMIN) role — isSystem never blocks attach', async () => {
-      rolesRepo.findOne.mockResolvedValue({ id: 5, roleName: 'OPERATIONS', organizationId: 1 });
-      policiesRepo.findOne.mockResolvedValue({ id: 66, name: 'SUPER_ADMIN Policy', isSystem: true, organizationId: 1 });
+      rolesRepo.findOne.mockResolvedValue({ id: 5, roleName: 'OPERATIONS' });
+      policiesRepo.findOne.mockResolvedValue({ id: 66, name: 'SUPER_ADMIN Policy', isSystem: true });
       rolePoliciesRepo.findOne.mockResolvedValue(null);
 
       await service.attachPolicyToRole(5, 66, 7);
 
-      expect(rolePoliciesRepo.save).toHaveBeenCalledWith({ roleId: 5, policyId: 66, organizationId: 1 });
+      expect(rolePoliciesRepo.save).toHaveBeenCalledWith({ roleId: 5, policyId: 66 });
       expect(auditService.record).toHaveBeenCalledWith(expect.objectContaining({ action: 'ATTACH_POLICY' }));
     });
 
@@ -508,8 +483,8 @@ describe('IamService', () => {
       // and its grant to the SUPER_ADMIN role specifically — it is NOT a blanket "can never be
       // detached from any role" rule. A system-managed policy attached to some other role (e.g. an
       // admin explicitly reused it there) can be detached from THAT role like any other policy.
-      rolesRepo.findOne.mockResolvedValue({ id: 5, roleName: 'OPERATIONS', organizationId: 1 });
       rolePoliciesRepo.findOne.mockResolvedValue({ id: 1, roleId: 5, policyId: 66 });
+      rolesRepo.findOne.mockResolvedValue({ id: 5, roleName: 'OPERATIONS' });
 
       await service.detachPolicyFromRole(5, 66, 7);
 
@@ -518,9 +493,8 @@ describe('IamService', () => {
     });
 
     it('still refuses to detach a system-managed policy (or any policy) from SUPER_ADMIN specifically', async () => {
-      context.getOrganizationId.mockReturnValue(null);
-      rolesRepo.findOne.mockResolvedValue({ id: 1, roleName: 'SUPER_ADMIN', organizationId: null });
       rolePoliciesRepo.findOne.mockResolvedValue({ id: 1, roleId: 1, policyId: 66 });
+      rolesRepo.findOne.mockResolvedValue({ id: 1, roleName: 'SUPER_ADMIN' });
 
       await expect(service.detachPolicyFromRole(1, 66, 7)).rejects.toThrow(ForbiddenException);
       await expect(service.detachPolicyFromRole(1, 66, 7)).rejects.toThrow(/must always retain full access/);

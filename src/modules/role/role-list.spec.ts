@@ -67,35 +67,28 @@ describe('RoleService.RoleLists — server-driven search / filter / sort', () =>
       {} as any,
       { getUserCountsByRoleIds: jest.fn().mockImplementation(async () => userCounts) } as any,
       dataSource as any,
-      { getOrganizationId: jest.fn().mockReturnValue(1) } as any,
     );
   });
 
   const q = (over: Record<string, unknown> = {}) => ({ page: 1, limit: 20, sortOrder: 'DESC', ...over }) as any;
 
-  it('always scopes to the caller\'s own organization, even with nothing else searched or filtered', async () => {
+  it('adds no filter condition when nothing is searched or filtered', async () => {
     await service.RoleLists(q());
-    expect(andWhereCalls).toHaveLength(1);
-    expect(andWhereCalls[0].sql).toContain('role.organization_id = :organizationId');
-    expect(andWhereCalls[0].params).toEqual({ organizationId: 1 });
+    expect(andWhereCalls).toHaveLength(0);
   });
 
-  it('one search term matches the name, description OR user category, alongside the organization filter', async () => {
+  it('one search term matches the name, description OR user category', async () => {
     await service.RoleLists(q({ 'search.query': ' fin ' }));
-    expect(andWhereCalls).toHaveLength(2);
-    expect(andWhereCalls[1].sql).toContain('role.roleName LIKE :term');
-    expect(andWhereCalls[1].sql).toContain('role.roleDescription LIKE :term');
-    expect(andWhereCalls[1].sql).toContain('userCategory.label LIKE :term');
-    expect(andWhereCalls[1].params).toEqual({ term: '%fin%' });
+    expect(andWhereCalls).toHaveLength(1);
+    expect(andWhereCalls[0].sql).toContain('role.roleName LIKE :term');
+    expect(andWhereCalls[0].sql).toContain('role.roleDescription LIKE :term');
+    expect(andWhereCalls[0].sql).toContain('userCategory.label LIKE :term');
+    expect(andWhereCalls[0].params).toEqual({ term: '%fin%' });
   });
 
-  it('filters by user category and by created date, alongside the organization filter', async () => {
+  it('filters by user category and by created date', async () => {
     await service.RoleLists(q({ userCategoryId: 2, 'search.createdAt': '2026-06-25' }));
-    expect(andWhereCalls.map((c) => c.params)).toEqual([
-      { organizationId: 1 },
-      { userCategoryId: 2 },
-      { createdAt: '2026-06-25' },
-    ]);
+    expect(andWhereCalls.map((c) => c.params)).toEqual([{ userCategoryId: 2 }, { createdAt: '2026-06-25' }]);
   });
 
   it('sorts count columns through selected aliases, never a join', async () => {

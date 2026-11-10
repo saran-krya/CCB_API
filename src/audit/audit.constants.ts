@@ -13,8 +13,6 @@ export const AUDIT_MODULE = {
   CUSTOMERS: 'customers',
   METER: 'Meter',
   METER_READING: 'MeterReading',
-  ORGANIZATIONS: 'organizations',
-  SUBSCRIPTION_PLANS: 'subscription_plans',
   POLICIES: 'policies',
   PROPERTIES: 'properties',
   REGISTRATION_DOCUMENT_RULES: 'registration-document-rules',

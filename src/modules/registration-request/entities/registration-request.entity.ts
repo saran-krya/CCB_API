@@ -45,15 +45,6 @@ export {
  */
 @Entity('registration_requests')
 export class RegistrationRequest extends BaseEntity {
-  // A direct (not transitive) organization_id — unlike most tenant-owned entities, a registration
-  // request can exist before any Customer/Unit is finalized, so there's no already-scoped parent row
-  // to inherit through at creation time. Its nine child tables (customer/company detail, documents,
-  // workflow history, version snapshots, demands, selected units, property billing, payment methods,
-  // deposit) are exclusively owned 1:1/1:N rows never listed independently of this one parent, so
-  // they inherit scope through it rather than each carrying their own column.
-  @Column({ name: 'organization_id', type: 'int' })
-  organizationId!: number;
-
   @Column({ name: 'business_code', type: 'varchar', length: 20, unique: true, nullable: true })
   businessCode?: string | null;
 

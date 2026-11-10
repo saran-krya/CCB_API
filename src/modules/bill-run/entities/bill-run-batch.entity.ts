@@ -9,11 +9,6 @@ import { BillRun } from './bill-run.entity';
 // BillRunService.getBatchSummary), so there is exactly one place a run's real status can ever live.
 @Entity('bill_run_batches')
 export class BillRunBatch extends BaseEntity {
-  // A batch groups BillRuns submitted together — always within one organization (enforced at the
-  // service layer when adding a run to a batch).
-  @Column({ name: 'organization_id', type: 'int' })
-  organizationId!: number;
-
   @Column({ name: 'business_code', type: 'varchar', length: 20, unique: true, nullable: true })
   businessCode?: string | null;
 

@@ -10,10 +10,6 @@ import { MeterStatus } from './meter-status.enum';
 @Index('UQ_sub_meters_master_meter_mbus', ['masterMeter', 'mBusAddress'], { unique: true })
 @Index('UQ_sub_meters_serial_number', ['serialNumber'], { unique: true })
 export class SubMeter extends BaseEntity {
-  // Denormalized from the owning MasterMeter/Property.
-  @Column({ name: 'organization_id', type: 'int' })
-  organizationId!: number;
-
   @Column({ name: 'business_code', type: 'varchar', length: 20, unique: true, nullable: true })
   businessCode?: string | null;
 

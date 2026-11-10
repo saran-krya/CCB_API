@@ -37,22 +37,12 @@ export interface AuthenticatedUser {
   /** The session this token belongs to — see AuthenticatedCustomer.sid (identical for both session kinds). */
   sid?: string;
   type?: 'staff';
-  /** The user's LIVE organization — `null` for the one platform SUPER_ADMIN user, a real id for every
-   *  tenant-scoped staff user. Resolved by JwtStrategy.validate from the live User row on every
-   *  request (UserService.findAuthState), exactly like roleIds/roleNames — never signed into the JWT
-   *  as a trusted claim, never accepted from a frontend header/query/body. Optional only because the
-   *  same type also describes the signed payload, which never carries it. */
-  organizationId?: number | null;
 }
 
 export interface AuthenticatedCustomer {
   sub: number;
   email: string;
   type: 'customer';
-  /** The Customer's own organization (their Unit/Property/Community's organization, denormalized onto
-   *  the Customer row) — resolved live by JwtStrategy.validate from CustomerService.findAuthState,
-   *  same non-negotiable posture as AuthenticatedUser.organizationId above. */
-  organizationId?: number | null;
   /** The session this token belongs to: the refresh-token family, a server-generated UUID created at sign-in and kept
    *  across refresh rotations. AuthService.issueTokenPair signs it into every access token, and JwtStrategy refuses the
    *  token as soon as that session has no live refresh token (signed out, revoked, replaced after a password change,

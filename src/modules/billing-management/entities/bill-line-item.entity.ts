@@ -16,10 +16,6 @@ export enum BillLineItemType {
 @Entity('bill_line_items')
 @Index('IDX_bill_line_items_bill', ['billId'])
 export class BillLineItem extends BaseEntity {
-  // Denormalized from the owning Bill.
-  @Column({ name: 'organization_id', type: 'int' })
-  organizationId!: number;
-
   @ManyToOne(() => Bill, { nullable: false, onDelete: 'CASCADE' })
   @JoinColumn({ name: 'bill_id' })
   bill!: Bill;

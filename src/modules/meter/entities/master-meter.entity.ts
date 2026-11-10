@@ -11,10 +11,6 @@ import { SubMeter } from './sub-meter.entity';
 @Index('UQ_master_meters_dtu_id', ['dtuId'], { unique: true })
 @Index('UQ_master_meters_property_id', ['property'], { unique: true })
 export class MasterMeter extends BaseEntity {
-  // Denormalized from the owning Property.
-  @Column({ name: 'organization_id', type: 'int' })
-  organizationId!: number;
-
   @Column({ name: 'business_code', type: 'varchar', length: 20, unique: true, nullable: true })
   businessCode?: string | null;
 

@@ -6,10 +6,6 @@ import { BillingCycleVersion } from './billing-cycle-version.entity';
 
 @Entity('billing_cycle_masters')
 export class BillingCycleMaster extends BaseEntity {
-  // Denormalized from the owning Community/Property.
-  @Column({ name: 'organization_id', type: 'int' })
-  organizationId!: number;
-
   @Column({ name: 'business_code', type: 'varchar', length: 20, unique: true, nullable: true })
   businessCode?: string | null;
 

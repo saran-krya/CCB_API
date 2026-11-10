@@ -69,17 +69,16 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     await this.assertSessionIsLive(payload);
 
     if (payload.type === PRINCIPAL_TYPE.CUSTOMER) {
-      let customerState: { accountStatus: CustomerAccountStatus; organizationId: number };
       try {
-        customerState = await this.customers.findAuthState(payload.sub);
+        const customer = await this.customers.findOne(payload.sub);
+        if (customer.accountStatus === CustomerAccountStatus.OVERDUE) {
+          throw new UnauthorizedException(ERROR_MESSAGES.ACCOUNT_NOT_ACTIVE);
+        }
       } catch (err) {
         if (err instanceof UnauthorizedException) throw err;
         throw new UnauthorizedException(ERROR_MESSAGES.CUSTOMER_NOT_FOUND);
       }
-      if (customerState.accountStatus === CustomerAccountStatus.OVERDUE) {
-        throw new UnauthorizedException(ERROR_MESSAGES.ACCOUNT_NOT_ACTIVE);
-      }
-      return { ...payload, organizationId: customerState.organizationId };
+      return payload;
     }
 
     if (!payload.roleName) {
@@ -111,7 +110,6 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       roleIds: state.roles.map((r) => r.id),
       roleNames: state.roles.map((r) => r.roleName),
       mustChangePassword: state.mustChangePassword,
-      organizationId: state.organizationId,
     };
   }
 

@@ -1,8 +1,32 @@
 # CCB Multi-Tenant SaaS — Implementation Checklist
 
+> ## STATUS: PAUSED AND REVERTED (2026-11-10)
+>
+> **Decision changed: no SaaS multi-tenancy for now.** Phases A–D are removed from the CCB API working tree, which is restored to the pre-Phase-A architecture and schema definition (baseline = commit `841a2f82`). CCB_Web never received any SaaS code. **Nothing below this banner exists in the codebase** — it is kept only as a historical record of what was built and removed. Do not resume from it without a new explicit decision.
+>
+> **Reverted (all of it):**
+> - `Organization`, `SubscriptionPlan`, `UserInvitation` entities; `OrganizationService`, `SubscriptionPlanService`, `OrganizationController` (`/platform/organizations`), DTOs, `OrganizationModule` (`src/modules/organization/`)
+> - `organization_id` on 22 existing entities + `AuditLog`; the unique-index changes on `Role.roleName` / `Policy.name` (back to the original global unique)
+> - 9 migrations `1794400000000` … `1795200000000` (plans, organizations, invitations, demo-org seed, add columns, backfill, FKs, NOT NULL, org-scoped uniques)
+> - Tenant context: `nestjs-cls` + `ClsModule`, `OrganizationContextService/Module`, `OrganizationContextGuard`, `OrganizationStatusGuard`, `@AllowSuspendedOrg()`, the two extra `APP_GUARD`s, `organizationId` on `AuthenticatedUser` / `AuthenticatedCustomer`, `JwtStrategy`'s live org resolution, `UserService.findAuthState` / `CustomerService.findAuthState` org additions
+> - Org-scoped RBAC: `RoleService`, `IamService`, inline-policy services, `UserRoleService` (cross-org role grants, last-active-org-ADMIN protection), plus their spec changes and the 5 SaaS-only spec files
+> - SaaS error-message / audit constants and the `nestjs-cls` dependency in `package.json` / `package-lock.json`
+> - Phase E isolation work was never present in the repository (nothing to revert). Phases F–K were never started.
+>
+> **Deliberately kept (not SaaS, committed in the same commits):** the Global Search module (`src/modules/global-search/`, its registration in `app.module.ts`, `search-text.util`, `label.util`) and a comment-only edit to migration `1789983744793-AddFieldInspectionRequests.ts`. CCB_Web's Global Search UI commit is also untouched.
+>
+> **Database — not reverted by this change (needs an explicit decision):** the local `ccb` DB currently holds three leftover SaaS tables (`organizations` with 1 row, `subscription_plans`, `user_invitations`) and 9 rows in `migrations` (ids 61–69, names `*1794400000000` … `*1795200000000`). The `organization_id` columns on business tables are not present. The reverted code ignores the leftovers. No SQL write was run by the revert itself; the SaaS migrations were auto-run by the watch-mode API when it restarted (stale compiled migrations in `dist/`, since deleted). Any other environment that pulled the SaaS commits and booted with migrations enabled needs the same check.
+>
+> **Recoverable:** the SaaS code remains in git history (commits `8439e593`, `9bf17b7a`, `9ebdbb9a` on `main`); nothing was reset or force-pushed. Reverted files are working-tree changes, not committed.
+>
+> **Verification at revert time:** `tsc --noEmit` — 4 errors, all pre-existing (`jwt.strategy.spec.ts`, `live-role-authorization.spec.ts`: `JwtStrategy` takes 4 constructor args, specs pass 3; both files identical to baseline). `nest build` clean. Jest: 943 tests pass, same 2 pre-existing suites fail to compile. No SaaS references remain in API `src`/`test`/`scripts`/`docs` or in CCB_Web.
+
+---
+## Historical record below — REVERTED, not in the codebase
+
 Tracks Phase 2 implementation against the approved architecture (Phase 1 audit → Phase 2 plan → business-workflow extension, all finalized). Updated as work lands. Production migrations/deployment require separate explicit approval — everything here is local/dev only until then.
 
-## Phase A — Organization Foundation (backend) — DONE (code), migrations NOT yet executed
+## Phase A — Organization Foundation (backend) — REVERTED 2026-11-10 (was: done in code)
 - [x] A1. `Organization` entity + `OrganizationStatus`/`OrganizationType` enums (`src/modules/organization/entities/organization.entity.ts`)
 - [x] A2. `SubscriptionPlan` entity (`.../entities/subscription-plan.entity.ts`)
 - [x] A3. `UserInvitation` entity (`.../entities/user-invitation.entity.ts`)
@@ -16,7 +40,7 @@ Tracks Phase 2 implementation against the approved architecture (Phase 1 audit �
 
 **Deliberately not yet done:** actually running these 4 migrations against any database (dev included) — that's a separate, explicit step, not bundled into code verification. `DB_SYNCHRONIZE=true` is still active in this dev environment per the Phase 1 audit, so simply booting the app would auto-create these tables outside the migration path entirely; this was avoided so the migration sequence itself gets a real, deliberate first run rather than being silently bypassed.
 
-## Phase B — Schema Rollout (backend) — DONE (code + migrations written), migrations NOT yet executed
+## Phase B — Schema Rollout (backend) — REVERTED 2026-11-10 (was: done in code + migrations written)
 - [x] B1. `organization_id` added to all 26 entities, nullable at the TS/entity level where it stays nullable forever (`users`, `roles`, `policies`, `role_policies`, `policy_statements`, `role_inline_policies`, `role_inline_policy_statements`, `user_inline_policies`, `user_inline_policy_statements`, `audit_logs` — NULL = platform-level), non-optional (`number`) everywhere else. Migration `1794800000000-AddOrganizationIdColumns.ts` adds every column NULLABLE at the DB level first regardless (safe, additive). **Deliberate scope note:** `policy_statements`, `role_inline_policy_statements`, `user_inline_policy_statements`, `bill_line_items`, `tariff_tiers`, and `RegistrationRequest`'s 9 cascading child tables were considered for their own direct column too; `tariff_tiers` and the 9 `registration_request_*` children were left to inherit via their one owning parent (never independently listed/searched) — everything explicitly named in the originally-approved entity list got its own column regardless, per "do not silently narrow an approved scope."
 - [x] B2. Backfill migration `1794900000000-BackfillOrganizationId.ts` — every plain business table → `INTERNAL-DEMO`; `roles`/`policies` excluded by `role_name = 'SUPER_ADMIN'` / `is_system = 1`; `users` excluded via a `user_roles` join to the SUPER_ADMIN role; everything that inherits from an owning Role/Policy/User (`role_policies`, `policy_statements`, `role_inline_policies` + statements, `user_inline_policies` + statements) copies the owner's own value, including staying `NULL` when the owner is SUPER_ADMIN's own row; `audit_logs` copies the performing user's organization_id as a one-time snapshot. `down()` refuses to run once more than one organization exists (per the documented migration-safety rule).
 - [x] B3. FK constraints — `1795000000000-AddOrganizationIdForeignKeys.ts` (`ON DELETE NO ACTION`, unnamed constraints per this project's own synchronize-collision precedent).
@@ -30,7 +54,7 @@ Tracks Phase 2 implementation against the approved architecture (Phase 1 audit �
 
 **Still not executed:** none of the 4 Phase B migrations have been run against any database — same deliberate hold as Phase A, now with the added, explicit instruction that `DB_SYNCHRONIZE` must be disabled first, with separate approval, before any of this actually runs.
 
-## Phase C — Auth & Organization Context (backend) — DONE
+## Phase C — Auth & Organization Context (backend) — REVERTED 2026-11-10 (was: done)
 - [x] C1. `nestjs-cls` installed; `ClsModule.forRoot({ global: true, middleware: { mount: true } })` registered in `AppModule` — context exists before any guard runs, not just the ones after some module's own setup.
 - [x] C2. `OrganizationContextService` (`src/common/organization-context/organization-context.service.ts`) — thin `ClsService` wrapper, `setOrganizationId`/`getOrganizationId`, `null` = platform-level.
 - [x] C3. Live `organizationId` resolution, never trusted from the JWT:
@@ -44,7 +68,7 @@ Tracks Phase 2 implementation against the approved architecture (Phase 1 audit �
 - [x] `tsc --noEmit`, `nest build`, full Jest suite (973 tests, up from 960) all clean — same 2 pre-existing, unrelated failing spec files as Phases A/B.
 - **Known verification gap, stated plainly:** I did not boot the actual NestJS application (`app.listen()`/`TestingModule.compile()` against the real DB) to verify runtime DI wiring end-to-end — this environment hangs for 7+ minutes on a full-module bootstrap against the real dev DB (hit this exact wall earlier in this engagement) and I've deliberately avoided touching the database per your instructions. Verification here is TypeScript-level (every constructor injection type-checks) plus manual module-graph review (`OrganizationModule` exports what `AuthModule` needs, `ClsModule` is global), not a live boot. Flagging this honestly rather than claiming more than was actually checked.
 
-## Phase D — Organization-Scoped IAM (backend) — DONE
+## Phase D — Organization-Scoped IAM (backend) — REVERTED 2026-11-10 (was: done)
 - [x] D1 (revised). The hot-path resolver (`IamService.getActionCodesGrantedByPoliciesForRoles`) is **deliberately left untouched** — every write path that could ever create a cross-organization `RolePolicy`/inline-policy row is now blocked at write time (D2 below), so the resolver's own correctness follows by construction rather than needing a redundant, latency-adding re-check on the single most frequently called method in the system. Documented explicitly as a considered tradeoff, not an oversight.
 - [x] D2. Full org-scoping across the IAM write/read surface:
   - `RoleService`: `create`/`update`/`remove`/`findOne`/`findOneWithDetails`/`RoleLists`/`getRoleDropdown`/`getRoleFilter`/`getRolePicker` all scoped via a new `applyOrganizationFilter` helper (SUPER_ADMIN's own `null` context correctly sees only its own `organization_id IS NULL` row, never another organization's). `roles.roleName` uniqueness is now per-organization (`SUPER_ADMIN` stays globally reserved at the application layer, unchanged).
@@ -61,7 +85,7 @@ Tracks Phase 2 implementation against the approved architecture (Phase 1 audit �
 
 **Still not executed:** no database/migration changes in this phase at all (Phase D was entity/service/guard logic only, built entirely on Phase B's already-written-but-unexecuted schema).
 
-## Phase E — Tenant Isolation Enforcement (backend) — IN PROGRESS
+## Phase E — Tenant Isolation Enforcement (backend) — NEVER LANDED IN THE REPOSITORY (paused; nothing to revert)
 Running as a 6-domain fix+independent-verify workflow (worktree-isolated): core entities (Community/Property/Unit/Meter/LOV/Attribute), Customer/Registration/Field-Inspection, Billing (Tariff/BillingCycle/BillRun/BillingManagement/BillingReadiness), SFTP reporting + Workflow engine, Global Search (13 providers — confirmed real leak, predates org_id existing), and leftover raw-SQL in Role/IAM. Per-service pattern (no shared base class, matches Phase D precedent), not E1's original "base repository" idea — deliberate deviation, same reasoning as Phase D's D1. E4 (Support Access) and E6 (plan-limit enforcement) confirmed out of scope for E, correctly belong in Phase F below. Final results/numbers land here once the workflow completes.
 
 ## New schema gaps found and fixed this phase (not in original Phase B's 26-entity list)
@@ -113,4 +137,4 @@ Hard rule carried into every screen above: organization context is always resolv
 - [ ] I2. Full regression pass, staging rollout rehearsal
 
 ---
-**Finalized decisions in force:** Organization (not Tenant) naming; shared IAM catalog with org-scoped Roles/Policies (Option B); internal/demo org absorbs existing data, SUPER_ADMIN stays `organization_id = NULL`; isolation is a hard row-level filter independent of Policy; `User` created at invite time as `PENDING_ACTIVATION`; subscription expiry only warns, never auto-suspends; `INACTIVE → ACTIVE` reactivation allowed; subscription plan limits are hard-enforced and configurable per plan.
+**Former decisions — SUPERSEDED by the 2026-11-10 pause, no longer in force:** Organization (not Tenant) naming; shared IAM catalog with org-scoped Roles/Policies (Option B); internal/demo org absorbs existing data, SUPER_ADMIN stays `organization_id = NULL`; isolation is a hard row-level filter independent of Policy; `User` created at invite time as `PENDING_ACTIVATION`; subscription expiry only warns, never auto-suspends; `INACTIVE → ACTIVE` reactivation allowed; subscription plan limits are hard-enforced and configurable per plan.

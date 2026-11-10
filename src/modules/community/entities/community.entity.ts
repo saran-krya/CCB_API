@@ -10,12 +10,6 @@ export enum CommunityStatus {
 
 @Entity('communities')
 export class Community extends BaseEntity {
-  // The tenant-isolation root for this whole business hierarchy — every Property/Unit/Customer under
-  // it belongs to the same organization. Plain column, no @ManyToOne relation, to avoid a circular
-  // import with the organization module (same convention as Customer.registrationDemandId).
-  @Column({ name: 'organization_id', type: 'int' })
-  organizationId!: number;
-
   @Column({ type: 'varchar', length: 160 })
   name!: string;
 

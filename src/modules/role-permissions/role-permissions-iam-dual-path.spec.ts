@@ -18,7 +18,6 @@ import { UserInlinePolicy } from '../iam/entities/user-inline-policy.entity';
 import { RoleInlinePolicy } from '../iam/entities/role-inline-policy.entity';
 import { ACTIONS } from '../../bootstrap/seed-data';
 import { ACTION_TO_RESOURCE_CODE, NAV_ONLY_ACTION_CODES, RESOURCES } from '../iam/resource-catalog';
-import { OrganizationContextService } from '../../common/organization-context/organization-context.service';
 
 // Isolated tests for the IAM migration's FULL CUTOVER: roleHasAction now resolves EVERY role
 // exclusively through IamService.roleHasActionViaPolicy — there is no more "has the role attached
@@ -263,7 +262,6 @@ describe('RolePermissionsService over the real IamService — multi-role union e
         { provide: getRepositoryToken(RoleInlinePolicy), useValue: { find: jest.fn().mockResolvedValue([]) } },
         { provide: DataSource, useValue: {} },
         { provide: AuditService, useValue: {} },
-        { provide: OrganizationContextService, useValue: { getOrganizationId: jest.fn().mockReturnValue(null) } },
       ],
     }).compile();
 

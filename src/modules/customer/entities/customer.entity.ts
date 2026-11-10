@@ -64,10 +64,6 @@ export interface CustomerPropertyBilling {
  */
 @Entity('customers')
 export class Customer extends BaseEntity {
-  // Denormalized from the owning Unit/Property/Community — see Community's own doc comment.
-  @Column({ name: 'organization_id', type: 'int' })
-  organizationId!: number;
-
   /** The primary/first unit — kept for backward compatibility with the existing single-unit List
    *  and Detail queries. A multi-unit customer's additional units live in `additionalUnits`. */
   @ManyToOne(() => Unit, { nullable: false })

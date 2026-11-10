@@ -43,10 +43,6 @@ export enum TariffPenaltyType {
 
 @Entity('tariff_versions')
 export class TariffVersion extends BaseEntity {
-  // Denormalized from the owning TariffMaster.
-  @Column({ name: 'organization_id', type: 'int' })
-  organizationId!: number;
-
   @ManyToOne(() => TariffMaster, (master) => master.versions, { nullable: false })
   @JoinColumn({ name: 'master_id' })
   master!: TariffMaster;

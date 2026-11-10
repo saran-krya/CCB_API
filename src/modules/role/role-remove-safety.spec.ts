@@ -1,4 +1,4 @@
-import { ConflictException, NotFoundException } from '@nestjs/common';
+import { ConflictException } from '@nestjs/common';
 import { RoleService } from './role.service';
 import { Role } from './entities/role.entity';
 import { AuditService } from '../../audit/audit.service';
@@ -20,12 +20,10 @@ describe('RoleService.remove — safety checks', () => {
   let auditService: { record: jest.Mock };
   let managerSoftRemove: jest.Mock;
   let managerQuery: jest.Mock;
-  let context: { getOrganizationId: jest.Mock };
 
-  const ROLE = { id: 7, roleName: 'Test Role', organizationId: 42 } as Role;
+  const ROLE = { id: 7, roleName: 'Test Role' } as Role;
 
   beforeEach(() => {
-    context = { getOrganizationId: jest.fn().mockReturnValue(42) };
     roleRepo = { findOne: jest.fn().mockResolvedValue(ROLE) };
     userRoleService = { getUsersByRoleId: jest.fn().mockResolvedValue([]) };
 
@@ -50,18 +48,11 @@ describe('RoleService.remove — safety checks', () => {
       auditService as unknown as AuditService,
       userRoleService as unknown as UserRoleService,
       dataSource as any,
-      context as any,
     );
   });
 
   it('rejects deletion of SUPER_ADMIN by name, before any other check even runs', async () => {
-    // SUPER_ADMIN's own role has organization_id NULL (platform-level) — only a platform-level
-    // (null-context) caller can ever reach it through findOne's own organization-ownership check at
-    // all, which is itself the correct, tighter behavior: a tenant caller gets a plain 404 (see the
-    // separate 'a role belonging to a different organization...' test below), never confirmation that
-    // role id 1 exists or is SUPER_ADMIN.
-    context.getOrganizationId.mockReturnValue(null);
-    roleRepo.findOne.mockResolvedValue({ id: 1, roleName: 'SUPER_ADMIN', organizationId: null } as Role);
+    roleRepo.findOne.mockResolvedValue({ id: 1, roleName: 'SUPER_ADMIN' } as Role);
 
     const error: ConflictException = await service.remove(1).catch((e) => e);
     expect(error).toBeInstanceOf(ConflictException);
@@ -71,16 +62,9 @@ describe('RoleService.remove — safety checks', () => {
   });
 
   it('does not block deleting a different role that merely contains "SUPER_ADMIN" as a substring', async () => {
-    roleRepo.findOne.mockResolvedValue({ id: 9, roleName: 'SUPER_ADMIN_BACKUP', organizationId: 42 } as Role);
+    roleRepo.findOne.mockResolvedValue({ id: 9, roleName: 'SUPER_ADMIN_BACKUP' } as Role);
 
     await expect(service.remove(9)).resolves.toEqual({ message: 'Role deleted successfully' });
-  });
-
-  it('a role belonging to a different organization is reported as not found, never confirmed to exist', async () => {
-    roleRepo.findOne.mockResolvedValue({ id: 9, roleName: 'FINANCE', organizationId: 999 } as Role);
-
-    const error = await service.remove(9).catch((e) => e);
-    expect(error).toBeInstanceOf(NotFoundException);
   });
 
   it('rejects deletion when the role is still assigned to one or more users, before any write', async () => {

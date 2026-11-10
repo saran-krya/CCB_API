@@ -173,8 +173,6 @@ describe('UserService — protections enforced end to end (real UserRoleService 
       find: async ({ where }: { where: { id: { value: number[] } } }) => ROLE_TABLE.filter((r) => where.id.value.includes(r.id)),
     };
     const txUsers = {
-      findOne: async ({ where }: { where: { id: number } }) =>
-        savedUsers.find((u) => u.id === where.id) ?? { id: where.id, organizationId: null },
       save: async (user: any) => {
         const saved = Object.assign(user, { id: user.id ?? nextUserId++ });
         userStates[saved.id] = { active: saved.active ?? true, deletedAt: null };
@@ -747,7 +745,6 @@ describe('UserService', () => {
     removeRoleFromUser: jest.Mock;
     assertActorMayModifyUser: jest.Mock;
     assertNotLastActiveSuperAdmin: jest.Mock;
-    assertNotLastActiveOrgAdmin: jest.Mock;
   };
   let auditService: { record: jest.Mock };
 
@@ -795,7 +792,6 @@ describe('UserService', () => {
       removeRoleFromUser: jest.fn().mockResolvedValue(false),
       assertActorMayModifyUser: jest.fn().mockResolvedValue(undefined),
       assertNotLastActiveSuperAdmin: jest.fn().mockResolvedValue(undefined),
-      assertNotLastActiveOrgAdmin: jest.fn().mockResolvedValue(undefined),
     };
     auditService = { record: jest.fn().mockResolvedValue(undefined) };
 
@@ -982,8 +978,8 @@ describe('UserService', () => {
   });
 
   describe('findAuthState — the lean per-request read behind JwtStrategy', () => {
-    it('returns the active flag, the mandatory-password-change flag, the live organizationId and the live role refs from two lean queries', async () => {
-      usersRepo.findOne.mockResolvedValue({ id: 5, active: true, mustChangePassword: true, organizationId: 3 });
+    it('returns the active flag, the mandatory-password-change flag and the live role refs from two lean queries', async () => {
+      usersRepo.findOne.mockResolvedValue({ id: 5, active: true, mustChangePassword: true });
       userRoleService.getRoleRefsForUser.mockResolvedValue([
         { id: OPERATIONS_ROLE.id, roleName: ORDINARY_ROLE_NAMES.OPERATIONS },
         { id: SUPER_ADMIN_ROLE.id, roleName: ROLES.SUPER_ADMIN },
@@ -993,7 +989,6 @@ describe('UserService', () => {
         id: 5,
         active: true,
         mustChangePassword: true,
-        organizationId: 3,
         roles: [
           { id: OPERATIONS_ROLE.id, roleName: ORDINARY_ROLE_NAMES.OPERATIONS },
           { id: SUPER_ADMIN_ROLE.id, roleName: ROLES.SUPER_ADMIN },
@@ -1001,7 +996,7 @@ describe('UserService', () => {
       });
       expect(usersRepo.findOne).toHaveBeenCalledWith({
         where: { id: 5 },
-        select: { id: true, active: true, mustChangePassword: true, organizationId: true },
+        select: { id: true, active: true, mustChangePassword: true },
         loadEagerRelations: false,
       });
       expect(userRoleService.getRoleRefsForUser).toHaveBeenCalledWith(5);

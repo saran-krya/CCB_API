@@ -21,12 +21,6 @@ export type PolicyEffect = 'Allow';
 
 @Entity('policy_statements')
 export class PolicyStatement extends BaseEntity {
-  // Mirrors the owning Policy's organization_id — a statement is never independently listed outside
-  // its one parent Policy, but carrying this directly (rather than only reachable via policyId)
-  // keeps it consistent with every other row in this chain and lets isolation checks avoid a join.
-  @Column({ name: 'organization_id', type: 'int', nullable: true })
-  organizationId?: number | null;
-
   @Column()
   policyId!: number;
 

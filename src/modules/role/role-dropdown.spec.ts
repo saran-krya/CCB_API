@@ -44,7 +44,6 @@ describe('RoleService.getRoleDropdown — assigned user counts', () => {
       {} as AuditService,
       userRoleService as unknown as UserRoleService,
       {} as any,
-      { getOrganizationId: jest.fn().mockReturnValue(1) } as any,
     );
   });
 
@@ -178,7 +177,6 @@ describe('RoleService.getRolePicker — paged picker with the same assignability
       {} as AuditService,
       userRoleService as unknown as UserRoleService,
       {} as any,
-      { getOrganizationId: jest.fn().mockReturnValue(1) } as any,
     );
   });
 

@@ -28,10 +28,6 @@ export enum BillRunStatus {
 @Entity('bill_runs')
 @Index('IDX_bill_runs_property_cycle_status', ['propertyId', 'cycleVersionId', 'status'])
 export class BillRun extends BaseEntity {
-  // Denormalized from the owning Property.
-  @Column({ name: 'organization_id', type: 'int' })
-  organizationId!: number;
-
   @Column({ name: 'business_code', type: 'varchar', length: 20, unique: true, nullable: true })
   businessCode?: string | null;
 
