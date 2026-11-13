@@ -19,7 +19,7 @@ import {
   ModuleCatalogQueryDto,
   ModuleCatalogResponse,
 } from './dto/module-catalog.dto';
-import { MODULE_CATALOG_STATUS_FILTER, PROTECTED_MODULE_CODES } from './pmodules.constants';
+import { isProtectedModuleCode, MODULE_CATALOG_STATUS_FILTER } from './pmodules.constants';
 
 import {
   CreatePModuleDto,
@@ -71,6 +71,15 @@ export class PModulesService {
     ]);
 
     const actionCounts = new Map(actionRows.map((row) => [Number(row.screenId), Number(row.count)]));
+    // Resolves whether a screen or sub-module is itself protected (see SubModulesService/ScreensService): a module's
+    // own code (moduleCodeById), and each sub-module's parent module id (subModulePModuleId), are enough to answer it
+    // for every screen regardless of which of the two ways it is attached (subModuleId or pModuleId directly).
+    const moduleCodeById = new Map(modules.map((module) => [module.id, module.code]));
+    const subModulePModuleId = new Map(subModules.map((subModule) => [subModule.id, subModule.pModuleId]));
+    const isScreenProtected = (screen: Screen): boolean => {
+      const pModuleId = screen.pModuleId ?? (screen.subModuleId ? subModulePModuleId.get(screen.subModuleId) : undefined);
+      return isProtectedModuleCode(pModuleId !== undefined ? moduleCodeById.get(pModuleId) : undefined);
+    };
     const toScreen = (screen: Screen): CatalogScreen => ({
       id: screen.id,
       name: screen.name,
@@ -79,6 +88,7 @@ export class PModulesService {
       displayOrder: screen.displayOrder,
       isActive: screen.isActive,
       actionCount: actionCounts.get(screen.id) ?? 0,
+      isProtected: isScreenProtected(screen),
     });
 
     const screensOfSubModule = new Map<number, CatalogScreen[]>();
@@ -99,6 +109,7 @@ export class PModulesService {
         displayOrder: subModule.displayOrder,
         isActive: subModule.isActive,
         screens: screensOfSubModule.get(subModule.id) ?? [],
+        isProtected: isProtectedModuleCode(moduleCodeById.get(subModule.pModuleId)),
       };
       subModulesOfModule.set(subModule.pModuleId, [...(subModulesOfModule.get(subModule.pModuleId) ?? []), entry]);
     }
@@ -112,7 +123,7 @@ export class PModulesService {
       url: module.url ?? null,
       displayOrder: module.displayOrder ?? 0,
       isActive: module.isActive !== false,
-      isProtected: PROTECTED_MODULE_CODES.includes(module.code),
+      isProtected: isProtectedModuleCode(module.code),
       subModules: subModulesOfModule.get(module.id) ?? [],
       screens: screensOfModule.get(module.id) ?? [],
     }));
@@ -213,7 +224,7 @@ async findAll() {
       await this.findOne(id);
 
     // A module the platform needs keeps its code and stays available: an inactive module disappears from every user's menu.
-    if (PROTECTED_MODULE_CODES.includes(pModule.code)) {
+    if (isProtectedModuleCode(pModule.code)) {
       if (dto.isActive === false) {
         throw new ForbiddenException(ERROR_MESSAGES.MODULE_PROTECTED_CANNOT_DEACTIVATE);
       }
@@ -253,7 +264,7 @@ async findAll() {
     const pModule =
       await this.findOne(id);
 
-    if (PROTECTED_MODULE_CODES.includes(pModule.code)) {
+    if (isProtectedModuleCode(pModule.code)) {
       throw new ForbiddenException(ERROR_MESSAGES.MODULE_PROTECTED_CANNOT_DELETE);
     }
     // Deleting a module that still has sub-modules or screens would leave them attached to nothing.

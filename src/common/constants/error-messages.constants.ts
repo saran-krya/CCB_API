@@ -40,6 +40,19 @@ export const ERROR_MESSAGES = {
   MODULE_PROTECTED_CANNOT_DELETE: 'This module is required by the platform and cannot be deleted',
   MODULE_PROTECTED_CODE_LOCKED: 'The code of a module required by the platform cannot be changed',
   MODULE_HAS_CHILDREN: 'Delete or move this module\'s sub-modules and screens before deleting the module',
+  // A sub-module/screen that belongs to a protected module (pmodules.constants.ts, PROTECTED_MODULE_CODES) is itself
+  // protected: deleting, deactivating, re-coding or re-parenting it away would dismantle a module the platform cannot
+  // work without just as effectively as touching the module row directly (see PModulesService's own doc comment).
+  SUB_MODULE_PROTECTED_CANNOT_DEACTIVATE: 'This sub-module belongs to a module required by the platform and cannot be deactivated',
+  SUB_MODULE_PROTECTED_CANNOT_DELETE: 'This sub-module belongs to a module required by the platform and cannot be deleted',
+  SUB_MODULE_PROTECTED_CODE_LOCKED: 'The code of a sub-module that belongs to a module required by the platform cannot be changed',
+  SUB_MODULE_PROTECTED_CANNOT_REPARENT: 'This sub-module belongs to a module required by the platform and cannot be moved to another module',
+  SCREEN_PROTECTED_CANNOT_DEACTIVATE: 'This screen belongs to a module required by the platform and cannot be deactivated',
+  SCREEN_PROTECTED_CANNOT_DELETE: 'This screen belongs to a module required by the platform and cannot be deleted',
+  SCREEN_PROTECTED_CODE_LOCKED: 'The code of a screen that belongs to a module required by the platform cannot be changed',
+  SCREEN_PROTECTED_CANNOT_REPARENT: 'This screen belongs to a module required by the platform and cannot be moved to another module or sub-module',
+  SUB_MODULE_HAS_CHILDREN: 'Delete or move this sub-module\'s screens before deleting the sub-module',
+  SCREEN_HAS_CHILDREN: 'Delete or move this screen\'s actions before deleting the screen',
   PROPERTY_NOT_FOUND: 'Property not found',
   UNIT_NOT_FOUND: 'Unit not found',
   MASTER_METER_NOT_FOUND: 'Master meter not found',

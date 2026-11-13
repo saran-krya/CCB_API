@@ -1,5 +1,7 @@
 import {
   BadRequestException,
+  ConflictException,
+  ForbiddenException,
   Injectable,
   Logger,
   NotFoundException,
@@ -11,6 +13,8 @@ import { Repository } from 'typeorm';
 import { Screen } from './entities/screen.entity';
 import { SubModule } from '../sub-modules/entities/sub-module.entity';
 import { PModule } from '../pmodules/entities/pmodule.entity';
+import { Action } from '../actions/entities/action.entity';
+import { isProtectedModuleCode } from '../pmodules/pmodules.constants';
 
 import {
   CreateScreenDto,
@@ -33,7 +37,17 @@ export class ScreensService {
 
     @InjectRepository(PModule)
     private readonly pModuleRepository: Repository<PModule>,
+
+    @InjectRepository(Action)
+    private readonly actionRepository: Repository<Action>,
   ) {}
+
+  /** The code of the module this screen actually belongs to right now — directly (`pModuleId`) or one level down
+   *  through its sub-module (`subModuleId`) — whichever the screen's own parent columns say. A screen has exactly
+   *  one of the two set (ScreenService.create/update enforce that), never both. */
+  private owningModuleCode(screen: Screen): string | null | undefined {
+    return screen.pModule?.code ?? screen.subModule?.pModule?.code;
+  }
 
   async create(dto: CreateScreenDto) {
     if (!dto.subModuleId && !dto.pModuleId) {
@@ -91,7 +105,7 @@ export class ScreensService {
   async findOne(id: number) {
     const screen = await this.screenRepository.findOne({
       where: { id },
-      relations: ['subModule', 'pModule'],
+      relations: ['subModule', 'subModule.pModule', 'pModule'],
     });
 
     if (!screen) throw new NotFoundException(ERROR_MESSAGES.SCREEN_NOT_FOUND);
@@ -100,6 +114,22 @@ export class ScreensService {
 
   async update(id: number, dto: UpdateScreenDto) {
     const screen = await this.findOne(id);
+
+    // A screen that currently belongs (directly, or through its sub-module) to a protected module is itself
+    // protected — the same reasoning as SubModulesService's own check, one level further down the tree.
+    if (isProtectedModuleCode(this.owningModuleCode(screen))) {
+      if (dto.isActive === false) {
+        throw new ForbiddenException(ERROR_MESSAGES.SCREEN_PROTECTED_CANNOT_DEACTIVATE);
+      }
+      if (dto.code !== undefined && dto.code !== screen.code) {
+        throw new ForbiddenException(ERROR_MESSAGES.SCREEN_PROTECTED_CODE_LOCKED);
+      }
+      const movesSubModule = dto.subModuleId !== undefined && dto.subModuleId !== screen.subModuleId;
+      const movesPModule = dto.pModuleId !== undefined && dto.pModuleId !== screen.pModuleId;
+      if (movesSubModule || movesPModule) {
+        throw new ForbiddenException(ERROR_MESSAGES.SCREEN_PROTECTED_CANNOT_REPARENT);
+      }
+    }
 
     if (dto.subModuleId && dto.pModuleId) {
       throw new BadRequestException(
@@ -127,6 +157,17 @@ export class ScreensService {
 
   async remove(id: number) {
     const screen = await this.findOne(id);
+
+    if (isProtectedModuleCode(this.owningModuleCode(screen))) {
+      throw new ForbiddenException(ERROR_MESSAGES.SCREEN_PROTECTED_CANNOT_DELETE);
+    }
+    // Deleting a screen that still defines actions would leave them attached to nothing (the same rule
+    // PModulesService.remove() / SubModulesService.remove() apply one and two levels up).
+    const actionCount = await this.actionRepository.count({ where: { screenId: id } });
+    if (actionCount > 0) {
+      throw new ConflictException(ERROR_MESSAGES.SCREEN_HAS_CHILDREN);
+    }
+
     await this.screenRepository.softRemove(screen);
     return { message: 'Screen deleted successfully' };
   }

@@ -25,6 +25,9 @@ export interface CatalogScreen {
   isActive: boolean;
   /** Active permission actions defined on this screen. */
   actionCount: number;
+  /** This screen belongs (directly, or through its sub-module) to a module the platform needs (PROTECTED_MODULE_CODES):
+   *  it cannot be deactivated, re-coded, re-parented or deleted (ScreensService). */
+  isProtected: boolean;
 }
 
 export interface CatalogSubModule {
@@ -35,6 +38,9 @@ export interface CatalogSubModule {
   displayOrder: number;
   isActive: boolean;
   screens: CatalogScreen[];
+  /** This sub-module belongs to a module the platform needs (PROTECTED_MODULE_CODES): it cannot be deactivated,
+   *  re-coded, re-parented or deleted (SubModulesService). */
+  isProtected: boolean;
 }
 
 export interface CatalogModule {

@@ -1,5 +1,6 @@
 import {
   ConflictException,
+  ForbiddenException,
   Injectable,
   Logger,
   NotFoundException,
@@ -18,6 +19,7 @@ import {
 
 import { SubModule } from './entities/sub-module.entity';
 import { PModule } from '../pmodules/entities/pmodule.entity';
+import { isProtectedModuleCode } from '../pmodules/pmodules.constants';
 import { SUB_MODULES } from '../../bootstrap/seed-data';
 import { ERROR_MESSAGES } from '../../common/constants/error-messages.constants';
 import { SORT_ORDER } from '../../common/constants/sort.constants';
@@ -130,6 +132,21 @@ export class SubModulesService {
     const subModule =
       await this.findOne(id);
 
+    // A sub-module that currently belongs to a protected module (pmodules.constants.ts) is itself protected: it
+    // cannot be deactivated, re-coded, re-parented away, or (see remove() below) deleted — each would dismantle
+    // the protected module's functionality just as effectively as touching the module row directly.
+    if (isProtectedModuleCode(subModule.pModule?.code)) {
+      if (dto.isActive === false) {
+        throw new ForbiddenException(ERROR_MESSAGES.SUB_MODULE_PROTECTED_CANNOT_DEACTIVATE);
+      }
+      if (dto.code !== undefined && dto.code !== subModule.code) {
+        throw new ForbiddenException(ERROR_MESSAGES.SUB_MODULE_PROTECTED_CODE_LOCKED);
+      }
+      if (dto.pModuleId !== undefined && dto.pModuleId !== subModule.pModuleId) {
+        throw new ForbiddenException(ERROR_MESSAGES.SUB_MODULE_PROTECTED_CANNOT_REPARENT);
+      }
+    }
+
     if (
       dto.pModuleId &&
       dto.pModuleId !==
@@ -200,6 +217,15 @@ export class SubModulesService {
   ) {
     const subModule =
       await this.findOne(id);
+
+    if (isProtectedModuleCode(subModule.pModule?.code)) {
+      throw new ForbiddenException(ERROR_MESSAGES.SUB_MODULE_PROTECTED_CANNOT_DELETE);
+    }
+    // Deleting a sub-module that still has screens would leave them attached to nothing (the same rule
+    // PModulesService.remove() applies one level up).
+    if ((subModule.screens?.length ?? 0) > 0) {
+      throw new ConflictException(ERROR_MESSAGES.SUB_MODULE_HAS_CHILDREN);
+    }
 
     await this.subModuleRepository.softRemove(
       subModule,

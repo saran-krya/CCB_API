@@ -59,7 +59,7 @@ describe('PModulesService', () => {
       const customer = tree[1];
       expect(customer.subModules.map((s) => s.code)).toEqual(['CUSTOMER_LIST', 'REGISTRATION_REQUESTS']);
       expect(customer.subModules[0].screens).toEqual([
-        { id: 100, name: 'Customer Screen', code: 'CUSTOMER_SCREEN', url: '/customers', displayOrder: 1, isActive: true, actionCount: 4 },
+        { id: 100, name: 'Customer Screen', code: 'CUSTOMER_SCREEN', url: '/customers', displayOrder: 1, isActive: true, actionCount: 4, isProtected: false },
       ]);
       expect(customer.subModules[1].screens).toEqual([]);
       // A screen directly under a module (no sub-module) appears on the module itself.
@@ -92,6 +92,16 @@ describe('PModulesService', () => {
 
       expect(tree.find((m) => m.code === 'DASHBOARD')?.isProtected).toBe(true);
       expect(tree.find((m) => m.code === 'CUSTOMER_MANAGEMENT')?.isProtected).toBe(false);
+    });
+
+    it('marks a sub-module and a screen as protected when their (grand)parent module is protected', async () => {
+      const { modules: tree } = await service.getCatalog();
+
+      const dashboard = tree.find((m) => m.code === 'DASHBOARD')!;
+      expect(dashboard.screens.find((s) => s.code === 'DASH_OVERVIEW')?.isProtected).toBe(true);
+      const customer = tree.find((m) => m.code === 'CUSTOMER_MANAGEMENT')!;
+      expect(customer.subModules.find((s) => s.code === 'CUSTOMER_LIST')?.isProtected).toBe(false);
+      expect(customer.subModules.find((s) => s.code === 'CUSTOMER_LIST')?.screens.find((s) => s.code === 'CUSTOMER_SCREEN')?.isProtected).toBe(false);
     });
 
     it('filters on the module\'s own availability', async () => {

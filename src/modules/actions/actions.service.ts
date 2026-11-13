@@ -156,9 +156,10 @@ export class ActionsService {
 
     if (SYSTEM_ACTION_CODES.has(action.code)) {
       const renames = (dto.code !== undefined && dto.code !== action.code) || (dto.name !== undefined && dto.name !== action.name);
-      if (renames || dto.isActive === false) {
+      const reparents = dto.screenId !== undefined && dto.screenId !== action.screenId;
+      if (renames || reparents || dto.isActive === false) {
         throw new ConflictException(
-          `"${action.code}" is a system permission — it cannot be renamed or deactivated, because authorization depends on it.`,
+          `"${action.code}" is a system permission — it cannot be renamed, moved to another screen, or deactivated, because authorization depends on it.`,
         );
       }
     }

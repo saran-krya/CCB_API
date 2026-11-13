@@ -1,0 +1,120 @@
+# CCB Platform — Audit Remediation Tracker
+
+Persistent, resumable record of the complete audit remediation project (Phases 1–7). Read this file first in any
+new session before touching a finding — it says exactly what is done, what is partial, and what is next.
+
+**IMPORTANT — source-of-truth gap.** No original audit report document (the one enumerating every finding C1–L14
+and X1–X8 with its own description) exists in this repository or `CCB_WEB`/`CCB_template`, and none has been
+pasted into this project in full — only phase-grouped bullet summaries, with explicit IDs for some findings
+(C1, H1, H3, H4, M1, M5, M6, M7, M10, X1, X2) and none for the rest (every Phase 3–6 bullet, and the entire L1–L14
+range). This tracker records real findings by the description actually given, and uses the real ID where one was
+given. It does **not** invent IDs or descriptions for L1–L14 or any other unlabeled finding — if the original
+report exists outside this conversation, provide it so those rows can be filled in accurately instead of guessed.
+
+**How to resume:** read the status table below, open the "Next action" line, continue from there. Do not re-open a
+row marked Fixed without a reason (regression, new information). Do not assume a file described here still matches
+reality in a later session — re-read it; this file is a log of what was done and verified, not a live mirror of
+the code.
+
+---
+
+## Status table
+
+| ID | Finding | Phase | Status | Session |
+|---|---|---|---|---|
+| C1 | Production startup/build path issues | 1 | Fixed (prior session) | — |
+| H1 | SUPER_ADMIN account lockout vulnerability | 1 | Fixed (prior session) | — |
+| H4 | Node.js runtime compatibility | 1 | Fixed (prior session) | — |
+| M5 | Health/liveness/readiness endpoints | 1 | Fixed (prior session) | — |
+| M6 | Graceful application shutdown | 1 | Fixed (prior session) | — |
+| M7 | Reverse-proxy IP detection / TRUST_PROXY | 1 | Fixed (prior session) | — |
+| H3 | Audit logs security hardening | 2 | **Fixed** | 2026-11-13 (commit `23b1b3f`) |
+| M1 | Module Catalog backend protection and immutability | 2 | **Fixed** | 2026-11-14 |
+| M10 | SUPER_ADMIN password reset security | 2 | In progress | 2026-11-14 |
+| — | Missing security audit events | 2 | Not started | — |
+| — | Authentication timing / invitation token security | 2 | Not started | — |
+| — | Authorization consistency across modules | 2 | Not started | — |
+| X1 | MFA/2FA, especially for SUPER_ADMIN | 2 | Not started | — |
+| X2 | Secure password recovery | 2 | Not started | — |
+| — | Database permissions / sensitive configuration review | 2 | Not started | — |
+| — | Phase 3 — i18n/RTL (all bullets) | 3 | Not started | — |
+| — | Phase 4 — audit/DB/performance (all bullets) | 4 | Not started | — |
+| — | Phase 5 — platform settings/missing features (all bullets) | 5 | Not started | — |
+| — | Phase 6 — infrastructure/operations (all bullets) | 6 | Not started | — |
+| L1–L14 | Unknown — no original report text available | 6 | **Cannot be enumerated without the source report** | — |
+| — | Phase 7 — final verification | 7 | Not started | — |
+
+**Next action:** M10 (SUPER_ADMIN password reset security).
+
+---
+
+## H3 — Audit logs security hardening (Fixed, commit `23b1b3f`)
+
+See `docs/OPERATIONS.md` §7 for the operational writeup. Summary for this tracker:
+
+- **Root cause:** `audit_logs` had no database-level enforcement against UPDATE/DELETE (no trigger existed), and
+  the documented `SECURITY_EVENT.ACCESS_DENIED` event was never actually written by anything.
+- **Implementation:** `src/migrations/1795700000000-AddAuditLogsAppendOnlyTrigger.ts` (BEFORE UPDATE/DELETE
+  triggers); `scripts/db/provision-db-users.sql` (TRIGGER privilege to the migration account only); `scripts/ops/preflight.ts`
+  (verifies both triggers exist); `src/common/security/access-denied-audit.ts` + `.spec.ts` (writes `ACCESS_DENIED`
+  for a signed-in staff 403, wired into `src/main.ts`); `src/audit/audit.module.ts` (provider registration).
+- **Verification:** `npx jest src/audit src/common/security` — 3 suites / 47 tests pass. `tsc --noEmit` clean.
+  **Database-level (the trigger actually blocking a real UPDATE/DELETE) is NOT verified** — no migration has been
+  run against any database this project. Operator action required before this is live: run
+  `npm run migration:run` with the migration account, re-apply the updated GRANT to any already-provisioned
+  `ccb_migrator`, then `npm run preflight` should show "Audit log immutability: PASS".
+
+---
+
+## M1 — Module Catalog backend protection and immutability (Fixed, 2026-11-14)
+
+- **Root cause:** protection against deactivating/renaming/deleting a module the platform needs
+  (`PROTECTED_MODULE_CODES` = DASHBOARD, SYSTEM_ADMIN, PERSONAL_SETTINGS, SECURITY_SETTINGS) existed ONLY on
+  the `PModule` row itself (`PModulesService.update`/`remove`). `SubModulesService` and `ScreensService` had
+  **no** such check at all — any sub-module or screen could be deactivated, re-coded, moved to a different
+  module, or deleted unconditionally, including ones a protected module's menu entry actually depends on (e.g.
+  `SETTINGS_PASSWORD` under `SECURITY_SETTINGS`, every sub-module under `SYSTEM_ADMIN`). Deleting all of a
+  protected module's children has the same practical effect as deleting the module: an empty, useless menu
+  entry. Separately, neither service checked for orphaned children before a soft-delete (a sub-module with
+  screens still under it, a screen with actions still defined on it) — a real data-integrity gap, not just a
+  protection one. `ActionsService` already had its own, more precise protection (`SYSTEM_ACTION_CODES`:
+  every seeded action code + every IAM resource-catalog code) but did not block **re-parenting** a system
+  action to a different screen.
+- **Design decision:** rather than maintain a second, hand-curated whitelist of "protected sub-module/screen
+  codes" (fragile, drifts from the seed data), a sub-module/screen is protected when its CURRENT parent
+  resolves (directly, or one level through its sub-module) to a `PROTECTED_MODULE_CODES` entry — single
+  source of truth, same architecture pattern the module level already used. This is intentionally coarse: it
+  protects every sub-module/screen under those 4 modules, not just the ones literally required for sign-in and
+  self-service. Documented as a deliberate, conservative choice.
+- **Implementation:**
+  - `src/modules/pmodules/pmodules.constants.ts` — added `isProtectedModuleCode()` helper (single source of
+    truth, used everywhere below instead of ad-hoc `.includes()`).
+  - `src/modules/sub-modules/sub-modules.service.ts` — `update()` now blocks deactivate/code-change/re-parent
+    of a sub-module whose current module is protected; `remove()` blocks deleting a protected sub-module AND
+    blocks deleting one that still has screens.
+  - `src/modules/screens/screens.service.ts` — same four checks for a screen, resolving its owning module
+    either directly (`pModuleId`) or through its sub-module (`subModuleId` → `subModule.pModule`); `remove()`
+    also blocks deleting a screen that still has actions. Needed the `Action` entity registered in
+    `screens.module.ts` (`TypeOrmModule.forFeature`) to run that check.
+  - `src/modules/actions/actions.service.ts` — `update()` now also rejects re-parenting (`screenId` change)
+    for a system action, alongside the existing rename/deactivate block.
+  - `src/common/constants/error-messages.constants.ts` — new messages:
+    `SUB_MODULE_PROTECTED_CANNOT_DEACTIVATE/DELETE/CODE_LOCKED/CANNOT_REPARENT`,
+    `SCREEN_PROTECTED_CANNOT_DEACTIVATE/DELETE/CODE_LOCKED/CANNOT_REPARENT`, `SUB_MODULE_HAS_CHILDREN`,
+    `SCREEN_HAS_CHILDREN`.
+  - `src/modules/pmodules/dto/module-catalog.dto.ts` + `pmodules.service.ts` (`getCatalog()`) — added
+    `isProtected` to `CatalogSubModule`/`CatalogScreen` (previously module-level only), so the console can show
+    *why* a toggle is disabled instead of the administrator only finding out from a 403 toast.
+  - RBAC: confirmed (no change needed) — `PModulesController`/`SubModulesController`/`ScreensController`/
+    `ActionsController` are already consistently `@Roles(SUPER_ADMIN)` at the class level.
+- **Migrations:** none — no schema change, only service-layer logic and a DTO field.
+- **Tests:** new `src/modules/sub-modules/sub-modules.service.spec.ts` (9 tests) and
+  `src/modules/screens/screens.service.spec.ts` (13 tests) — did not exist before this finding. Updated
+  `src/modules/pmodules/pmodules.service.spec.ts` (+2 tests, 1 existing assertion extended for the new
+  `isProtected` field) and `src/modules/actions/actions.service.spec.ts` (reparent case added, one message
+  string updated). `npx jest src/modules/pmodules src/modules/sub-modules src/modules/screens src/modules/actions`
+  → **4 suites / 61 tests, all pass.** `tsc --noEmit` → clean.
+- **Remaining:** none identified. Frontend (`CCB_WEB`) Module Catalog UI was not touched — out of scope for a
+  backend finding; it already surfaces a 403 as an error toast generically, and now also receives
+  `isProtected` on sub-modules/screens if a future UI pass wants to grey out the control pre-emptively instead
+  of only after a rejected request.

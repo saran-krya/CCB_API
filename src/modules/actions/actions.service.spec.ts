@@ -154,13 +154,14 @@ describe('ActionsService audit trail', () => {
     });
 
     it.each(['VIEW_CUSTOMER', 'CREATE_USER', 'EDIT_USER', 'DELETE_USER', 'VIEW_ROLE', 'RESET_USER_PASSWORD', 'IMPORT_CENTER_VIEW'])(
-      '%s cannot be renamed (code or name), deactivated or deleted — 409, nothing saved, nothing audited',
+      '%s cannot be renamed (code or name), moved to another screen, deactivated or deleted — 409, nothing saved, nothing audited',
       async (code) => {
         actionRepo.findOne.mockResolvedValue(system(code));
 
         await expect(service.update(7, { code: `${code}_X` } as any, 5)).rejects.toThrow(ConflictException);
         await expect(service.update(7, { name: 'Renamed' } as any, 5)).rejects.toThrow(ConflictException);
         await expect(service.update(7, { isActive: false } as any, 5)).rejects.toThrow(ConflictException);
+        await expect(service.update(7, { screenId: 99 } as any, 5)).rejects.toThrow(ConflictException);
         await expect(service.remove(7, 5)).rejects.toThrow(ConflictException);
 
         expect(actionRepo.save).not.toHaveBeenCalled();
@@ -173,7 +174,7 @@ describe('ActionsService audit trail', () => {
       actionRepo.findOne.mockResolvedValue(system('VIEW_CUSTOMER'));
 
       await expect(service.update(7, { isActive: false } as any, 5)).rejects.toThrow(
-        '"VIEW_CUSTOMER" is a system permission — it cannot be renamed or deactivated, because authorization depends on it.',
+        '"VIEW_CUSTOMER" is a system permission — it cannot be renamed, moved to another screen, or deactivated, because authorization depends on it.',
       );
       await expect(service.remove(7, 5)).rejects.toThrow(
         '"VIEW_CUSTOMER" is a system permission and cannot be deleted, because authorization depends on it.',
