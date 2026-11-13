@@ -61,13 +61,23 @@ The acting user is passed to the services as an `Actor` built from the live prin
   user gets 403 `PASSWORD_CHANGE_REQUIRED` everywhere except routes marked `@AllowPendingPasswordChange`.
   An admin reset defaults to `mustChangePassword = true`; the bootstrap admin is created with it set.
 * **Brute force**: per-IP request throttling (`THROTTLE_*`, strict limits on credential routes) plus a failed
-  sign-in lock-out per account **and** per IP (`LOGIN_*`), returning 429 with `Retry-After` before any password
-  is checked; unknown emails are counted identically (no user enumeration). A counter that ever loses its expiry
-  (a Redis hiccup between `INCR` and `EXPIRE`) is repaired on the next read, so a lock can never become permanent.
-  Counters live in Redis when it is reachable and in process memory otherwise. A wrong **current password** on
-  `PATCH /auth/change-password` counts toward the same account and IP counters (a locked account or IP gets the same
-  429 before the password is checked; a correct current password clears the account's counter), so a stolen or
-  unattended session cannot guess the password without meeting the sign-in lock-out. `loginLockoutLimits()`
+  sign-in lock-out, returning 429 with `Retry-After` before any password is checked; unknown emails are counted
+  identically (no user enumeration). The lock-out counts failures **three ways** (fixed windows, `LOGIN_*`):
+  per **account and client** (one IP guessing one account is refused for that account — the account's owner, from
+  another address, is not affected, so a stranger cannot lock the owner out by failing on purpose), per **client
+  IP** (one machine spraying many accounts), and per **account across all clients** at a much higher threshold, which
+  puts the account into *protected mode*: only a client that has signed in to it within `LOGIN_KNOWN_CLIENT_DAYS`
+  still gets through, strangers are refused until the window ends (a successful sign-in ends the mode). It can always
+  be lifted: **Unlock sign-in** on the user's Manage sign-in access screen (`POST /auth/users/:id/unlock-signin`,
+  needs `RESET_USER_PASSWORD`), or on the server `npm run maintenance:unlock-signin` when nobody can sign in
+  (docs/OPERATIONS.md, "Sign-in lock-out"). Lock-out events are written to the audit trail (module `security`:
+  `LOGIN_FAILED` — capped at 12 a minute per account and 200 overall — `ACCOUNT_LOCKED`, `ACCOUNT_PROTECTED`,
+  `IP_LOCKED`, `SIGNIN_UNLOCKED`, `REFRESH_REPLAY_DETECTED`). A counter that ever loses its expiry (a Redis hiccup
+  between `INCR` and `EXPIRE`) is repaired on the next read, so a lock can never become permanent. Counters live in
+  Redis when it is reachable and in process memory otherwise. A wrong **current password** on
+  `PATCH /auth/change-password` counts toward the same counters (a locked client gets the same 429 before the
+  password is checked; a correct current password clears the account's counters), so a stolen or unattended session
+  cannot guess the password without meeting the sign-in lock-out. `loginLockoutLimits()`
   (`src/auth/login-attempts.service.ts`) is the one resolver of the thresholds.
 * **Credential audit trail**: a self-service password change is recorded as `CHANGE_PASSWORD` and every wrong current
   password as `CHANGE_PASSWORD_FAILED` (`locked: true` on the failure that trips the lock-out), under module `users`

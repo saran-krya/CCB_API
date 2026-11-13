@@ -1,4 +1,5 @@
 import { durationToMs, isPlaceholderSecret, resolveAppEnvironment } from './runtime-config';
+import { isTrustProxyValue } from './trust-proxy';
 import { ENV_KEY, APP_ENVIRONMENT } from '../common/constants/env.constants';
 
 /** Secrets that must be a real value in every production-like environment. */
@@ -53,6 +54,12 @@ export function validateEnv(raw: Record<string, unknown>): Record<string, unknow
 
   if ((env.CORS_ORIGINS ?? '').split(',').some((origin) => origin.trim() === '*')) {
     problems.push('CORS_ORIGINS must list explicit origins, not "*".');
+  }
+
+  // TRUST_PROXY decides whose X-Forwarded-For the API believes; "true" (trust every client) would let anyone choose the address the sign-in lock-out
+  // and the request throttle see — see config/trust-proxy.ts.
+  if (!isTrustProxyValue(env.TRUST_PROXY ?? '')) {
+    problems.push('TRUST_PROXY must be the number of reverse-proxy hops in front of the API (for example 1), "loopback", or a list of IP addresses / CIDR ranges — not "true".');
   }
 
   // The "Remember me" refresh lifetime: a malformed value would otherwise only surface as a failed sign-in the first time

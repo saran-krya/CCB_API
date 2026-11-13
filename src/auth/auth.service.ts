@@ -15,7 +15,8 @@ import { IsNull, MoreThan, Repository } from 'typeorm';
 import * as bcrypt from 'bcryptjs';
 import { Actor, actorUserId } from '../common/security/actor';
 import { isStrongPassword } from '../common/validators/strong-password.validator';
-import { LoginAttemptsService } from './login-attempts.service';
+import { FailureOutcome, LoginAttemptsService, LockState } from './login-attempts.service';
+import { SecurityEventService } from '../audit/security-event.service';
 import { UserService } from '../modules/user/user.service';
 import { UserRoleService } from '../modules/user-role/user-role.service';
 import { CustomerService } from '../modules/customer/customer.service';
@@ -53,7 +54,7 @@ import {
 import { DEFAULT_LIMIT } from '../common/constants/pagination.constants';
 import { ERROR_MESSAGES } from '../common/constants/error-messages.constants';
 import { PRINCIPAL_TYPE, PrincipalType, PASSWORD_HASH_ROUNDS, DEFAULT_REFRESH_TOKEN_EXPIRES_IN, DEFAULT_REFRESH_TOKEN_REMEMBER_ME_EXPIRES_IN, TOKEN_TYPE_BEARER, ACTOR_KIND } from '../common/constants/auth.constants';
-import { AUDIT_CREDENTIAL_ACTION, AUDIT_MODULE } from '../audit/audit.constants';
+import { AUDIT_CREDENTIAL_ACTION, AUDIT_MODULE, SECURITY_EVENT } from '../audit/audit.constants';
 import { SORT_ORDER } from '../common/constants/sort.constants';
 import { ENV_KEY } from '../common/constants/env.constants';
 import { refreshTokenLifetime } from '../config/runtime-config';
@@ -99,6 +100,10 @@ export class AuthService {
     // for a few seconds). Optional only so a test can build the service without it; without it that cache just expires.
     @Optional()
     private readonly sessions?: SessionLivenessService,
+    // Security events (lock-outs, replayed refresh tokens, unlocks) go to the audit trail through this. Optional only so a test can build the
+    // service without it; the running app always provides it (AuditModule is global).
+    @Optional()
+    private readonly security?: SecurityEventService,
   ) {}
 
   /** Tries the staff User table first (the existing, larger population), then falls back to
@@ -124,7 +129,7 @@ export class AuthService {
       const valid = !!user.passwordHash && (await bcrypt.compare(dto.password, user.passwordHash));
       if (!valid) {
         this.logger.warn(`Staff login rejected for ${maskEmail(dto.email)} — password mismatch or no password set`);
-        await this.attempts?.recordFailure(dto.email, clientIp);
+        await this.noteFailedSignIn(dto.email, clientIp, { accountExists: true, entityId: user.id });
         throw new UnauthorizedException(ERROR_MESSAGES.INVALID_CREDENTIALS);
       }
 
@@ -144,11 +149,11 @@ export class AuthService {
       const primaryRole = await this.userRoles.getPrimaryRole(user.id);
       if (!primaryRole) {
         this.logger.warn(`Staff login rejected for ${maskEmail(dto.email)} — no role assigned (userId=${user.id})`);
-        await this.attempts?.recordFailure(dto.email, clientIp);
+        await this.noteFailedSignIn(dto.email, clientIp, { accountExists: true, entityId: user.id });
         throw new UnauthorizedException(ERROR_MESSAGES.INVALID_CREDENTIALS);
       }
 
-      await this.attempts?.recordSuccess(dto.email);
+      await this.attempts?.recordSuccess(dto.email, clientIp);
       await this.users.updateLastLogin(user.id);
       await this.insertLoginHistory(PRINCIPAL_TYPE.STAFF, user.id, deviceCtx);
       this.logger.log(`Staff login succeeded for ${maskEmail(dto.email)} (userId=${user.id})`);
@@ -175,10 +180,10 @@ export class AuthService {
     if (!customerValid) {
       this.logger.warn(`Customer login rejected for ${maskEmail(dto.email)} — password mismatch, no account, or no password set`);
       // Counted the same whether or not the email exists, so the lock-out never reveals which emails are real.
-      await this.attempts?.recordFailure(dto.email, clientIp);
+      await this.noteFailedSignIn(dto.email, clientIp, { accountExists: !!customer });
       throw new UnauthorizedException(ERROR_MESSAGES.INVALID_CREDENTIALS);
     }
-    await this.attempts?.recordSuccess(dto.email);
+    await this.attempts?.recordSuccess(dto.email, clientIp);
 
     // `accountStatus === ACTIVE` is NOT required to log in — a Customer who has completed account
     // setup (set a password) but is still awaiting a required Security Deposit stays `INACTIVE`
@@ -230,6 +235,7 @@ export class AuthService {
     if (stored.revokedAt) {
       // A replayed (already rotated or revoked) token: the whole session is ended — tokens, device and history row.
       await this.endSessions(stored.principalType, stored.userId, { only: [stored.family] });
+      await this.noteRefreshReplay(stored, 'reused');
       throw new UnauthorizedException(ERROR_MESSAGES.REFRESH_TOKEN_ALREADY_USED);
     }
 
@@ -266,6 +272,7 @@ export class AuthService {
       .execute();
     if (!rotation.affected) {
       await this.endSessions(stored.principalType, stored.userId, { only: [stored.family] });
+      await this.noteRefreshReplay(stored, 'raced');
       throw new UnauthorizedException(ERROR_MESSAGES.REFRESH_TOKEN_ALREADY_USED);
     }
 
@@ -403,7 +410,7 @@ export class AuthService {
       await this.recordCurrentPasswordFailure(principalType, principal.sub, account.email, deviceCtx);
       throw new UnauthorizedException(ERROR_MESSAGES.CURRENT_PASSWORD_INCORRECT);
     }
-    await this.attempts?.recordSuccess(account.email);
+    await this.attempts?.recordSuccess(account.email, clientIp);
 
     await this.assertPasswordIsNew(dto.newPassword, account.passwordHash);
     const newHash = await bcrypt.hash(dto.newPassword, PASSWORD_HASH_ROUNDS);
@@ -483,7 +490,8 @@ export class AuthService {
         ? `Password change rejected for staff userId=${principalId} — current password mismatch`
         : `Password change rejected for customerId=${principalId} — current password mismatch`,
     );
-    await this.attempts?.recordFailure(email, deviceCtx?.ipAddress);
+    const outcome = await this.attempts?.recordFailure(email, deviceCtx?.ipAddress);
+    await this.noteLockout(email, deviceCtx?.ipAddress, outcome, principalType === PRINCIPAL_TYPE.STAFF ? principalId : undefined);
     const lock = await this.attempts?.lockState(email, deviceCtx?.ipAddress);
     await this.recordPasswordAudit(principalType, principalId, AUDIT_CREDENTIAL_ACTION.CHANGE_PASSWORD_FAILED, {
       locked: lock?.locked === true,
@@ -632,6 +640,92 @@ export class AuthService {
     });
   }
 
+  /**
+   * Admin-triggered "Unlock sign-in" for ANOTHER staff user: clears the sign-in lock-out counters of the account (every client, every flow) so its
+   * owner can try again at once instead of waiting out the window. The lock-out protects an account from guessing; it must never be a way to keep
+   * an administrator out, so there is always a way to lift it — this, and the server maintenance tool (`npm run maintenance:unlock-signin`) for the
+   * case where nobody can sign in. A client IP that is itself locked stays locked (that is the guesser, not the account).
+   */
+  async adminUnlockSignin(targetUserId: number, actor: Actor): Promise<{ countersCleared: number }> {
+    const targetUser = await this.users.findOne(targetUserId);
+    await this.userRoles.assertActorMayModifyUser(actor, targetUserId);
+    const countersCleared = (await this.attempts?.unlock(targetUser.email)) ?? 0;
+
+    this.logger.log(`Sign-in unlocked by actorId=${actorUserId(actor) ?? 'unknown'} for staff userId=${targetUserId}`);
+    await this.audit.record({
+      moduleName: AUDIT_MODULE.USERS,
+      entityId: targetUserId,
+      action: 'UNLOCK_SIGNIN',
+      oldValue: { email: targetUser.email },
+      newValue: { countersCleared },
+      performedBy: actorUserId(actor),
+    });
+    await this.security?.record({
+      action: SECURITY_EVENT.SIGNIN_UNLOCKED,
+      entityId: targetUserId,
+      actorId: actorUserId(actor) ?? null,
+      details: { countersCleared },
+    });
+    return { countersCleared };
+  }
+
+  /** Where the account's sign-in lock-out stands, for the Manage sign-in access screen: whether the account is in protected mode (too many failures
+   *  from too many clients). A single client that is locked out of the account is not shown here — it is not the account's state. */
+  async getSigninLockState(email: string): Promise<LockState> {
+    return (await this.attempts?.accountState(email)) ?? { locked: false, retryAfterSeconds: 0 };
+  }
+
+  /** Counts one failed sign-in and, for the failure that CROSSES a threshold, writes the lock-out event; every failure is also written, at most once
+   *  a minute per account and client, so the audit trail shows an attack without being flooded by it. */
+  private async noteFailedSignIn(
+    email: string,
+    ip: string | undefined,
+    context: { accountExists: boolean; entityId?: number },
+  ): Promise<void> {
+    const outcome = await this.attempts?.recordFailure(email, ip);
+    await this.security?.record({
+      action: SECURITY_EVENT.LOGIN_FAILED,
+      entityId: context.entityId,
+      details: { account: maskEmail(email), accountExists: context.accountExists, ip: ip ?? null },
+      // Once a minute per account and client, and capped per account and overall: an attack that varies the client address or sprays many accounts
+      // is still visible (the lock-out events below are never capped) without writing a row for every attempt.
+      dedupeKey: `login-failed:${email.trim().toLowerCase()}:${ip ?? ''}`,
+      rates: [
+        { key: `login-failed:acct:${email.trim().toLowerCase()}`, max: 12 },
+        { key: 'login-failed:all', max: 200 },
+      ],
+    });
+    await this.noteLockout(email, ip, outcome, context.entityId);
+  }
+
+  /** Writes an event for each lock-out threshold a failure has just crossed (and logs it, so an operator sees it without the audit screen). */
+  private async noteLockout(email: string, ip: string | undefined, outcome: FailureOutcome | undefined, entityId?: number): Promise<void> {
+    if (!outcome) return;
+    const account = maskEmail(email);
+    if (outcome.clientLocked) {
+      this.logger.warn(`Sign-in locked for ${account} from ${ip ?? 'an unknown client'} after repeated failures`);
+      await this.security?.record({ action: SECURITY_EVENT.ACCOUNT_LOCKED, entityId, details: { account, ip: ip ?? null } });
+    }
+    if (outcome.accountProtected) {
+      this.logger.warn(`${account} is under a guessing attack from many clients: sign-in is now limited to clients that have signed in before`);
+      await this.security?.record({ action: SECURITY_EVENT.ACCOUNT_PROTECTED, entityId, details: { account } });
+    }
+    if (outcome.ipLocked && ip) {
+      this.logger.warn(`Client ${ip} is locked after repeated failed sign-ins`);
+      await this.security?.record({ action: SECURITY_EVENT.IP_LOCKED, details: { ip } });
+    }
+  }
+
+  /** A refresh token that was already used (or revoked) came back: someone holds a copy. The session is already ended; this leaves the trail. */
+  private async noteRefreshReplay(stored: RefreshToken, how: 'reused' | 'raced'): Promise<void> {
+    await this.security?.record({
+      action: SECURITY_EVENT.REFRESH_REPLAY_DETECTED,
+      entityId: stored.principalType === PRINCIPAL_TYPE.STAFF ? stored.userId : undefined,
+      details: { principalType: stored.principalType, ...(stored.principalType === PRINCIPAL_TYPE.CUSTOMER ? { customerId: stored.userId } : {}), how },
+      dedupeKey: `refresh-replay:${stored.family}`,
+    });
+  }
+
   /** The admin credential actions are for OTHER people's accounts; your own go through the self-service
    *  flows, which require your current password / your own session. */
   private assertNotSelf(actor: Actor, targetUserId: number, message: string): void {
@@ -641,10 +735,13 @@ export class AuthService {
   }
 
   async getSigninAccessStatus(targetUserId: number): Promise<SigninAccessStatusResponseDto> {
-    const status = await this.users.getSigninAccessStatus(targetUserId);
+    const [status, target] = await Promise.all([this.users.getSigninAccessStatus(targetUserId), this.users.findOne(targetUserId)]);
+    const lock = await this.getSigninLockState(target.email);
     return {
       signinAccessEnabled: status.signinAccessEnabled,
       passwordUpdatedAt: status.passwordUpdatedAt?.toISOString() ?? null,
+      signinProtected: lock.locked,
+      signinProtectedRetryAfterSeconds: lock.locked ? Math.ceil(lock.retryAfterSeconds) : null,
     };
   }
 

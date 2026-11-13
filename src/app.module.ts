@@ -48,6 +48,7 @@ import { GlobalSearchModule } from './modules/global-search/global-search.module
 import { SystemHealthModule } from './modules/system-health/system-health.module';
 import { EmailTemplateModule } from './modules/email-template/email-template.module';
 import { AccountInvitationModule } from './modules/account-invitation/account-invitation.module';
+import { HealthModule } from './health/health.module';
 
 @Module({
   imports: [
@@ -97,6 +98,7 @@ import { AccountInvitationModule } from './modules/account-invitation/account-in
     SystemHealthModule,
     EmailTemplateModule,
     AccountInvitationModule,
+    HealthModule,
   ],
 })
 export class AppModule {}

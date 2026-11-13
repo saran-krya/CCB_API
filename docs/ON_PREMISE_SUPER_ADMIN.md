@@ -170,7 +170,8 @@ Run **on the server**, by the person who owns it (it needs the database credenti
 ```
 cd "CCB API"
 # APP_ENV picks the environment file (unset = .env, "dev" = .env.dev, any other name = .env.<name>). The FIRST line the tool prints is
-# "[typeorm-cli] <file> -> user@host/database" — read it before --apply. It runs through ts-node, so it needs the dev dependencies.
+# "[typeorm-cli] <file> -> user@host/database" — read it before --apply. `npm run maintenance:super-admin` runs through ts-node (dev dependencies); on a
+# server that only has the build use the compiled twin: `npm run maintenance:super-admin:prod -- …` (node dist/scripts/maintenance/super-admin.js).
 APP_ENV=<env> npm run maintenance:super-admin -- --list                                              # who holds SUPER_ADMIN (read-only)
 
 # create the first administrator, or recover one (activate, new temporary password, sessions ended, SUPER_ADMIN ensured)
@@ -185,6 +186,7 @@ npm run maintenance:super-admin -- --retire --email grace@customer.example --app
 * **Create / recover:** for one account, in one transaction — creates it if missing (never touches a **deleted** one), activates it, sets a **random temporary password** (printed once to the terminal, stored nowhere in clear text) that must be replaced at the first sign-in, ends the live sessions of an existing account, makes sure it holds `SUPER_ADMIN`, writes one audit row (`SUPER_ADMIN_RECOVERY`; no e-mail, no password in it). It refuses when the `SUPER_ADMIN` role does not exist.
 * **Retire:** deactivates the account, clears its password and ends its sessions in one transaction that first locks every active `SUPER_ADMIN`; **refuses when no other administrator would remain who is active AND can sign in** (has a password — `--list` marks an administrator without one); the account is not deleted and keeps its roles; writes one audit row (`SUPER_ADMIN_RETIRED`). When the account was the initial administrator, the protection passes to the oldest remaining active one.
 * It never deletes anyone and never removes a role.
+* **A locked-out administrator** (too many failed sign-ins) does not need this tool in the first place: the lock is per client address, so the owner signs in from where they always do, and another administrator can *Unlock sign-in*. When nobody can sign in at all, `npm run maintenance:unlock-signin -- --email <address> --apply` (compiled: `maintenance:unlock-signin:prod`) clears the failed-attempt counters of that account from the server; see docs/OPERATIONS.md, "Sign-in lock-out".
 
 If an **initialized** database has no `SUPER_ADMIN` role row at all (it was renamed or removed by hand), the application **does not seed on its own** — an initialized database is never re-seeded — and the tool refuses; the role row has to be restored first ([PROPOSED_SCHEMA_CHANGES.md](PROPOSED_SCHEMA_CHANGES.md), §4). On a database that has **never** held a user, one start of the application seeds the role.
 

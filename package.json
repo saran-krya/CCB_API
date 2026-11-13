@@ -4,12 +4,20 @@
   "description": "Enterprise NestJS backend for Dubai HVAC/BTU metering platform",
   "private": true,
   "license": "UNLICENSED",
+  "engines": {
+    "node": ">=22.12.0 <25"
+  },
   "scripts": {
     "build": "nest build",
     "start": "nest start",
     "start:dev": "nest start --watch",
     "dev": "nodemon",
-    "start:prod": "node dist/main",
+    "start:prod": "node dist/src/main",
+    "prestart:prod": "node -e \"try{require('fs').accessSync('dist/src/main.js')}catch(e){console.error('dist/src/main.js is missing: run npm run build first (npm run build:check verifies the result)');process.exit(1)}\"",
+    "build:check": "node scripts/ops/check-build.cjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "preflight": "ts-node -T -r tsconfig-paths/register scripts/ops/preflight.ts",
+    "preflight:prod": "node dist/scripts/ops/preflight.js",
     "lint": "eslint \"{src,test}/**/*.ts\" --fix",
     "test": "jest",
     "typeorm": "typeorm-ts-node-commonjs",
@@ -17,10 +25,15 @@
     "migration:create": "npm run typeorm -- migration:create",
     "migration:run": "npm run typeorm -- migration:run -d src/config/data-source.ts",
     "migration:revert": "npm run typeorm -- migration:revert -d src/config/data-source.ts",
+    "migration:run:prod": "typeorm migration:run -d dist/src/config/data-source.js",
+    "migration:revert:prod": "typeorm migration:revert -d dist/src/config/data-source.js",
     "maintenance:iam-orphans": "ts-node -T -r tsconfig-paths/register scripts/maintenance/cleanup-iam-orphans.ts",
     "maintenance:iam-policy-repair": "ts-node -T -r tsconfig-paths/register scripts/maintenance/repair-iam-policy-statements.ts",
     "maintenance:iam-audit": "ts-node -T -r tsconfig-paths/register scripts/maintenance/audit-iam-rbac.ts",
-    "maintenance:super-admin": "ts-node -T -r tsconfig-paths/register scripts/maintenance/super-admin.ts"
+    "maintenance:super-admin": "ts-node -T -r tsconfig-paths/register scripts/maintenance/super-admin.ts",
+    "maintenance:super-admin:prod": "node dist/scripts/maintenance/super-admin.js",
+    "maintenance:unlock-signin": "ts-node -T -r tsconfig-paths/register scripts/maintenance/unlock-signin.ts",
+    "maintenance:unlock-signin:prod": "node dist/scripts/maintenance/unlock-signin.js"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.15",

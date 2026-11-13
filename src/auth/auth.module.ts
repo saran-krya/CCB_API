@@ -11,6 +11,7 @@ import { PasswordChangeGuard } from '../common/guards/password-change.guard';
 import { CustomerAccessGuard } from '../common/guards/customer-access.guard';
 import { throttlerModuleOptions } from '../common/security/throttle-settings';
 import { LoginAttemptsService } from './login-attempts.service';
+import { KnownClientService } from './known-client.service';
 import { SessionLivenessService } from './session-liveness.service';
 import { UserModule } from '../modules/user/user.module';
 import { CustomerModule } from '../modules/customer/customer.module';
@@ -56,6 +57,7 @@ import { ENV_KEY } from '../common/constants/env.constants';
   providers: [
     AuthService,
     LoginAttemptsService,
+    KnownClientService,
     SessionLivenessService,
     JwtStrategy,
     // The global guard chain, in the order it runs (Nest applies APP_GUARD providers in declaration

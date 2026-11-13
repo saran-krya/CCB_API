@@ -59,6 +59,38 @@ export class RedisService implements OnModuleDestroy {
     }
   }
 
+  /** Deletes exactly these keys and returns how many existed. Failures are swallowed (0): like `del`, a cache or counter that cannot be cleared is
+   *  simply cleared by its own expiry later. */
+  async deleteKeys(keys: string[]): Promise<number> {
+    if (keys.length === 0) return 0;
+    try {
+      return await this.client.del(...keys);
+    } catch (err) {
+      this.logger.error(`Redis DEL failed for ${keys.length} key(s): ${(err as Error).message}`);
+      return 0;
+    }
+  }
+
+  /** Deletes every key that starts with `prefix` (an iterating SCAN, never KEYS, so it does not block the server) and returns how many were
+   *  removed, at most `maxKeys`. The ONLY caller builds the prefix from a hash of an account (the sign-in lock-out's per-client counters, which an
+   *  administrator's "unlock" has to clear without knowing the clients) — it is not a general wildcard delete and must never be given a caller-supplied
+   *  pattern. */
+  async deleteByPrefix(prefix: string, maxKeys = 1000): Promise<number> {
+    if (!prefix) return 0;
+    try {
+      let removed = 0;
+      const stream = this.client.scanStream({ match: `${prefix}*`, count: 100 });
+      for await (const keys of stream as AsyncIterable<string[]>) {
+        if (keys.length > 0) removed += await this.client.del(...keys);
+        if (removed >= maxKeys) break;
+      }
+      return removed;
+    } catch (err) {
+      this.logger.error(`Redis prefix delete failed for "${prefix}": ${(err as Error).message}`);
+      return 0;
+    }
+  }
+
   /** Round-trips a PING to the server. Unlike every other method here it deliberately does NOT swallow a failure: its only
    *  caller is the System Health check, which must report "down" truthfully instead of treating an outage as a cache miss. */
   async ping(): Promise<void> {

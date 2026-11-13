@@ -1142,13 +1142,19 @@ describe('UserRoleService — a delegated ADMIN cannot escalate to SUPER_ADMIN',
       expect(t.audit.record).not.toHaveBeenCalled();
     });
 
-    it('allows it while a second ACTIVE holder exists', async () => {
-      const t = arrange(ROWS);
+    it('allows it while a second ACTIVE holder exists — for a holder who is not the initial administrator', async () => {
+      // User 56 is the initial administrator (the lowest id among the active holders: the application never demotes it); user 57 is a later holder that
+      // also has an ordinary role. (This test used to demote 56, which the initial-administrator protection correctly refuses.)
+      const t = arrange([
+        { id: 1, userId: 56, roleId: SUPER_ADMIN.id },
+        { id: 2, userId: 57, roleId: FINANCE.id },
+        { id: 3, userId: 57, roleId: SUPER_ADMIN.id },
+      ]);
 
-      await expect(t.service.removeRoleFromUser(56, SUPER_ADMIN.id, undefined, ROOT)).resolves.toBe(true);
+      await expect(t.service.removeRoleFromUser(57, SUPER_ADMIN.id, undefined, ROOT)).resolves.toBe(true);
 
-      expect(t.roleIdsOf(56)).toEqual([FINANCE.id]);
-      expect(t.roleIdsOf(57)).toEqual([SUPER_ADMIN.id]);
+      expect(t.roleIdsOf(57)).toEqual([FINANCE.id]);
+      expect(t.roleIdsOf(56)).toEqual([SUPER_ADMIN.id]);
     });
 
     it('a DEACTIVATED second holder does not count: the remaining active SUPER_ADMIN is still the last one', async () => {

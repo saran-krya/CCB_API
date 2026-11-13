@@ -330,6 +330,23 @@ export class AuthController {
     return this.auth.adminRevokeSessions(id, actorFrom(principal));
   }
 
+  @Post('users/:id/unlock-signin')
+  @Permission(ACTION_CODES.RESET_USER_PASSWORD)
+  @Throttle(strictRateLimit())
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      "Admin-triggered 'Unlock sign-in' for ANOTHER user — clears the failed-sign-in counters of the account (every client) so its owner can try again " +
+      'at once. A locked client IP stays locked.',
+  })
+  adminUnlockSignin(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() principal: AuthenticatedUser,
+  ): Promise<{ countersCleared: number }> {
+    return this.auth.adminUnlockSignin(id, actorFrom(principal));
+  }
+
   @Get('context')
   @Authenticated()
   @AllowPendingPasswordChange()
