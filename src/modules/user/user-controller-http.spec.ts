@@ -371,7 +371,7 @@ describe('UserController over HTTP — role assignment routes and route ordering
       const res = await http('GET', '/v1/users/7');
 
       expect(res.status).toBe(200);
-      expect(users.findOne).toHaveBeenCalledWith(7);
+      expect(users.findOne).toHaveBeenCalledWith(7, SUPER_ADMIN_ACTOR);
       expect(res.body.data).toEqual({ id: 7, role: ROLES_AFTER[0], roles: ROLES_AFTER });
     });
 

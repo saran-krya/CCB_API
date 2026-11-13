@@ -3,7 +3,7 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { AuthenticatedUser } from '../../auth/interfaces/authenticated-user.interface';
-import { ROLES } from '@app/common/constants/global';
+import { ADMINISTRATOR_ROLES } from '../../common/security/administrator-roles';
 import { CreatePolicyDto, UpdatePolicyDto } from './dto/policy.dto';
 import { UserInlinePolicyService } from './user-inline-policy.service';
 
@@ -15,7 +15,7 @@ import { UserInlinePolicyService } from './user-inline-policy.service';
  */
 @ApiBearerAuth()
 @ApiTags('IAM User Inline Policies')
-@Roles(ROLES.SUPER_ADMIN)
+@Roles(...ADMINISTRATOR_ROLES)
 @Controller({ path: 'users/:userId/inline-policies', version: '1' })
 export class UserInlinePolicyController {
   constructor(private readonly inlinePolicies: UserInlinePolicyService) {}

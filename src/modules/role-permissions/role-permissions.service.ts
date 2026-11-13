@@ -1,11 +1,12 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, IsNull, Repository } from 'typeorm';
+import { DataSource, In, IsNull, Repository } from 'typeorm';
 import {
   CreateRolePermissionDto,
 
@@ -18,9 +19,15 @@ import { PModule } from '../pmodules/entities/pmodule.entity';
 import { Screen } from '../screens/entities/screen.entity';
 import { SaveRoleWithPermissionsDto } from './dto/save-role-with-permissions.dto';
 import { AuditService } from '../../audit/audit.service';
-import { ROLES } from '@app/common/constants/global';
+import { ADMINISTRATOR_ROLES, AdministratorRole, isAdministratorRoleName } from '../../common/security/administrator-roles';
 import { IamService } from '../iam/iam.service';
 import { BUSINESS_APPROVAL_ACTION_CODES } from '../iam/business-approval-actions';
+import {
+  ADMINISTRATION_SCREEN_CODES,
+  ADMINISTRATION_SUB_MODULE_CODES,
+  administrationGrantMessage,
+  isAdministrationActionCode,
+} from '../iam/administration-permissions';
 import { ERROR_MESSAGES } from '../../common/constants/error-messages.constants';
 import { AUDIT_MODULE, AUDIT_ACTION } from '../../audit/audit.constants';
 import { SORT_ORDER } from '../../common/constants/sort.constants';
@@ -55,6 +62,33 @@ export class RolePermissionsService {
     private readonly iamService: IamService,
 
   ) { }
+
+  /**
+   * Refuses (400) a permission-tree write that would give the administration console to any role but SUPER_ADMIN: the Users, Roles and
+   * Policy / Resource permissions, and the System Admin sidebar pages that stand for them (administration-permissions.ts). `rows` are the
+   * tree rows about to be saved for `role`. The tree is a SUPER_ADMIN-only route, so this is not about who is asking — it keeps the
+   * console's own permissions out of every ordinary role however the request was put together. SUPER_ADMIN passes.
+   */
+  private async assertNoAdministrationGrants(role: Pick<Role, 'roleName'>, rows: ReadonlyArray<Pick<RolePermission, 'subModuleId' | 'screenId' | 'actionId'>>): Promise<void> {
+    if (isAdministratorRoleName(role.roleName) || rows.length === 0) return;
+    const idsOf = (pick: (row: Pick<RolePermission, 'subModuleId' | 'screenId' | 'actionId'>) => number | null | undefined): number[] => [
+      ...new Set(rows.map(pick).filter((id): id is number => typeof id === 'number')),
+    ];
+    const actionIds = idsOf((row) => row.actionId);
+    const subModuleIds = idsOf((row) => row.subModuleId);
+    const screenIds = idsOf((row) => row.screenId);
+    const [actions, subModules, screens] = await Promise.all([
+      actionIds.length > 0 ? this.actionRepository.find({ where: { id: In(actionIds) }, select: { id: true, code: true } }) : Promise.resolve([] as Action[]),
+      subModuleIds.length > 0 ? this.subModuleRepository.find({ where: { id: In(subModuleIds) }, select: { id: true, code: true } }) : Promise.resolve([] as SubModule[]),
+      screenIds.length > 0 ? this.screenRepository.find({ where: { id: In(screenIds) }, select: { id: true, code: true } }) : Promise.resolve([] as Screen[]),
+    ]);
+    const offending = [
+      ...actions.filter((action) => isAdministrationActionCode(action.code)).map((action) => action.code),
+      ...subModules.filter((subModule) => ADMINISTRATION_SUB_MODULE_CODES.has(subModule.code)).map((subModule) => subModule.code),
+      ...screens.filter((screen) => ADMINISTRATION_SCREEN_CODES.has(screen.code)).map((screen) => screen.code),
+    ];
+    if (offending.length > 0) throw new BadRequestException(administrationGrantMessage([...new Set(offending)].sort()));
+  }
 
   async create(dto: CreateRolePermissionDto) {
     const role = await this.roleRepository.findOne({
@@ -92,6 +126,8 @@ export class RolePermissionsService {
         ERROR_MESSAGES.ACTION_NOT_FOUND,
       );
     }
+
+    await this.assertNoAdministrationGrants(role, [{ subModuleId: dto.subModuleId, screenId: undefined, actionId: dto.actionId }]);
 
     const exists =
       await this.rolePermissionRepository.findOne({
@@ -261,6 +297,8 @@ export class RolePermissionsService {
       }
     }
 
+    await this.assertNoAdministrationGrants(role, permissions);
+
     if (permissions.length > 0) {
       await rolePermissionRepo.save(
         permissions,
@@ -424,10 +462,10 @@ export class RolePermissionsService {
     return this.iamService.getRoleIdsHoldingAnyAction(actionCodes);
   }
 
-  /** True iff ANY of `roleIds` is the SUPER_ADMIN role — a system-administration role that never acts as a
-   *  business approver (see business-approval-actions.ts). */
-  async anyRoleIsSuperAdmin(roleIds: number[]): Promise<boolean> {
-    return this.iamService.holdsSuperAdminRole(roleIds);
+  /** True iff ANY of `roleIds` is an administrator role — SUPER_ADMIN, the system-administration role that never
+   *  acts as a business approver (see business-approval-actions.ts). */
+  async anyRoleIsAdministrator(roleIds: number[]): Promise<boolean> {
+    return this.iamService.holdsAdministratorRole(roleIds);
   }
 
   /** Keeps SUPER_ADMIN — the ONLY predefined role — granted every active action in the legacy permission tree, on every
@@ -437,10 +475,16 @@ export class RolePermissionsService {
    *  The tree decides no authorization any more (only Policies do); it still feeds the navigation tree. Idempotent: an
    *  existing grant row is never touched or duplicated. */
   async ensureAdminGrants(): Promise<void> {
+    // The administrator role of this installation (SUPER_ADMIN); ensureGrantsFor returns at once when the role row does not exist.
+    for (const roleName of ADMINISTRATOR_ROLES) {
+      await this.ensureGrantsFor(roleName);
+    }
+  }
+
+  /** The body of ensureAdminGrants for ONE administrator role. */
+  private async ensureGrantsFor(roleName: AdministratorRole): Promise<void> {
     // Exact name only: the database also matches look-alikes ("SÜPER_ADMIN") case- and accent-insensitively.
-    const superAdmin = (await this.roleRepository.find({ where: { roleName: ROLES.SUPER_ADMIN } })).find(
-      (role) => role.roleName === ROLES.SUPER_ADMIN,
-    );
+    const superAdmin = (await this.roleRepository.find({ where: { roleName } })).find((role) => role.roleName === roleName);
     if (!superAdmin) return;
 
     const actions = await this.actionRepository.find({
@@ -540,7 +584,17 @@ export class RolePermissionsService {
     }
   }
 
-  async getPermissionTree(roleId?: number) {
+  /**
+   * The module / sub-module / screen / action tree with `hasAccess` per row for `roleId` (none when omitted).
+   *
+   * `forEditing` is the tree the permission EDITOR shows (GET /role-permissions/tree and /role/:roleId): it leaves out the administration
+   * console's pages and permissions (administration-permissions.ts) for every role but SUPER_ADMIN — and for a role still being created —
+   * so they cannot be ticked. EVERY OTHER reader must get the whole structure: getAllMenus() is the static navigation catalog
+   * (GET /auth/me/nav-catalog) that every staff session builds its menu, its breadcrumbs and its links from (the Users and Roles lists resolve their
+   * detail and create routes through it), and getUserPermissions() a role's own legacy permissions. Neither decides authorization, and removing the
+   * System Admin pages from them would remove those pages from every menu and break every link built from the catalog.
+   */
+  async getPermissionTree(roleId?: number, options: { forEditing?: boolean } = {}) {
     const role = roleId
       ? await this.roleRepository.findOne({ where: { id: roleId } })
       : null;
@@ -554,9 +608,12 @@ export class RolePermissionsService {
       where: { isActive: true },
       order: { displayOrder: SORT_ORDER.ASC },
     });
-    const subModules = await this.subModuleRepository.find({ where: { isActive: true } });
-    const screens = await this.screenRepository.find({ where: { isActive: true } });
-    const actions = await this.actionRepository.find({ where: { isActive: true } });
+    // The EDITOR's tree (forEditing) leaves out the administration console's pages and permissions (administration-permissions.ts) for any
+    // role but SUPER_ADMIN, and for a role still being created (no role yet), so they cannot be ticked at all. Every other reader gets everything.
+    const showAdministration = !options.forEditing || isAdministratorRoleName(role?.roleName);
+    const subModules = (await this.subModuleRepository.find({ where: { isActive: true } })).filter((subModule) => showAdministration || !ADMINISTRATION_SUB_MODULE_CODES.has(subModule.code));
+    const screens = (await this.screenRepository.find({ where: { isActive: true } })).filter((screen) => showAdministration || !ADMINISTRATION_SCREEN_CODES.has(screen.code));
+    const actions = (await this.actionRepository.find({ where: { isActive: true } })).filter((action) => showAdministration || !isAdministrationActionCode(action.code));
 
     const permissions = roleId
       ? await this.rolePermissionRepository.find({ where: { roleId } })
@@ -601,7 +658,7 @@ export class RolePermissionsService {
       canBeReportingManager: role?.canBeReportingManager ?? false,
       canBeFieldInspector: role?.canBeFieldInspector ?? false,
       // The system-managed role can't be renamed (see updateRolePermissions) — the edit form locks the field from this.
-      isSystem: role?.roleName === ROLES.SUPER_ADMIN,
+      isSystem: isAdministratorRoleName(role?.roleName),
       userId: 0,
 
       screenPermissionList: modules.map((module) => ({
@@ -663,9 +720,9 @@ export class RolePermissionsService {
     // both key off this literal string (see common/guards/roles.guard.ts and iam.service.ts) — an
     // edit that renamed it away would silently strand the system with no role either mechanism
     // recognizes as root, on this role's very next grant-reconciliation pass or guard check.
-    if (role.roleName === ROLES.SUPER_ADMIN && dto.roleName !== ROLES.SUPER_ADMIN) {
+    if (isAdministratorRoleName(role.roleName) && dto.roleName !== role.roleName) {
       throw new ConflictException(
-        "SUPER_ADMIN's role name is relied on throughout the system and cannot be changed.",
+        `${role.roleName}'s role name is relied on throughout the system and cannot be changed.`,
       );
     }
 
@@ -800,6 +857,8 @@ export class RolePermissionsService {
         }
       }
     }
+
+    await this.assertNoAdministrationGrants(role, permissions);
 
     if (permissions.length > 0) {
       await rolePermissionRepo.save(

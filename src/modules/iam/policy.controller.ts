@@ -3,7 +3,7 @@ import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { AuthenticatedUser } from '../../auth/interfaces/authenticated-user.interface';
-import { ROLES } from '@app/common/constants/global';
+import { ADMINISTRATOR_ROLES } from '../../common/security/administrator-roles';
 import { IamService } from './iam.service';
 import { CreatePolicyDto, UpdatePolicyDto, AttachPolicyDto } from './dto/policy.dto';
 import { RolePoliciesQueryDto } from './dto/role-policies-query.dto';
@@ -12,7 +12,8 @@ import { PolicyAttachedRolesQueryDto } from './dto/policy-attached-roles-query.d
 import { PolicyQueryService } from './policy-query.service';
 
 /**
- * Policy administration is restricted to SUPER_ADMIN, same as the existing role-permissions/actions/
+ * Policy administration is restricted to the installation's global ADMINISTRATOR — SUPER_ADMIN (ADMINISTRATOR_ROLES; SUPER_ADMIN
+ * also passes every @Roles check), never a delegated "ADMIN" — same as the existing role-permissions/actions/
  * pmodules/screens/sub-modules controllers — a Policy IS "what a role can do," so managing Policies
  * is exactly as privilege-escalation-sensitive as managing RolePermission grants directly, and gets
  * the identical, unchanged security boundary. @Permission is intentionally NOT added here (unlike
@@ -22,7 +23,7 @@ import { PolicyQueryService } from './policy-query.service';
  */
 @ApiBearerAuth()
 @ApiTags('IAM Policies')
-@Roles(ROLES.SUPER_ADMIN)
+@Roles(...ADMINISTRATOR_ROLES)
 @Controller({ path: 'iam/policies', version: '1' })
 export class PolicyController {
   constructor(
@@ -104,7 +105,7 @@ export class PolicyController {
  */
 @ApiBearerAuth()
 @ApiTags('IAM Role Policies')
-@Roles(ROLES.SUPER_ADMIN)
+@Roles(...ADMINISTRATOR_ROLES)
 @Controller({ path: 'roles/:roleId/policies', version: '1' })
 export class RolePolicyController {
   constructor(private readonly iam: IamService) {}

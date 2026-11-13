@@ -22,6 +22,7 @@ import { ATTRIBUTE_KEY } from '../attribute/attribute.constants';
 import { AttributeService } from '../attribute/attribute.service';
 import { Attribute } from '../attribute/entities/attribute.entity';
 import {
+  BRAND_COLOR_PATTERN,
   DATE_FORMATS,
   isValidTimeZone,
   SETTINGS_MANAGED_ATTRIBUTE_KEYS,
@@ -158,6 +159,7 @@ export class SettingsService {
         defaultPageSize: this.number(values, ATTRIBUTE_KEY.DEFAULT_PAGE_SIZE, SYSTEM_SETTING_DEFAULTS.pageSize),
         defaultTableDensity: this.text(values, ATTRIBUTE_KEY.DEFAULT_TABLE_DENSITY, SYSTEM_SETTING_DEFAULTS.tableDensity),
         defaultSidebarState: this.text(values, ATTRIBUTE_KEY.DEFAULT_SIDEBAR_STATE, SYSTEM_SETTING_DEFAULTS.sidebarState),
+        brandColor: this.brandColor(values),
       },
       regional: {
         defaultLanguage: this.text(values, ATTRIBUTE_KEY.DEFAULT_LANGUAGE, SYSTEM_SETTING_DEFAULTS.language),
@@ -187,6 +189,8 @@ export class SettingsService {
     set(ATTRIBUTE_KEY.DEFAULT_PAGE_SIZE, dto.general?.defaultPageSize);
     set(ATTRIBUTE_KEY.DEFAULT_TABLE_DENSITY, dto.general?.defaultTableDensity);
     set(ATTRIBUTE_KEY.DEFAULT_SIDEBAR_STATE, dto.general?.defaultSidebarState);
+    // Stored in capitals, so "#0071df" and "#0071DF" are one value and an unchanged colour is never rewritten (or audited).
+    set(ATTRIBUTE_KEY.BRAND_PRIMARY_COLOR, dto.general?.brandColor?.toUpperCase());
     set(ATTRIBUTE_KEY.DEFAULT_LANGUAGE, dto.regional?.defaultLanguage);
     set(ATTRIBUTE_KEY.DEFAULT_TIMEZONE, dto.regional?.defaultTimezone);
     set(ATTRIBUTE_KEY.DEFAULT_DATE_FORMAT, dto.regional?.defaultDateFormat);
@@ -243,6 +247,7 @@ export class SettingsService {
       pageSize: this.number(values, ATTRIBUTE_KEY.DEFAULT_PAGE_SIZE, SYSTEM_SETTING_DEFAULTS.pageSize),
       tableDensity: this.text(values, ATTRIBUTE_KEY.DEFAULT_TABLE_DENSITY, SYSTEM_SETTING_DEFAULTS.tableDensity),
       sidebarState: this.text(values, ATTRIBUTE_KEY.DEFAULT_SIDEBAR_STATE, SYSTEM_SETTING_DEFAULTS.sidebarState),
+      brandColor: this.brandColor(values),
       notifications: {
         emailEnabled: this.flag(values, ATTRIBUTE_KEY.NOTIFICATIONS_EMAIL_ENABLED),
         inAppEnabled: this.flag(values, ATTRIBUTE_KEY.NOTIFICATIONS_IN_APP_ENABLED),
@@ -301,6 +306,13 @@ export class SettingsService {
 
   private text(values: Map<string, Attribute>, key: string, fallback: string): string {
     return values.get(key)?.value ?? fallback;
+  }
+
+  /** The brand colour as `#RRGGBB` in capitals; the built-in blue when the row is missing or holds anything else (a hand-edited
+   *  value must never reach the web app's stylesheet). */
+  private brandColor(values: Map<string, Attribute>): string {
+    const stored = values.get(ATTRIBUTE_KEY.BRAND_PRIMARY_COLOR)?.value?.trim();
+    return stored && BRAND_COLOR_PATTERN.test(stored) ? stored.toUpperCase() : SYSTEM_SETTING_DEFAULTS.brandColor;
   }
 
   private number(values: Map<string, Attribute>, key: string, fallback: number): number {

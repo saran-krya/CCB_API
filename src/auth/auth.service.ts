@@ -533,8 +533,12 @@ export class AuthService {
     const targetUser = await this.users.findOne(targetUserId);
     this.assertNotSelf(actor, targetUserId, 'Use "Change password" to change your own password.');
     // RESET_USER_PASSWORD is delegable, and a reset hands the actor a working login for the target — so a
-    // SUPER_ADMIN account can only ever be reset by another SUPER_ADMIN.
+    // SUPER_ADMIN account can only ever be reset by another SUPER_ADMIN...
     await this.userRoles.assertActorMayModifyUser(actor, targetUserId);
+    // ...and, like handing out a role, taking over an account is held to the ASSIGNMENT BOUNDARY: a delegated administrator may only reset the
+    // password of an account whose permissions it holds itself. Otherwise RESET_USER_PASSWORD would be a way around that boundary (reset a more
+    // privileged user's password, sign in as them).
+    await this.userRoles.assertActorMayTakeOverAccount(actor, targetUserId, 'reset the password of');
 
     const generatedPassword = dto.newPassword ? undefined : this.generateSecurePassword();
     const newPassword = dto.newPassword ?? generatedPassword!;
@@ -580,8 +584,10 @@ export class AuthService {
     const targetUser = await this.users.findOne(targetUserId);
     this.assertNotSelf(actor, targetUserId, 'You cannot disable your own sign-in access.');
     // A SUPER_ADMIN's sign-in can only be disabled by another SUPER_ADMIN — who, being signed in, is
-    // still an active administrator, so this can never remove the last one.
+    // still an active administrator, so this can never remove the last one. The INITIAL administrator's sign-in is never disabled
+    // through the application at all: losing it would lock the installation's owner out (the server maintenance tool is the way).
     await this.userRoles.assertActorMayModifyUser(actor, targetUserId);
+    await this.userRoles.assertNotInitialAdministrator(targetUserId, 'disable the sign-in access of');
     await this.users.clearPasswordHash(targetUserId);
 
     if (revokeSessions) {

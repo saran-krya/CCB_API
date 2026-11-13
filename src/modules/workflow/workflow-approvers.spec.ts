@@ -207,7 +207,7 @@ describe('workflow approvers', () => {
     let stepsRepo: { findOne: jest.Mock };
     let levelsRepo: { count: jest.Mock };
     let userRoles: { getRoleIds: jest.Mock };
-    let rolePermissions: { anyRoleIsSuperAdmin: jest.Mock };
+    let rolePermissions: { anyRoleIsAdministrator: jest.Mock };
     let actorRoleIds: number[];
     let service: WorkflowOrchestrationService;
 
@@ -218,7 +218,7 @@ describe('workflow approvers', () => {
       stepsRepo = { findOne: jest.fn().mockResolvedValue({ roleId: STEP_ROLE, action: null }) };
       levelsRepo = { count: jest.fn().mockResolvedValue(2) };
       userRoles = { getRoleIds: jest.fn().mockImplementation(() => Promise.resolve(actorRoleIds)) };
-      rolePermissions = { anyRoleIsSuperAdmin: jest.fn().mockImplementation((ids: number[]) => Promise.resolve(ids.includes(SUPER_ADMIN))) };
+      rolePermissions = { anyRoleIsAdministrator: jest.fn().mockImplementation((ids: number[]) => Promise.resolve(ids.includes(SUPER_ADMIN))) };
       service = new WorkflowOrchestrationService(
         {} as never,
         {} as never,
@@ -257,7 +257,7 @@ describe('workflow approvers', () => {
       await expect(service.assertCanAct(WorkflowType.TARIFF, 1, undefined, undefined, true)).resolves.toEqual({ instance, isFinalLevel: false });
 
       expect(userRoles.getRoleIds).not.toHaveBeenCalled();
-      expect(rolePermissions.anyRoleIsSuperAdmin).not.toHaveBeenCalled();
+      expect(rolePermissions.anyRoleIsAdministrator).not.toHaveBeenCalled();
     });
 
     it('still refuses a missing actor, an already-processed item and an already-acted level', async () => {

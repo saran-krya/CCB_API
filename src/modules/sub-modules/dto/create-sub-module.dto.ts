@@ -4,6 +4,9 @@ import {
     IsNumber,
     IsOptional,
     IsString,
+    IsNotEmpty,
+    MaxLength,
+    Min,
 } from 'class-validator';
 
 export class CreateSubModuleDto {
@@ -13,6 +16,8 @@ export class CreateSubModuleDto {
 
     @ApiProperty()
     @IsString()
+    @IsNotEmpty()
+    @MaxLength(150)
     name!: string;
 
     @ApiProperty()
@@ -39,6 +44,7 @@ export class CreateSubModuleDto {
     })
     @IsOptional()
     @IsNumber()
+    @Min(0)
     displayOrder?: number;
 
     @ApiProperty({

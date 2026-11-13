@@ -19,7 +19,8 @@
     "migration:revert": "npm run typeorm -- migration:revert -d src/config/data-source.ts",
     "maintenance:iam-orphans": "ts-node -T -r tsconfig-paths/register scripts/maintenance/cleanup-iam-orphans.ts",
     "maintenance:iam-policy-repair": "ts-node -T -r tsconfig-paths/register scripts/maintenance/repair-iam-policy-statements.ts",
-    "maintenance:iam-audit": "ts-node -T -r tsconfig-paths/register scripts/maintenance/audit-iam-rbac.ts"
+    "maintenance:iam-audit": "ts-node -T -r tsconfig-paths/register scripts/maintenance/audit-iam-rbac.ts",
+    "maintenance:super-admin": "ts-node -T -r tsconfig-paths/register scripts/maintenance/super-admin.ts"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.15",
@@ -63,6 +64,7 @@
     "@types/node": "^22.10.2",
     "@types/nodemailer": "^8.0.1",
     "@types/passport-jwt": "^4.0.1",
+    "@types/sanitize-html": "^2.16.2",
     "@types/ssh2-sftp-client": "^9.0.6",
     "@typescript-eslint/eslint-plugin": "^8.18.1",
     "@typescript-eslint/parser": "^8.18.1",
@@ -71,6 +73,7 @@
     "jest": "^29.7.0",
     "nodemon": "^3.1.14",
     "prettier": "^3.4.2",
+    "sanitize-html": "2.17.5",
     "source-map-support": "^0.5.21",
     "supertest": "^7.0.0",
     "ts-jest": "^29.2.5",

@@ -116,7 +116,7 @@ describe('AttributeService.update — actor roles', () => {
 
       await expect(
         service.update(1, { value: '60' }, 7, ['FINANCE', 'REGISTRAR'], [FINANCE, REGISTRAR]),
-      ).rejects.toThrow(new ForbiddenException('Only Super Admin can edit General Attributes'));
+      ).rejects.toThrow(new ForbiddenException('Only an administrator can edit General Attributes'));
       expect(rolesHaveAction).not.toHaveBeenCalled();
       expect(attributesRepo.save).not.toHaveBeenCalled();
     });
@@ -128,7 +128,7 @@ describe('AttributeService.update — actor roles', () => {
       grantsByRole({ [SUPER_ADMIN]: ['EDIT_ATTRIBUTE'] });
 
       await expect(service.update(1, { value: '60' }, 7, roleNames as string[] | undefined, [SUPER_ADMIN])).rejects.toThrow(
-        'Only Super Admin can edit General Attributes',
+        'Only an administrator can edit General Attributes',
       );
       expect(attributesRepo.save).not.toHaveBeenCalled();
     });

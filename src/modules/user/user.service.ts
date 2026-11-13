@@ -2,14 +2,14 @@ import { BadRequestException, ConflictException, ForbiddenException, Injectable,
 import { InjectRepository } from '@nestjs/typeorm';
 import * as bcrypt from 'bcryptjs';
 import { EntityManager, In, Repository } from 'typeorm';
-import { ROLES } from '@app/common/constants/global';
 import { AuditService } from '../../audit/audit.service';
 import { RefreshToken } from '../../auth/entities/refresh-token.entity';
 import { AuthenticatedUser } from '../../auth/interfaces/authenticated-user.interface';
 import { ACTION_CODES } from '../../common/constants/action-codes.constants';
 import { paginate } from '../../common/utils/pagination.util';
 import { releaseSoftDeletedUnique } from '../../common/utils/release-soft-deleted-unique';
-import { Actor, actorUserId, isSuperAdminActor, SUPER_ADMIN_ASSIGN_MESSAGE } from '../../common/security/actor';
+import { Actor, actorUserId, SUPER_ADMIN_ASSIGN_MESSAGE, isSuperAdminActor } from '../../common/security/actor';
+import { ADMINISTRATOR_ROLES, isAdministratorRoleName } from '../../common/security/administrator-roles';
 import { RoleService } from '../role/role.service';
 import { Role } from '../role/entities/role.entity';
 import { UserInlinePolicy } from '../iam/entities/user-inline-policy.entity';
@@ -104,9 +104,10 @@ export class UserService {
 
   /**
    * `actor` is the signed-in user creating the account (never trusted from the request body). Only a
-   * SUPER_ADMIN may create an account that holds the SUPER_ADMIN role — CREATE_USER on its own carries no
-   * such authority, so a delegated administrator cannot mint an administrator. Checked before anything
-   * is written, and again authoritatively inside UserRoleService.addRolesToUser in the same transaction.
+   * super administrator (SUPER_ADMIN) may create an account that holds the
+   * SUPER_ADMIN role — CREATE_USER on its own carries no such authority, so a delegated administrator ("ADMIN")
+   * cannot mint a super administrator. Checked before anything is written, and again authoritatively inside
+   * UserRoleService.addRolesToUser in the same transaction.
    */
   async create(
     dto: CreateUserDto,
@@ -202,11 +203,31 @@ export class UserService {
 
   async findAll(
     query: UserQueryDto,
+    actor?: Actor,
   ) {
     // Deliberately NO join to user_roles on this query: a user holding N roles would come back as N
     // rows, and skip/take would then page and count rows instead of users. It stays one row per user
     // by construction, and each page's roles are attached afterwards in one batched query below.
     const qb = this.users.createQueryBuilder("user");
+
+    // A viewer who is not a super administrator never sees a SUPER_ADMIN account — not in the list, not in the count. NOT EXISTS for the same
+    // reason as the other role predicates below (a join would multiply rows); BINARY so only the exact administrator role name counts. With no
+    // viewer (an internal caller) nothing is hidden.
+    if (actor !== undefined && !isSuperAdminActor(actor)) {
+      ADMINISTRATOR_ROLES.forEach((name, index) =>
+        qb.andWhere(
+          `NOT EXISTS (
+            SELECT 1
+            FROM user_roles ur_admin
+            INNER JOIN roles r_admin ON r_admin.id = ur_admin.role_id AND r_admin.deleted_at IS NULL
+            WHERE ur_admin.user_id = user.id
+              AND ur_admin.deleted_at IS NULL
+              AND BINARY r_admin.role_name = :administratorRole${index}
+          )`,
+          { [`administratorRole${index}`]: name },
+        ),
+      );
+    }
 
     // One search box (matching Role Management's own single-search layout) must match a name,
     // email, mobile number, OR the name of ANY role the user holds — an OR across all four, not four
@@ -348,8 +369,8 @@ export class UserService {
 
   /** The options behind the Users list's filter dropdowns, served from the Users module itself so a viewer
    *  who can list users (VIEW_USER) never needs access to Role Management just to filter by role. */
-  async getFilterOptions() {
-    const roles = await this.roles.getRoleFilter();
+  async getFilterOptions(actor?: Actor) {
+    const roles = await this.roles.getRoleFilter(actor);
     return {
       roles,
       statuses: [
@@ -359,7 +380,7 @@ export class UserService {
     };
   }
 
-  async findOne(id: number): Promise<UserWithRoles> {
+  async findOne(id: number, actor?: Actor): Promise<UserWithRoles> {
     const user = await this.users.findOne({
       where: { id },
       relations: {
@@ -375,6 +396,12 @@ export class UserService {
     // user_roles is the only source of a user's roles — see UserRole entity's own doc comment.
     // Every caller that DECIDES access must treat this as a single live read, never cached.
     const roles = await this.userRoles.getRolesForUser(id);
+
+    // A SUPER_ADMIN account does not exist for a viewer who is not a super administrator (404, so its existence is not confirmed). Internal
+    // callers pass no viewer and see everyone.
+    if (actor !== undefined && !isSuperAdminActor(actor) && roles.some((role) => isAdministratorRoleName(role.roleName))) {
+      throw new NotFoundException(ERROR_MESSAGES.USER_NOT_FOUND);
+    }
 
     return Object.assign(user, { role: roles[0] ?? null, roles });
   }
@@ -764,7 +791,7 @@ export class UserService {
 
     return this.users.manager.transaction(async (manager) => {
       if (deactivating) {
-        await this.userRoles.assertNotLastActiveSuperAdmin(id, manager, 'deactivate');
+        await this.userRoles.assertNotLastActiveAdministrator(id, manager, 'deactivate');
       }
       await this.releaseDeletedHolders(manager, dto, id);
 
@@ -829,9 +856,10 @@ export class UserService {
     return Promise.all([...new Set(roleIds)].map((roleId) => this.roles.findOne(roleId)));
   }
 
-  /** Granting SUPER_ADMIN is reserved for a SUPER_ADMIN — EDIT_USER / CREATE_USER never carry it. */
+  /** Granting the SUPER_ADMIN role is reserved for a super administrator —
+   *  EDIT_USER / CREATE_USER / ASSIGN_ROLE never carry it. */
   private assertMayGrant(actor: Actor, roles: Role[]): void {
-    if (!isSuperAdminActor(actor) && roles.some((role) => role.roleName === ROLES.SUPER_ADMIN)) {
+    if (!isSuperAdminActor(actor) && roles.some((role) => isAdministratorRoleName(role.roleName))) {
       throw new ForbiddenException(SUPER_ADMIN_ASSIGN_MESSAGE);
     }
   }
@@ -930,7 +958,7 @@ export class UserService {
     await this.userRoles.assertActorMayModifyUser(actor, id);
 
     await this.users.manager.transaction(async (manager) => {
-      await this.userRoles.assertNotLastActiveSuperAdmin(id, manager, 'delete');
+      await this.userRoles.assertNotLastActiveAdministrator(id, manager, 'delete');
 
       await manager.getRepository(User).softRemove(user);
       await manager.getRepository(UserRole).delete({ userId: id });

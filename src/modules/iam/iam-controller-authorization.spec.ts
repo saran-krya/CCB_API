@@ -6,13 +6,13 @@ import { PolicyController, RolePolicyController } from './policy.controller';
 import { ResourceController } from './resource.controller';
 
 // Isolated tests proving the privilege-escalation boundary required by the IAM migration: Policy and
-// Resource administration (including attaching a Policy to a Role) must remain SUPER_ADMIN-only,
-// the SAME existing security boundary as role-permissions/actions/pmodules/screens/sub-modules —
-// never relaxed, never made configurable via an ordinary @Permission grant (a Policy IS "what a
-// role can do," so a lower-privileged role attaching a powerful Policy to itself would be a direct
-// escalation path). Reads the REAL @Roles metadata via Reflector and exercises the REAL RolesGuard,
-// never a hand-copied assumption about what's guarded.
-describe('IAM controllers — SUPER_ADMIN-only boundary', () => {
+// Resource administration (including attaching a Policy to a Role) must remain ADMINISTRATOR-only —
+// the installation's own administrator: SUPER_ADMIN,
+// and no other role — never relaxed, never made configurable via an ordinary @Permission grant (a
+// Policy IS "what a role can do," so a lower-privileged role attaching a powerful Policy to itself
+// would be a direct escalation path). Reads the REAL @Roles metadata via Reflector and exercises the
+// REAL RolesGuard, never a hand-copied assumption about what's guarded.
+describe('IAM controllers — administrator-only boundary', () => {
   let rolesGuard: RolesGuard;
 
   beforeEach(async () => {
@@ -32,7 +32,7 @@ describe('IAM controllers — SUPER_ADMIN-only boundary', () => {
     } as unknown as ExecutionContext;
   }
 
-  it('PolicyController is class-level @Roles(SUPER_ADMIN)', () => {
+  it('PolicyController is class-level @Roles(SUPER_ADMIN) — the administrator role, nothing else (a delegated ADMIN is not on the list)', () => {
     expect(requiredRolesFor(PolicyController)).toEqual(['SUPER_ADMIN']);
   });
 
@@ -44,10 +44,10 @@ describe('IAM controllers — SUPER_ADMIN-only boundary', () => {
     expect(requiredRolesFor(RolePolicyController)).toEqual(['SUPER_ADMIN']);
   });
 
-  it('SUPER_ADMIN passes every IAM controller route', () => {
-    expect(rolesGuard.canActivate(mockContext(PolicyController, PolicyController.prototype.create, 'SUPER_ADMIN'))).toBe(true);
-    expect(rolesGuard.canActivate(mockContext(ResourceController, ResourceController.prototype.findAll, 'SUPER_ADMIN'))).toBe(true);
-    expect(rolesGuard.canActivate(mockContext(RolePolicyController, RolePolicyController.prototype.attach, 'SUPER_ADMIN'))).toBe(true);
+  it.each(['SUPER_ADMIN'])('%s passes every IAM controller route', (administrator) => {
+    expect(rolesGuard.canActivate(mockContext(PolicyController, PolicyController.prototype.create, administrator))).toBe(true);
+    expect(rolesGuard.canActivate(mockContext(ResourceController, ResourceController.prototype.findAll, administrator))).toBe(true);
+    expect(rolesGuard.canActivate(mockContext(RolePolicyController, RolePolicyController.prototype.attach, administrator))).toBe(true);
   });
 
   it.each(['FINANCE', 'CUSTOMER_SERVICE_SUPERVISOR', 'OPERATIONS', 'Cheif_Officer', 'ADMIN'])(
@@ -71,8 +71,8 @@ describe('IAM controllers — SUPER_ADMIN-only boundary', () => {
     },
   );
 
-  it('SUPER_ADMIN passes RolePolicyController.detach', () => {
-    expect(rolesGuard.canActivate(mockContext(RolePolicyController, RolePolicyController.prototype.detach, 'SUPER_ADMIN'))).toBe(true);
+  it.each(['SUPER_ADMIN'])('%s passes RolePolicyController.detach', (administrator) => {
+    expect(rolesGuard.canActivate(mockContext(RolePolicyController, RolePolicyController.prototype.detach, administrator))).toBe(true);
   });
 
   it('an unauthorized request (no user at all, e.g. a bad/missing token) is denied on every IAM route', () => {

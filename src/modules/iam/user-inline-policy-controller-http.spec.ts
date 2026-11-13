@@ -64,7 +64,7 @@ describe('UserInlinePolicyController over HTTP', () => {
     return { status: res.status, json: await res.json().catch(() => null) };
   };
 
-  it('is SUPER_ADMIN-only: the controller carries @Roles(SUPER_ADMIN), the same boundary as Policy Management', () => {
+  it('is administrator-only: the controller carries @Roles(SUPER_ADMIN), the same boundary as Policy Management', () => {
     expect(Reflect.getMetadata(ROLES_KEY, UserInlinePolicyController)).toEqual(['SUPER_ADMIN']);
   });
 

@@ -4,6 +4,9 @@ import {
     IsNumber,
     IsOptional,
     IsString,
+    IsNotEmpty,
+    MaxLength,
+    Min,
 } from 'class-validator';
 
 export class CreateScreenDto {
@@ -23,11 +26,14 @@ export class CreateScreenDto {
 
     @ApiProperty({ example: 'User Management' })
     @IsString()
+    @IsNotEmpty()
+    @MaxLength(150)
     name!: string;
 
     @ApiProperty({ default: 0 })
     @IsOptional()
     @IsNumber()
+    @Min(0)
     displayOrder?: number;
 
     @ApiProperty({ default: true })

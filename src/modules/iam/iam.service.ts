@@ -10,9 +10,10 @@ import { RoleInlinePolicy } from './entities/role-inline-policy.entity';
 import { Role } from '../role/entities/role.entity';
 import { Action } from '../actions/entities/action.entity';
 import { RESOURCES } from './resource-catalog';
+import { ADMINISTRATION_ACTION_CODES, ADMINISTRATION_RESOURCE_CODES, administrationActionCodesIn, administrationGrantMessage } from './administration-permissions';
 import { CreatePolicyDto, UpdatePolicyDto } from './dto/policy.dto';
 import { AuditService } from '../../audit/audit.service';
-import { ROLES } from '@app/common/constants/global';
+import { ADMINISTRATOR_ROLES, AdministratorRole, administratorRolesAmong, isAdministratorRoleName } from '../../common/security/administrator-roles';
 import { paginate } from '../../common/utils/pagination.util';
 import { releaseSoftDeletedUnique } from '../../common/utils/release-soft-deleted-unique';
 import { ActionPresentation, describeAction } from './action-presentation';
@@ -27,10 +28,11 @@ import { POLICY_EFFECT } from './iam.constants';
 // Every code that lets a role approve some workflow — what a role must keep while it is a configured approver.
 const WORKFLOW_APPROVE_CODES: ReadonlySet<string> = new Set(Object.values(APPROVE_ACTION_CODES).flat());
 
-// The stored description of the system-managed SUPER_ADMIN policy (the `policies.description` column holds 500 chars).
-const SUPER_ADMIN_POLICY_DESCRIPTION =
-  'System policy granting "SUPER_ADMIN" every active, supported resource and action except business-transaction ' +
-  'approvals: SUPER_ADMIN administers the system and does not approve tariffs, billing cycles, bill runs, ' +
+// The stored description of the system-managed policy of the administrator role — SUPER_ADMIN, the customer's own highest
+// administrator — (the `policies.description` column holds 500 chars). The text names the stored role.
+const administratorPolicyDescription = (roleName: string): string =>
+  `System policy granting "${roleName}" every active, supported resource and action except business-transaction ` +
+  `approvals: ${roleName} administers the system and does not approve tariffs, billing cycles, bill runs, ` +
   'registration requests or meter readings. It is kept in sync automatically and is protected: it cannot be ' +
   'edited, deleted, or detached from any role through the API.';
 
@@ -118,7 +120,7 @@ export class IamService {
    *  actions are valid for a given resource without hardcoding the mapping a second time. Does not
    *  change findAllResources's existing shape or any of its call sites. */
   async findAllResourcesWithActions(): Promise<
-    (Resource & { availableActions: ({ code: string; name: string; description: string | null } & ActionPresentation)[] })[]
+    (Resource & { availableActions: ({ code: string; name: string; description: string | null } & ActionPresentation)[]; reservedForSuperAdmin: boolean })[]
   > {
     const [allResources, allActions] = await Promise.all([
       this.resources.find({ order: { displayOrder: SORT_ORDER.ASC } }),
@@ -134,7 +136,9 @@ export class IamService {
         .filter((a): a is Action => !!a)
         // `description` is what the editor's per-action "Info" shows (the action's own seeded explanation).
         .map((a) => ({ code: a.code, name: a.name, description: a.description ?? null, ...describeAction(a.code, a.name) }));
-      return Object.assign(resource, { availableActions });
+      // `reservedForSuperAdmin`: an administration-console resource (Users, Roles) — shown so an existing statement can still be read,
+      // never offered by the Policy editor's resource picker, and refused by validateStatements (see administration-permissions.ts).
+      return Object.assign(resource, { availableActions, reservedForSuperAdmin: ADMINISTRATION_RESOURCE_CODES.has(resource.code) });
     });
   }
 
@@ -168,6 +172,13 @@ export class IamService {
         throw new BadRequestException(`Resource "${statement.resourceCode}" appears in more than one statement — combine its actions into a single statement instead`);
       }
       seenResourceCodes.add(statement.resourceCode);
+
+      // The administration console's permissions belong to SUPER_ADMIN alone: no managed, role-inline or user-inline policy may list them.
+      const reservedCodes = administrationActionCodesIn(statement.actionCodes);
+      if (reservedCodes.length > 0) throw new BadRequestException(administrationGrantMessage(reservedCodes));
+      if (ADMINISTRATION_RESOURCE_CODES.has(statement.resourceCode)) {
+        throw new BadRequestException(`Resource "${statement.resourceCode}" belongs to the SUPER_ADMIN Administration Console alone and cannot be granted through a policy.`);
+      }
 
       const validActionsForResource = resourceCatalogByCode.get(statement.resourceCode) ?? new Set<string>();
       const uniqueActionCodes = [...new Set(statement.actionCodes)];
@@ -441,9 +452,14 @@ export class IamService {
     if (!policy) throw new NotFoundException(ERROR_MESSAGES.POLICY_NOT_FOUND);
 
     // SUPER_ADMIN is a system-administration role: a policy that lists business-approval codes can never be attached
-    // to it (the resolver would ignore them anyway — refusing says so instead of pretending the grant works).
-    if (role.roleName === ROLES.SUPER_ADMIN) {
+    // to either (the resolver would ignore them anyway — refusing says so instead of pretending the grant works).
+    if (isAdministratorRoleName(role.roleName)) {
       await this.assertNoBusinessApprovalForSuperAdmin(await this.getPolicyActionCodes(policyId), { roleIds: [roleId] });
+    } else {
+      // ...and every OTHER role is the mirror image: a policy that lists administration-console permissions (Users, Roles) can only ever be
+      // attached to SUPER_ADMIN. The resolver would ignore such a grant on any other role — refusing it says so instead of pretending it works.
+      const reservedCodes = administrationActionCodesIn(await this.getPolicyActionCodes(policyId));
+      if (reservedCodes.length > 0) throw new BadRequestException(administrationGrantMessage(reservedCodes));
     }
 
     const existing = await this.rolePolicies.findOne({ where: { roleId, policyId } });
@@ -483,9 +499,9 @@ export class IamService {
     // statements (see updatePolicy/removePolicy) and this one specific role's grant, never every
     // role-attachment the policy happens to have.
     const role = await this.roles.findOne({ where: { id: roleId } });
-    if (role?.roleName === ROLES.SUPER_ADMIN) {
+    if (isAdministratorRoleName(role?.roleName)) {
       throw new ForbiddenException(
-        'Cannot detach a policy from SUPER_ADMIN — it must always retain full access.',
+        `Cannot detach a policy from ${role!.roleName} — it must always retain full access.`,
       );
     }
 
@@ -544,13 +560,20 @@ export class IamService {
    *  passes through, so no route, service check or policy edit can get around it. Every other code of every
    *  other role still unions exactly as described above.
    *
+   *  The second exception, the mirror image: a principal that does NOT hold SUPER_ADMIN never receives an administration-console code
+   *  (administration-permissions.ts: Users, Roles, Policies, Resources). SUPER_ADMIN is the only holder; for it nothing is dropped here.
+   *
    *  Never cached. Callers pass the LIVE role ids JwtStrategy re-reads from user_roles on every
    *  request (never a role claim from the JWT) and the authenticated user's id, so a role, Policy, or
    *  (role- or user-level) inline-policy change applies on the very next request. `userId` is
    *  deliberately optional: a question about ROLES alone (role configuration checks) never includes
    *  any user's own inline policies — it still includes those roles' OWN inline policies, since those
-   *  are part of what the role itself grants, not something scoped to a particular user. */
-  async getActionCodesGrantedByPoliciesForRoles(roleIds: number[], userId?: number): Promise<Set<string>> {
+   *  are part of what the role itself grants, not something scoped to a particular user.
+   *
+   *  `manager` is optional: the caller's own open transaction. The assignment boundary passes it, so that comparing what an
+   *  administrator holds happens on the one connection the granting transaction already has (and sees the same rows), instead
+   *  of taking a second connection from the pool while the transaction holds the first. Every other caller leaves it out. */
+  async getActionCodesGrantedByPoliciesForRoles(roleIds: number[], userId?: number, manager?: EntityManager): Promise<Set<string>> {
     // Anything that is not a real id is dropped up front, so an invalid id always means "no grants":
     // TypeORM reads an `undefined` where-value as "no condition", so a bare `where: { roleId }` with
     // a missing id (a principal without a role) would match EVERY role's Policies.
@@ -558,20 +581,24 @@ export class IamService {
     const validUserId = typeof userId === 'number' && Number.isInteger(userId) && userId > 0 ? userId : undefined;
     if (validRoleIds.length === 0 && validUserId === undefined) return new Set();
 
-    const [roleRows, roleInlinePolicies, userInlinePolicies, holdsSuperAdmin] = await Promise.all([
+    const rolePolicyRepo = manager ? manager.getRepository(RolePolicy) : this.rolePolicies;
+    const roleInlineRepo = manager ? manager.getRepository(RoleInlinePolicy) : this.roleInlinePolicies;
+    const userInlineRepo = manager ? manager.getRepository(UserInlinePolicy) : this.userInlinePolicies;
+
+    const [roleRows, roleInlinePolicies, userInlinePolicies, holdsAdministrator] = await Promise.all([
       validRoleIds.length > 0
-        ? this.rolePolicies.find({
+        ? rolePolicyRepo.find({
             where: { roleId: In(validRoleIds) },
             relations: { policy: { statements: true } },
           })
         : Promise.resolve([] as RolePolicy[]),
       validRoleIds.length > 0
-        ? this.roleInlinePolicies.find({ where: { roleId: In(validRoleIds) }, relations: { statements: true } })
+        ? roleInlineRepo.find({ where: { roleId: In(validRoleIds) }, relations: { statements: true } })
         : Promise.resolve([] as RoleInlinePolicy[]),
       validUserId !== undefined
-        ? this.userInlinePolicies.find({ where: { userId: validUserId }, relations: { statements: true } })
+        ? userInlineRepo.find({ where: { userId: validUserId }, relations: { statements: true } })
         : Promise.resolve([] as UserInlinePolicy[]),
-      this.holdsSuperAdminRole(validRoleIds),
+      this.holdsAdministratorRole(validRoleIds, manager),
     ]);
 
     const codes = new Set<string>();
@@ -593,21 +620,33 @@ export class IamService {
         for (const code of statement.actions) codes.add(code);
       }
     }
-    // SUPER_ADMIN administers the system; it never decides a business transaction (see the doc comment above).
-    if (holdsSuperAdmin) {
+    // An administrator role (SUPER_ADMIN) administers the system; it never decides a business transaction (see the doc comment above).
+    if (holdsAdministrator) {
       for (const code of BUSINESS_APPROVAL_ACTION_CODES) codes.delete(code);
+    } else {
+      // ...and the mirror image: the administration console's permissions (Users, Roles, Policies — administration-permissions.ts) belong to
+      // SUPER_ADMIN alone. Whoever does not hold that role never receives them, whichever policy, inline policy or role lists them, so a
+      // grant that was made before this rule existed is inert, and no route, service check or policy edit can get around it.
+      for (const code of ADMINISTRATION_ACTION_CODES) codes.delete(code);
     }
     return codes;
   }
 
-  /** True iff ANY of the given role ids is the SUPER_ADMIN role. Looked up by id and matched on the EXACT reserved
-   *  name in code — the database compares names case- and accent-insensitively, so a look-alike role is never
+  /** The name of the administrator role (SUPER_ADMIN) among the given role ids, or null when none is one. Looked up by id and matched
+   *  on the EXACT reserved name in code — the database compares names case- and accent-insensitively, so a look-alike role is never
    *  mistaken for it. One small primary-key query, never cached (role changes apply on the next request). */
-  async holdsSuperAdminRole(roleIds: number[]): Promise<boolean> {
+  async findAdministratorRoleName(roleIds: number[], manager?: EntityManager): Promise<AdministratorRole | null> {
     const ids = [...new Set(roleIds.filter((id) => Number.isInteger(id) && id > 0))];
-    if (ids.length === 0) return false;
-    const rows = await this.roles.find({ where: { id: In(ids) }, select: { id: true, roleName: true } });
-    return rows.some((role) => role.roleName === ROLES.SUPER_ADMIN);
+    if (ids.length === 0) return null;
+    const repo = manager ? manager.getRepository(Role) : this.roles;
+    const rows = await repo.find({ where: { id: In(ids) }, select: { id: true, roleName: true } });
+    return administratorRolesAmong(rows.map((role) => role.roleName))[0] ?? null;
+  }
+
+  /** True iff ANY of the given role ids is an administrator role (SUPER_ADMIN) — what the resolver, the workflow
+   *  engine and global search ask. `manager`: see getActionCodesGrantedByPoliciesForRoles. */
+  async holdsAdministratorRole(roleIds: number[], manager?: EntityManager): Promise<boolean> {
+    return (await this.findAdministratorRoleName(roleIds, manager)) !== null;
   }
 
   /** True iff ANY of the given roles (or, when `userId` is given, that user's own inline policies)
@@ -627,6 +666,36 @@ export class IamService {
 
   async roleHasActionViaPolicy(roleId: number, actionCode: string): Promise<boolean> {
     return this.rolesHaveActionViaPolicy([roleId], actionCode);
+  }
+
+  /** What EACH role grants on its own: role id -> the Allow action codes of its attached Policies and of its OWN inline policies — the same
+   *  sources and the same Allow-only rule as getActionCodesGrantedByPoliciesForRoles, but kept apart per role instead of unioned (two
+   *  queries for the whole list, never one per role). Every requested id has an entry; a role that grants nothing maps to an empty set.
+   *  This is what the assignment boundary compares against the codes the assigning administrator holds
+   *  (AssignmentBoundaryService): a role may be handed out only if everything it grants is something the actor holds.
+   *  `manager`: the caller's open transaction, as in getActionCodesGrantedByPoliciesForRoles. */
+  async getActionCodesByRole(roleIds: number[], manager?: EntityManager): Promise<Map<number, Set<string>>> {
+    const ids = [...new Set(roleIds.filter((id) => Number.isInteger(id) && id > 0))];
+    const byRole = new Map<number, Set<string>>(ids.map((id) => [id, new Set<string>()]));
+    if (ids.length === 0) return byRole;
+
+    const rolePolicyRepo = manager ? manager.getRepository(RolePolicy) : this.rolePolicies;
+    const roleInlineRepo = manager ? manager.getRepository(RoleInlinePolicy) : this.roleInlinePolicies;
+    const [attached, inline] = await Promise.all([
+      rolePolicyRepo.find({ where: { roleId: In(ids) }, relations: { policy: { statements: true } } }),
+      roleInlineRepo.find({ where: { roleId: In(ids) }, relations: { statements: true } }),
+    ]);
+    const add = (roleId: number, statements: { effect: string; actions: string[] }[] = []) => {
+      const codes = byRole.get(roleId);
+      if (!codes) return;
+      for (const statement of statements) {
+        if (statement.effect !== POLICY_EFFECT.ALLOW) continue;
+        for (const code of statement.actions ?? []) codes.add(code);
+      }
+    };
+    for (const row of attached) add(row.roleId, row.policy?.statements);
+    for (const row of inline) add(row.roleId, row.statements);
+    return byRole;
   }
 
   /** The Policy-model counterpart to RolePermissionsService.ensureAdminGrants — keeps the attached Policy of SUPER_ADMIN,
@@ -659,12 +728,19 @@ export class IamService {
    *  existing statement, or a new statement for a resource not yet covered, and strips the business approvals).
    *  Idempotent and safe to run on every boot, same as ensureResourceCatalog. */
   async ensureAdminPolicyGrants(): Promise<void> {
+    // The administrator role of this installation (SUPER_ADMIN). syncAdministratorPolicy returns at once when the role row does not
+    // exist, so nothing is created here — the role itself is seeded by BootstrapService, on a fresh database only.
+    for (const roleName of ADMINISTRATOR_ROLES) {
+      await this.syncAdministratorPolicy(roleName);
+    }
+  }
+
+  /** The body of ensureAdminPolicyGrants for ONE administrator role — everything its doc comment says, applied to `roleName`. */
+  private async syncAdministratorPolicy(roleName: AdministratorRole): Promise<void> {
     // The database compares role names case- and accent-insensitively, so it also returns a look-alike such as
     // "SÜPER_ADMIN" for 'SUPER_ADMIN'. Only the EXACT reserved name is the system role: a look-alike must never be handed
     // the auto-granted admin access.
-    const role = (await this.roles.find({ where: { roleName: ROLES.SUPER_ADMIN } })).find(
-      (candidate) => candidate.roleName === ROLES.SUPER_ADMIN,
-    );
+    const role = (await this.roles.find({ where: { roleName } })).find((candidate) => candidate.roleName === roleName);
     if (!role) return;
 
     const [activeActions, allResources] = await Promise.all([
@@ -700,7 +776,7 @@ export class IamService {
         policy = await this.policies.save(
           this.policies.create({
             name: policyName,
-            description: SUPER_ADMIN_POLICY_DESCRIPTION,
+            description: administratorPolicyDescription(role.roleName),
             isSystem: true,
           }),
         );
@@ -786,9 +862,10 @@ export class IamService {
     // The stored description predates the rule; keep the system policy's own text truthful (the policy cannot be
     // edited through the API, so nobody else would). `update`, not `save`: saving the policy would cascade into
     // its statements.
-    if (typeof primaryPolicy.description === 'string' && primaryPolicy.description !== SUPER_ADMIN_POLICY_DESCRIPTION) {
-      primaryPolicy.description = SUPER_ADMIN_POLICY_DESCRIPTION;
-      await this.policies.update({ id: primaryPolicy.id }, { description: SUPER_ADMIN_POLICY_DESCRIPTION });
+    const expectedDescription = administratorPolicyDescription(role.roleName);
+    if (typeof primaryPolicy.description === 'string' && primaryPolicy.description !== expectedDescription) {
+      primaryPolicy.description = expectedDescription;
+      await this.policies.update({ id: primaryPolicy.id }, { description: expectedDescription });
     }
 
     // Another policy attached to SUPER_ADMIN may still list such a code. It is not edited here (only the system
@@ -873,8 +950,9 @@ export class IamService {
     const restricted = [...new Set([...codes].filter((code) => BUSINESS_APPROVAL_ACTION_CODES.has(code)))];
     if (restricted.length === 0) return;
 
-    let isSuperAdmin = owner.roleIds ? await this.holdsSuperAdminRole(owner.roleIds) : false;
-    if (!isSuperAdmin && owner.userId !== undefined) {
+    // The administrator role is a system-administration role; the message names the one the owner actually holds.
+    let administratorRole: string | null = owner.roleIds ? await this.findAdministratorRoleName(owner.roleIds) : null;
+    if (administratorRole === null && owner.userId !== undefined) {
       const rows: { role_name: string }[] = await this.dataSource.query(
         `SELECT r.role_name AS role_name
            FROM user_roles ur
@@ -882,11 +960,12 @@ export class IamService {
           WHERE ur.user_id = ? AND r.deleted_at IS NULL`,
         [owner.userId],
       );
-      isSuperAdmin = rows.some((row) => row.role_name === ROLES.SUPER_ADMIN);
+      const heldNames = rows.map((row) => row.role_name);
+      administratorRole = administratorRolesAmong(heldNames)[0] ?? null;
     }
-    if (isSuperAdmin) {
+    if (administratorRole !== null) {
       throw new BadRequestException(
-        `SUPER_ADMIN is a system-administration role and cannot be granted business approval permissions ` +
+        `${administratorRole} is a system-administration role and cannot be granted business approval permissions ` +
           `(${restricted.join(', ')}). Business approvals belong to the designated business roles.`,
       );
     }
@@ -908,11 +987,11 @@ export class IamService {
       this.roles.find({ select: { id: true, roleName: true } }),
     ]);
     const liveRoleIds = new Set(liveRoles.map((role) => role.id));
-    const superAdminIds = new Set(liveRoles.filter((role) => role.roleName === ROLES.SUPER_ADMIN).map((role) => role.id));
+    const administratorIds = new Set(liveRoles.filter((role) => isAdministratorRoleName(role.roleName)).map((role) => role.id));
 
     const eligible = new Set<number>();
     const consider = (roleId: number, statements: { effect: string; actions: string[] }[] = []) => {
-      if (eligible.has(roleId) || !liveRoleIds.has(roleId) || superAdminIds.has(roleId)) return;
+      if (eligible.has(roleId) || !liveRoleIds.has(roleId) || administratorIds.has(roleId)) return;
       if (statements.some((s) => s.effect === POLICY_EFFECT.ALLOW && (s.actions ?? []).some((code) => wanted.has(code)))) eligible.add(roleId);
     };
     for (const row of attached) consider(row.roleId, row.policy?.statements);
@@ -951,7 +1030,7 @@ export class IamService {
         ORDER BY d.workflowType, l.levelOrder`,
       [...ids, ...watchedTypes],
     );
-    const candidates = levels.filter((level) => level.role_name !== ROLES.SUPER_ADMIN);
+    const candidates = levels.filter((level) => !isAdministratorRoleName(level.role_name));
     if (candidates.length === 0) return;
 
     const heldByRole = new Map<number, Set<string>>();

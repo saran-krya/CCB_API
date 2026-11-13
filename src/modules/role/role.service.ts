@@ -6,14 +6,14 @@ import {
 } from '@nestjs/common';
 
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, Repository, SelectQueryBuilder } from 'typeorm';
 
 import { AuditService } from '../../audit/audit.service';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 import { paginate } from '../../common/utils/pagination.util';
 import { releaseSoftDeletedUnique } from '../../common/utils/release-soft-deleted-unique';
 import { Actor, actorUserId, isSuperAdminActor } from '../../common/security/actor';
-import { ROLES } from '@app/common/constants/global';
+import { ADMINISTRATOR_ROLES, isAdministratorRoleName } from '../../common/security/administrator-roles';
 
 import {
   CreateRoleDto,
@@ -25,23 +25,25 @@ import { Role } from './entities/role.entity';
 import { RoleQueryDto } from '@app/common/dto/role-paginatoin.dto';
 import { LovService } from '../lov/lov.service';
 import { UserRoleService } from '../user-role/user-role.service';
+import { AssignmentBoundaryService } from '../iam/assignment-boundary.service';
 import { ERROR_MESSAGES } from '../../common/constants/error-messages.constants';
 import { AUDIT_MODULE, AUDIT_ACTION } from '../../audit/audit.constants';
 import { SORT_ORDER } from '../../common/constants/sort.constants';
 import { LOV_CATEGORY } from '../lov/lov.constants';
 
-/** The one role name with system meaning. SUPER_ADMIN is the ONLY predefined role: RolesGuard's bypass and the
- *  boot-time grant reconciliation (ensureAdminPolicyGrants, ensureAdminGrants) match it by this exact name. It is
- *  created by the boot-time seed only — through the API it can be neither created, renamed into, renamed away from
- *  nor deleted, so a delegated administrator cannot manufacture, hijack or dismantle it by renaming roles. Every
- *  other role is created and managed dynamically by SUPER_ADMIN: no other name is special, reserved or auto-granted
- *  anything. */
-const RESERVED_ROLE_NAMES: readonly string[] = [ROLES.SUPER_ADMIN];
+/** The role names with system meaning: the ADMINISTRATOR roles — SUPER_ADMIN (the customer's own highest administrator, the only
+ *  predefined role). RolesGuard's bypass, the
+ *  administrator privilege rules and the boot-time grant reconciliation (ensureAdminPolicyGrants, ensureAdminGrants) match them by these
+ *  exact names. They are created by the boot-time seed only — through the API they can be neither created, renamed into, renamed away
+ *  from nor deleted, so a delegated administrator ("ADMIN") cannot manufacture, hijack or dismantle one by renaming roles. Every other
+ *  role — an "ADMIN" included — is created and managed dynamically by the super administrator: no other name is special, reserved or
+ *  auto-granted anything. */
+const RESERVED_ROLE_NAMES: readonly string[] = ADMINISTRATOR_ROLES;
 
 /** The comparison key of a role name: Unicode-normalised (a full-width spelling or a composed/decomposed
  *  accent is the same string), accents and invisible/control characters removed, trimmed, upper-cased. The
  *  database compares role names case- and accent-insensitively and the boot-time reconciliation looks the
- *  system role up by name IN SQL, so a look-alike such as "SÜPER_ADMIN" or "super_admín" would be taken for
+ *  system role up by name IN SQL, so a look-alike such as "SUPER_ADMİN" or "super_admín" would be taken for
  *  SUPER_ADMIN there — it must count as reserved here. Deliberately a little broader than the database, never
  *  narrower. */
 export const canonicalRoleName = (name: string): string =>
@@ -50,6 +52,13 @@ export const canonicalRoleName = (name: string): string =>
 const RESERVED_CANONICAL_NAMES: ReadonlySet<string> = new Set(RESERVED_ROLE_NAMES.map(canonicalRoleName));
 const isReservedRoleName = (name: string | undefined): boolean =>
   name !== undefined && RESERVED_CANONICAL_NAMES.has(canonicalRoleName(name));
+
+/** The reason a role is listed but not assignable when it grants permissions the signed-in user does not hold (the assignment boundary). */
+const ASSIGNMENT_BOUNDARY_REASON = 'This role grants permissions you do not hold.';
+
+/** Whether `actor` may see the administrator role (SUPER_ADMIN) at all: a super administrator and the system, yes; everyone else, never.
+ *  With no actor at all, `whenNoActor` decides (the pickers hide it — the safe answer — while a plain list call without a viewer is unchanged). */
+const mayListAdministratorRoles = (actor: Actor | undefined, whenNoActor: boolean): boolean => (actor === undefined ? whenNoActor : isSuperAdminActor(actor));
 
 // Correlated subqueries behind the sortable count columns — selected as aliases (never joined) so a page
 // still holds one row per role.
@@ -81,6 +90,10 @@ export class RoleService {
     // module just for an existence check, and the risk of a circular module dependency that would
     // bring (Role -> Workflow -> ... -> Role already depends on Role the other way).
     private readonly dataSource: DataSource,
+
+    // The assignment boundary: which roles the signed-in user may hand out (the pickers' `assignable` flag). UserRoleService enforces
+    // the same rule on the write — this only lets the screen say so up front.
+    private readonly assignmentBoundary: AssignmentBoundaryService,
   ) { }
 
   async create(
@@ -142,12 +155,16 @@ export class RoleService {
    *  in `meta` so the client never hardcodes which categories exist. */
   async RoleLists(
     query: RoleQueryDto,
+    actor?: Actor,
   ) {
     const qb = this.roles
       .createQueryBuilder("role")
       .leftJoinAndSelect("role.userCategory", "userCategory")
       .addSelect(ASSIGNED_USER_COUNT_SQL, "assigned_user_count")
       .addSelect(POLICY_COUNT_SQL, "policy_count");
+
+    // A viewer who is not a super administrator is never shown the SUPER_ADMIN role (the Roles screen is the console's, but the rule holds at the source).
+    this.hideAdministratorRoles(qb, actor, true);
 
     const term = query["search.query"]?.trim();
     if (term) {
@@ -217,19 +234,52 @@ export class RoleService {
     };
   }
 
-  /** The system-managed role (SUPER_ADMIN, the only predefined one): RolesGuard's bypass and the boot-time grant
-   *  reconciliation match it by exact name, so it can be neither renamed nor deleted. */
+  /** The system-managed role (SUPER_ADMIN, the only predefined one): RolesGuard's bypass and the
+   *  boot-time grant reconciliation match it by exact name, so it can be neither renamed nor deleted. */
   private isSystemRole(role: Pick<Role, "roleName">): boolean {
     return isReservedRoleName(role.roleName);
   }
 
-  /** Whether the signed-in user may hand this role out in Create User / Assign Roles. SUPER_ADMIN is
-   *  listed for everyone but only a SUPER_ADMIN may assign it — the same rule UserRoleService enforces
-   *  on the write, so the web app can show the option disabled instead of letting a request fail. */
-  private assignability(role: Pick<Role, "roleName">, actor?: Actor): { assignable: boolean; assignableReason: string | null } {
-    const restricted = role.roleName === ROLES.SUPER_ADMIN;
-    const allowed = !restricted || (actor !== undefined && isSuperAdminActor(actor));
-    return { assignable: allowed, assignableReason: allowed ? null : 'Only SUPER_ADMIN can assign this role.' };
+  /** Whether the signed-in user may hand this role out in Create User / Assign Roles. SUPER_ADMIN is only ever LISTED to a super administrator
+   *  (hideAdministratorRoles); the flag below is the second line of defence, the same rule UserRoleService enforces on the write — should an
+   *  administrator role reach the list for anyone else, it is shown unassignable instead of letting a request fail. */
+  private assignability(
+    role: Pick<Role, "roleName">,
+    actor?: Actor,
+    excessCodes?: readonly string[],
+  ): { assignable: boolean; assignableReason: string | null } {
+    // An administrator role is handed out only by a super administrator — the same rule UserRoleService enforces on the write. The pickers
+    // do not even list it to anyone else; a delegated administrator ("ADMIN") can never see or assign it.
+    const restricted = isAdministratorRoleName(role.roleName);
+    const mayAssign = actor !== undefined && isSuperAdminActor(actor);
+    if (restricted && !mayAssign) return { assignable: false, assignableReason: `Only ${role.roleName} can assign this role.` };
+    // The assignment boundary: a role that grants anything the signed-in user does not hold cannot be handed out by them.
+    if (excessCodes && excessCodes.length > 0) return { assignable: false, assignableReason: ASSIGNMENT_BOUNDARY_REASON };
+    return { assignable: true, assignableReason: null };
+  }
+
+  /** For a delegated administrator: per role, the permissions it grants that the actor does not hold (the assignment boundary) — one lookup
+   *  for the whole list. `undefined` for a super administrator and the system, which are unbounded. */
+  private async boundaryExcess(roleIds: number[], actor?: Actor): Promise<Map<number, string[]> | undefined> {
+    if (!actor || isSuperAdminActor(actor) || roleIds.length === 0) return undefined;
+    const held = await this.assignmentBoundary.codesHeldBy(actor);
+    return this.assignmentBoundary.excessOf(roleIds, held);
+  }
+
+  /** Keeps the administrator role (SUPER_ADMIN) out of a role list the viewer is not entitled to see it in. The comparison is BINARY — the exact
+   *  stored name, like every other administrator-role check — so a look-alike role of a different spelling is an ordinary role and stays listed. */
+  // `whenNoActor`: whether the role may be listed when there is NO viewer at all — false for the pickers (the safe answer: SUPER_ADMIN is not offered),
+  // true for the plain list an internal caller reads without a viewer (nothing hidden). A viewer who is given always decides.
+  private hideAdministratorRoles(qb: SelectQueryBuilder<Role>, actor: Actor | undefined, whenNoActor: boolean): void {
+    if (mayListAdministratorRoles(actor, whenNoActor)) return;
+    ADMINISTRATOR_ROLES.forEach((name, index) => qb.andWhere(`BINARY role.roleName <> :administratorRole${index}`, { [`administratorRole${index}`]: name }));
+  }
+
+  /** 404 (not 403 — the role's existence is not confirmed) for the administrator role when `actor` may not see it. */
+  private assertVisibleTo(role: Pick<Role, 'roleName'>, actor: Actor | undefined): void {
+    if (isAdministratorRoleName(role.roleName) && !mayListAdministratorRoles(actor, false)) {
+      throw new NotFoundException(ERROR_MESSAGES.ROLE_NOT_FOUND);
+    }
   }
 
   /** Why this role can't be deleted from the list, or null when it can be tried. The delete itself still
@@ -270,12 +320,16 @@ export class RoleService {
     if (userCategoryId) {
       qb.andWhere('role.userCategoryId = :userCategoryId', { userCategoryId });
     }
+    // SUPER_ADMIN is not an option at all for anyone but a super administrator — not even a disabled one. (The `assignable` flag below stays as a
+    // second line of defence: should such a row ever reach this list, it is still flagged unassignable.)
+    this.hideAdministratorRoles(qb, actor, false);
 
     const roles = await qb.orderBy('role.roleName', SORT_ORDER.ASC).getMany();
 
     // The Roles picker on Create / Edit User shows how many users hold each role. Same batched count the Roles
     // list uses for "Assigned Users" — one grouped query for the whole list, never one per role.
     const userCounts = await this.userRoleService.getUserCountsByRoleIds(roles.map((role) => role.id));
+    const excess = await this.boundaryExcess(roles.map((role) => role.id), actor);
 
     return roles.map((role) => ({
       id: role.id,
@@ -291,7 +345,7 @@ export class RoleService {
       userCategoryLabel: role.userCategory?.label ?? null,
       canBeReportingManager: role.canBeReportingManager,
       assignedUserCount: userCounts.get(role.id) ?? 0,
-      ...this.assignability(role, actor),
+      ...this.assignability(role, actor, excess?.get(role.id)),
     }));
   }
 
@@ -300,7 +354,7 @@ export class RoleService {
    *  "Filter by Type" options ride along in `meta` so the client never hardcodes which categories exist.
    *  The user count is a correlated subquery exposed as a selected alias (one row per role, and an alias
    *  is what TypeORM can order a skip/take page by). Each row says whether the signed-in user may assign
-   *  it (`assignable`) — SUPER_ADMIN is shown to everyone but is assignable only by a SUPER_ADMIN. */
+   *  it (`assignable`) — SUPER_ADMIN is listed to a super administrator only, who is also the only one who can assign it. */
   async getRolePicker(query: RolePickerQueryDto, actor?: Actor) {
     const qb = this.roles
       .createQueryBuilder('role')
@@ -317,6 +371,8 @@ export class RoleService {
     if (query.userCategoryId) {
       qb.andWhere('role.userCategoryId = :userCategoryId', { userCategoryId: query.userCategoryId });
     }
+    // Same rule as the dropdown: only a super administrator is offered SUPER_ADMIN.
+    this.hideAdministratorRoles(qb, actor, false);
 
     const direction = query.sortOrder === SORT_ORDER.DESC ? SORT_ORDER.DESC : SORT_ORDER.ASC;
     const sortColumn =
@@ -331,6 +387,7 @@ export class RoleService {
     ]);
 
     const userCounts = await this.userRoleService.getUserCountsByRoleIds(page.items.map((role) => role.id));
+    const excess = await this.boundaryExcess(page.items.map((role) => role.id), actor);
 
     return {
       items: page.items.map((role) => ({
@@ -341,20 +398,22 @@ export class RoleService {
         userCategoryLabel: role.userCategory?.label ?? null,
         canBeReportingManager: role.canBeReportingManager,
         assignedUserCount: userCounts.get(role.id) ?? 0,
-        ...this.assignability(role, actor),
+        ...this.assignability(role, actor, excess?.get(role.id)),
       })),
       pagination: page.pagination,
       meta: { typeOptions: this.toCategoryOptions(userCategories) },
     };
   }
 
-  async getRoleFilter() {
-    const roles = await this.roles
+  async getRoleFilter(actor?: Actor) {
+    const qb = this.roles
       .createQueryBuilder("role")
       .select([
         "role.id",
         "role.roleName",
-      ])
+      ]);
+    this.hideAdministratorRoles(qb, actor, false);
+    const roles = await qb
       .orderBy(
         "role.roleName",
         SORT_ORDER.ASC,
@@ -407,13 +466,21 @@ export class RoleService {
     });
   }
 
+  /** `findOne` for a ROUTE: the same role, but the administrator role (SUPER_ADMIN) is not found by a viewer who may not see it. Internal
+   *  callers keep using `findOne`, which has no viewer. */
+  async findOneVisibleTo(id: number, actor: Actor | undefined) {
+    const role = await this.findOne(id);
+    this.assertVisibleTo(role, actor);
+    return role;
+  }
+
   /** The Role Detail page's own read — same role lookup as `findOne`, plus the two facts that page
    *  needs beyond the plain entity: how many users currently hold this role, and its user-facing
    *  display fields (userCategoryType label, matching RoleLists' own projection). Kept separate from
    *  `findOne` rather than folding this into it, since `findOne`'s other two callers
    *  (RoleController's plain GET and UserService.create/addRoles's existence check) don't need this
    *  extra query on every call — this is deliberately only for the one screen that does. */
-  async findOneWithDetails(id: number) {
+  async findOneWithDetails(id: number, actor?: Actor) {
     // userCategory is `eager: true` on the entity, so a plain findOne already joins it — no
     // explicit `relations` needed here (same reason RoleLists' own leftJoinAndSelect would be
     // redundant, if this read ever switched to a query builder).
@@ -421,6 +488,8 @@ export class RoleService {
     if (!role) {
       throw new NotFoundException(ERROR_MESSAGES.ROLE_NOT_FOUND);
     }
+    // The details name the holders of a role — never shown for SUPER_ADMIN to a viewer who may not see that role.
+    if (actor !== undefined) this.assertVisibleTo(role, actor);
 
     const assignedUsers = await this.userRoleService.getUsersByRoleId(id);
 
@@ -449,13 +518,14 @@ export class RoleService {
     // The name that will be stored: trimmed (defence in depth — the DTO already trims requests).
     const requestedName = dto.roleName?.trim();
 
-    // The reserved system role (SUPER_ADMIN — the only predefined role) is matched BY NAME throughout the system —
-    // RolesGuard's bypass and the ensureAdminPolicyGrants/ensureAdminGrants reconciliation queries — and
+    // The reserved system role (SUPER_ADMIN — the only predefined role) is matched BY NAME throughout
+    // the system — RolesGuard's bypass and the ensureAdminPolicyGrants/ensureAdminGrants reconciliation queries — and
     // PATCH /roles/:id is a route reachable independently of the Edit Role screen's own save flow. So its name can
-    // never change, and (because EDIT_ROLE is a delegable permission) only a SUPER_ADMIN may edit it at all.
+    // never change, and (because EDIT_ROLE is a delegable permission) only a super administrator may edit it at all.
     if (isReservedRoleName(role.roleName)) {
-      if (!isSuperAdminActor(actor)) {
-        throw new ForbiddenException(`${role.roleName} is a system role — only SUPER_ADMIN can edit it.`);
+      const mayEdit = isSuperAdminActor(actor);
+      if (!mayEdit) {
+        throw new ForbiddenException(`${role.roleName} is a system role — only ${role.roleName} can edit it.`);
       }
       if (requestedName !== undefined && requestedName !== role.roleName) {
         throw new ConflictException(

@@ -22,6 +22,32 @@
 > **Verification at revert time:** `tsc --noEmit` — 4 errors, all pre-existing (`jwt.strategy.spec.ts`, `live-role-authorization.spec.ts`: `JwtStrategy` takes 4 constructor args, specs pass 3; both files identical to baseline). `nest build` clean. Jest: 943 tests pass, same 2 pre-existing suites fail to compile. No SaaS references remain in API `src`/`test`/`scripts`/`docs` or in CCB_Web.
 
 ---
+## SUPER_ADMIN platform administration (normal CCB — NOT SaaS) — status 2026-11-10
+
+> **UPDATE 2026-11-11 — the vendor part of this section no longer exists in the codebase.** CCB is on-premises software: every customer runs its own installation, and its `SUPER_ADMIN` is the customer's own highest administrator. The client registry, client lifecycle, deployments / provisioning, licences & renewals, support operations, the initial-admin invitation workflow and the separate platform entry point (everything under "Built, NOT activated" below) were **completely removed** from the customer application, not just hidden. What stays is the administration console itself (Overview, Module Catalog, Users / Roles / Policies, System Health, Application Information, Audit Logs, Settings, System Attributes, Lookup Values). What was removed, what was kept and why, and where the only copy of the removed files sits: [docs/VENDOR_MODULE_REMOVAL.md](docs/VENDOR_MODULE_REMOVAL.md). The model: [docs/ON_PREMISE_SUPER_ADMIN.md](docs/ON_PREMISE_SUPER_ADMIN.md). The "unbuilt items shown disabled as Planned" and "9 groups" remarks below are history: the console has no disabled entries and 6 groups.
+
+Each client runs its own CCB deployment and database; the registry below was CCB's internal record of its customers and never touched business data. No `organization_id`, no tenant isolation.
+
+**Done and verified (no schema change):**
+- [x] Real health endpoint + System Health page (API process, database, Redis; measured values only) — `GET /system-health`
+- [x] Audit-log read API + viewer (search, module/action/date filters, sort, pagination, old/new values with secret masking) — `GET /audit-logs`
+- [x] The two broken specs fixed (`jwt.strategy.spec.ts`, `live-role-authorization.spec.ts`) + session-binding tests
+- [x] SUPER_ADMIN dashboard from real data (internal users, access, sessions, alerts computed by the API, recent audit, health) — `GET /dashboard/platform`
+- [x] Module Catalog screen (rename/reorder, switch on/off) on the existing catalog APIs + server-assembled tree `GET /pmodules/catalog`; core modules protected from deactivation/deletion; empty-name validation gap fixed
+- [x] CCB Administration Console redesign (web only, no API change): dedicated SUPER_ADMIN shell; pages live under `/platform/{product,operations,audit,settings}/…` — the Module Catalog sits under Product Management (breadcrumb `Home > Product Management > Module Catalog`), not System Settings, and `/settings/system/*` only redirects; ONE navigation definition (`lib/navigation/admin-console-nav.ts`) drives the sidebar (9 groups; unbuilt items shown disabled as "Planned"), the breadcrumb, tab titles and page headings; Platform Overview dashboard shows real figures only; business layout untouched for every other user
+- [x] Verified existing: internal users/roles/policies (last-SUPER_ADMIN protections), platform settings (SUPER_ADMIN-only, audit-logged, no secrets)
+
+**HISTORY — "Built, NOT activated" — REMOVED 2026-11-11 (nothing below this line in this block exists any more; only an archived copy sits outside the repositories):**
+- ~~Client registry (profile, contacts, deployment, status lifecycle), licences (record-only; renewals; purchased modules), support requests, time-limited audited support access (two-person approval)~~
+- ~~Entities, services, controllers, tests (85) and frontend screens; module NOT imported by `AppModule`; migration in `src/migrations-proposed/`; menu/dashboard entries behind `NEXT_PUBLIC_CLIENT_REGISTRY_ENABLED`~~
+- ~~Needs approval: schema design + activation (`docs/CLIENT_REGISTRY_SCHEMA_PROPOSAL.md`, no longer present)~~ — withdrawn: no schema was ever created and none is proposed.
+- Still open and unrelated to the vendor modules: permission codes/menu seeds for support staff who are not SUPER_ADMIN; an index on `audit_logs.created_at`.
+
+**Verification:** `tsc --noEmit` clean (API); `nest build` clean; Jest 1,169 tests passing across 58 suites; web `next build` clean, `tsc` no errors in new files (17 pre-existing errors in chart/community files), Vitest 22 passing. No migration was run and no table was created by this work.
+
+**Verification of the console redesign (2026-11-10, no API file touched):** web `tsc` — only the same 17 pre-existing errors; Vitest 65 passing; production `next build` clean (isolated copy); 77 browser end-to-end checks passing against a stubbed API (every menu entry: URL, active item, breadcrumb, heading, tab title; Planned items inert; collapse/expand; keyboard; tablet/mobile drawer; loading/empty/error; dark theme; Arabic RTL; a delegated ADMIN (then called "client ADMIN" — that role no longer exists) keeps the business layout and makes no platform requests); API `tsc --noEmit` clean and the 8 platform Jest suites (226 tests) passing.
+
+---
 ## Historical record below — REVERTED, not in the codebase
 
 Tracks Phase 2 implementation against the approved architecture (Phase 1 audit → Phase 2 plan → business-workflow extension, all finalized). Updated as work lands. Production migrations/deployment require separate explicit approval — everything here is local/dev only until then.

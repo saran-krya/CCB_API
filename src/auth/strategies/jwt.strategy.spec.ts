@@ -14,6 +14,7 @@ import { CustomerAccountStatus } from '../../modules/customer/entities/customer.
 describe('JwtStrategy.validate — live roles, never token claims', () => {
   let users: { findAuthState: jest.Mock; findOne: jest.Mock };
   let customers: { findOne: jest.Mock };
+  let sessions: { isLive: jest.Mock };
   let strategy: JwtStrategy;
 
   const SUPER_ADMIN = { id: 1, roleName: 'SUPER_ADMIN' };
@@ -23,8 +24,11 @@ describe('JwtStrategy.validate — live roles, never token claims', () => {
   beforeEach(() => {
     users = { findAuthState: jest.fn(), findOne: jest.fn() };
     customers = { findOne: jest.fn() };
+    // The tokens in this describe carry no `sid`, so session binding is skipped and this is never consulted — the
+    // session rules have their own describe below.
+    sessions = { isLive: jest.fn().mockResolvedValue(true) };
     const config = { getOrThrow: jest.fn().mockReturnValue('test-secret-test-secret-test-secret') };
-    strategy = new JwtStrategy(config as never, users as never, customers as never);
+    strategy = new JwtStrategy(config as never, users as never, customers as never, sessions as never);
   });
 
   /** A signed staff token's payload — roleId/roleName are the primary role AT ISSUE TIME. */
@@ -250,6 +254,62 @@ describe('JwtStrategy.validate — live roles, never token claims', () => {
   });
 });
 
+// SESSION BINDING: a token that carries `sid` is honoured only while its session (the refresh-token family it was issued
+// for) is still live; a token without `sid` is not checked. Every dependency is stubbed.
+describe('JwtStrategy.validate — session binding', () => {
+  let users: { findAuthState: jest.Mock };
+  let customers: { findOne: jest.Mock };
+  let sessions: { isLive: jest.Mock };
+  let strategy: JwtStrategy;
+
+  const staffToken = (overrides: Record<string, unknown> = {}) =>
+    ({ sub: 7, email: 'staff@ccb.local', roleId: 3, roleName: 'FINANCE', type: 'staff', iat: 1_700_000_000, exp: 1_900_000_000, ...overrides }) as never;
+  const customerToken = (overrides: Record<string, unknown> = {}) =>
+    ({ sub: 9, email: 'owner@example.com', type: 'customer', iat: 1_700_000_000, exp: 1_900_000_000, ...overrides }) as never;
+
+  beforeEach(() => {
+    users = {
+      findAuthState: jest.fn().mockResolvedValue({ id: 7, active: true, mustChangePassword: false, roles: [{ id: 3, roleName: 'FINANCE' }] }),
+    };
+    customers = { findOne: jest.fn().mockResolvedValue({ id: 9, accountStatus: CustomerAccountStatus.ACTIVE }) };
+    sessions = { isLive: jest.fn() };
+    const config = { getOrThrow: jest.fn().mockReturnValue('test-secret-test-secret-test-secret') };
+    strategy = new JwtStrategy(config as never, users as never, customers as never, sessions as never);
+  });
+
+  it('a staff token whose session is live is accepted, and the session is asked about the staff principal', async () => {
+    sessions.isLive.mockResolvedValue(true);
+
+    await expect(strategy.validate(staffToken({ sid: 'family-1' }))).resolves.toBeDefined();
+    expect(sessions.isLive).toHaveBeenCalledWith('staff', 7, 'family-1');
+  });
+
+  it('a staff token whose session has ended is rejected ("Session is no longer active") before the user is even re-read', async () => {
+    sessions.isLive.mockResolvedValue(false);
+
+    await expect(strategy.validate(staffToken({ sid: 'family-1' }))).rejects.toThrow(new UnauthorizedException('Session is no longer active'));
+    expect(users.findAuthState).not.toHaveBeenCalled();
+  });
+
+  it('a customer token is checked against the CUSTOMER session space, never the staff one', async () => {
+    sessions.isLive.mockResolvedValue(true);
+
+    await expect(strategy.validate(customerToken({ sid: 'family-9' }))).resolves.toBeDefined();
+    expect(sessions.isLive).toHaveBeenCalledWith('customer', 9, 'family-9');
+  });
+
+  it('a token without `sid` (issued before session binding existed) is not session-checked', async () => {
+    await expect(strategy.validate(staffToken())).resolves.toBeDefined();
+    expect(sessions.isLive).not.toHaveBeenCalled();
+  });
+
+  it('a token with an empty or non-string `sid` is rejected rather than treated as "no session"', async () => {
+    await expect(strategy.validate(staffToken({ sid: '' }))).rejects.toThrow(UnauthorizedException);
+    await expect(strategy.validate(staffToken({ sid: 123 }))).rejects.toThrow(UnauthorizedException);
+    expect(sessions.isLive).not.toHaveBeenCalled();
+  });
+});
+
 // The signature/expiry/algorithm checks happen in passport-jwt BEFORE validate() runs, driven by the options
 // JwtStrategy hands it. These tests run a real signed token through that exact verification (jsonwebtoken's
 // verify with the strategy's own options) so a wrong secret, an expired token, a tampered token and an
@@ -264,7 +324,7 @@ describe('JwtStrategy token verification options — invalid, expired and wrong-
   /** The options JwtStrategy passes to passport-jwt, captured by constructing it with the real config. */
   function strategyOptions() {
     const config = { getOrThrow: jest.fn().mockReturnValue(SECRET) };
-    const strategy = new JwtStrategy(config as never, {} as never, {} as never) as unknown as {
+    const strategy = new JwtStrategy(config as never, {} as never, {} as never, {} as never) as unknown as {
       _secretOrKeyProvider: (req: unknown, token: string, done: (err: unknown, secret?: string) => void) => void;
       _verifOpts: { algorithms?: string[]; ignoreExpiration?: boolean };
     };

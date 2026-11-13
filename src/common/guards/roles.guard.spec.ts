@@ -79,6 +79,12 @@ describe('RolesGuard — live multi-role authorization', () => {
     it('without SUPER_ADMIN among the live roles there is no bypass', () => {
       expect(guard.canActivate(contextFor('rootOnly', staff(['FINANCE', 'OPERATIONS'])))).toBe(false);
     });
+
+    it('a delegated administrator is no bypass: a role merely CALLED "ADMIN" passes only the routes that list it', () => {
+      expect(guard.canActivate(contextFor('rootOnly', staff(['ADMIN'])))).toBe(false);
+      expect(guard.canActivate(contextFor('financeOrOperations', staff(['ADMIN'])))).toBe(false);
+      expect(guard.canActivate(contextFor('financeOrOperations', staff(['ADMIN', 'FINANCE'])))).toBe(true);
+    });
   });
 
   describe('a listed role may be held as any of the user\'s roles', () => {

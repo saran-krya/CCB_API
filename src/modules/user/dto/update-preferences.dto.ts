@@ -2,7 +2,7 @@ import { ApiPropertyOptional } from '@nestjs/swagger';
 import { IsIn, IsOptional, IsString } from 'class-validator';
 
 export const THEME_MODES = ['light', 'dark'] as const;
-export const NAV_THEMES = ['blue', 'grey', 'amber', 'green', 'default'] as const;
+export const NAV_THEMES = ['blue', 'dark', 'grey', 'amber', 'green', 'default'] as const;
 
 export class UpdatePreferencesDto {
   @ApiPropertyOptional({ enum: THEME_MODES })

@@ -3,6 +3,7 @@ import * as bcrypt from 'bcryptjs';
 import { BootstrapService } from './bootstrap.service';
 import { SYSTEM_ACTOR } from '../common/security/actor';
 
+
 // bcrypt at cost 12 is deliberately slow; this suite is about seeding, not hashing.
 jest.mock('bcryptjs', () => ({ hash: jest.fn().mockResolvedValue('hashed-password') }));
 
@@ -15,6 +16,7 @@ jest.mock('bcryptjs', () => ({ hash: jest.fn().mockResolvedValue('hashed-passwor
 describe('BootstrapService — Super Admin seeding', () => {
   let service: BootstrapService;
   let usersCount: jest.Mock;
+
   let dataSource: { getRepository: jest.Mock; transaction: jest.Mock };
   let config: { get: jest.Mock };
   let configValues: Record<string, string | undefined>;
@@ -217,6 +219,195 @@ describe('BootstrapService — Super Admin seeding', () => {
       expect(dataSource.transaction).toHaveBeenCalledTimes(1);
       expect(seed).toHaveBeenCalledTimes(1);
       expect(seed).toHaveBeenCalledWith(manager);
+    });
+  });
+
+  // An initialized installation is never re-seeded: that is what stops a repeated start from creating a second default administrator.
+  describe('which database counts as initialized', () => {
+    it('every user row counts — soft-deleted accounts included — so an installation that has ever held a user is never treated as fresh', async () => {
+      usersCount.mockResolvedValue(1);
+      const seed = jest.spyOn(service as any, 'seed').mockResolvedValue(undefined);
+
+      await service.onApplicationBootstrap();
+
+      expect(usersCount).toHaveBeenCalledWith({ withDeleted: true });
+      expect(seed).not.toHaveBeenCalled();
+      expect(dataSource.transaction).not.toHaveBeenCalled();
+      expect(userRoleService.addRolesToUser).not.toHaveBeenCalled();
+    });
+  });
+
+  // The first account of a customer's own installation: a real person's address in production, never the built-in example, and a
+  // temporary password that is replaced at the first sign-in.
+  describe('the default administrator identity outside a developer machine', () => {
+    const originalNodeEnv = process.env.NODE_ENV;
+    const seedAdmin = () => (service as any).seedSuperAdmin(manager, SUPER_ADMIN_ROLE);
+
+    afterEach(() => {
+      process.env.NODE_ENV = originalNodeEnv;
+    });
+
+    it('production refuses to create the account without an explicit DEFAULT_ADMIN_EMAIL — before anything is written', async () => {
+      process.env.NODE_ENV = 'production';
+
+      await expect(seedAdmin()).rejects.toThrow('DEFAULT_ADMIN_EMAIL must be set');
+
+      expect(manager.save).not.toHaveBeenCalled();
+      expect(userRoleService.addRolesToUser).not.toHaveBeenCalled();
+    });
+
+    it('production refuses the built-in example address, however it is cased', async () => {
+      process.env.NODE_ENV = 'production';
+      for (const demo of ['admin@ccb.local', ' Admin@CCB.local ']) {
+        configValues.DEFAULT_ADMIN_EMAIL = demo;
+
+        await expect(seedAdmin()).rejects.toThrow('DEFAULT_ADMIN_EMAIL must be set');
+      }
+
+      expect(manager.save).not.toHaveBeenCalled();
+    });
+
+    it('production creates the account from an explicit, real address — still forced to change the password at first sign-in', async () => {
+      process.env.NODE_ENV = 'production';
+      configValues.DEFAULT_ADMIN_EMAIL = 'it.lead@customer.example';
+
+      await seedAdmin();
+
+      const [, userData] = manager.create.mock.calls[0];
+      expect(userData).toMatchObject({ email: 'it.lead@customer.example', mustChangePassword: true, active: true });
+    });
+
+    it('creates NO account at all when BOOTSTRAP_SEED_ADMIN=false — the role exists, nobody holds it, and no password sits in an env file', async () => {
+      process.env.NODE_ENV = 'production';
+      configValues.BOOTSTRAP_SEED_ADMIN = 'false';
+
+      await seedAdmin();
+
+      expect(manager.save).not.toHaveBeenCalled();
+      expect(userRoleService.addRolesToUser).not.toHaveBeenCalled();
+    });
+
+    it('a production environment that still carries DEFAULT_ADMIN_PASSWORD after initialization is told to remove it; a developer machine is not nagged', async () => {
+      usersCount.mockResolvedValue(3);
+      process.env.NODE_ENV = 'production';
+      await service.onApplicationBootstrap();
+      expect(Logger.prototype.warn).toHaveBeenCalledWith(expect.stringContaining('DEFAULT_ADMIN_PASSWORD is still set'));
+
+      (Logger.prototype.warn as jest.Mock).mockClear();
+      process.env.NODE_ENV = 'development';
+      await service.onApplicationBootstrap();
+      expect(Logger.prototype.warn).not.toHaveBeenCalledWith(expect.stringContaining('DEFAULT_ADMIN_PASSWORD is still set'));
+    });
+  });
+
+  // The sample Community / Property / Unit data (seed-locations.ts) is ONE estate's master data. A customer's installation must not start life
+  // holding it: it is never loaded in production unless BOOTSTRAP_SEED_DEMO_DATA says so, "false" never loads it anywhere, and a developer
+  // machine / the test environment keep what they have always got. Nothing else is optional — the catalogue, the lists of values, the
+  // attributes, the role and the first administrator are seeded regardless.
+  describe('sample (demo) business data', () => {
+    const originalNodeEnv = process.env.NODE_ENV;
+    const setNodeEnv = (value: string | undefined) => {
+      if (value === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = value;
+    };
+    const demoData = (): boolean => (service as any).seedsDemoData();
+
+    afterEach(() => {
+      setNodeEnv(originalNodeEnv);
+    });
+
+    const CASES: Array<{ nodeEnv: string | undefined; flag: string | undefined; loaded: boolean }> = [
+      // production (and anything that is not development / test): off unless explicitly opted in
+      { nodeEnv: 'production', flag: undefined, loaded: false },
+      { nodeEnv: 'production', flag: '', loaded: false },
+      { nodeEnv: 'production', flag: 'false', loaded: false },
+      { nodeEnv: 'production', flag: 'true', loaded: true },
+      { nodeEnv: 'production', flag: ' TRUE ', loaded: true },
+      { nodeEnv: 'production', flag: 'yes', loaded: true },
+      { nodeEnv: 'production', flag: 'nonsense', loaded: false },
+      { nodeEnv: 'staging', flag: undefined, loaded: false },
+      { nodeEnv: undefined, flag: undefined, loaded: false },
+      { nodeEnv: undefined, flag: 'true', loaded: true },
+      // a developer machine and the test environment: on by default, and "false" turns it off
+      { nodeEnv: 'development', flag: undefined, loaded: true },
+      { nodeEnv: 'test', flag: undefined, loaded: true },
+      { nodeEnv: 'development', flag: 'false', loaded: false },
+      { nodeEnv: 'test', flag: 'false', loaded: false },
+    ];
+
+    for (const { nodeEnv, flag, loaded } of CASES) {
+      it(`NODE_ENV=${nodeEnv ?? '(unset)'} and BOOTSTRAP_SEED_DEMO_DATA=${flag === undefined ? '(unset)' : JSON.stringify(flag)} -> ${loaded ? 'loaded' : 'NOT loaded'}`, () => {
+        setNodeEnv(nodeEnv);
+        configValues.BOOTSTRAP_SEED_DEMO_DATA = flag;
+
+        expect(demoData()).toBe(loaded);
+      });
+    }
+
+    describe('what a fresh database receives', () => {
+      // Everything seed() calls is replaced by a recording stand-in: the question here is only WHICH steps run.
+      const stubSeedSteps = () => {
+        for (const step of ['seedPModules', 'seedSubModules', 'seedScreens', 'seedActions']) {
+          jest.spyOn(service as any, step).mockResolvedValue(new Map());
+        }
+        (ensureSteps.lov as any).seedValues = jest.fn().mockResolvedValue(new Map());
+        (ensureSteps.attribute as any).seedValues = jest.fn().mockResolvedValue(undefined);
+        return {
+          seedRoles: jest.spyOn(service as any, 'seedRoles').mockResolvedValue(new Map()),
+          seedSuperAdmin: jest.spyOn(service as any, 'seedSuperAdmin').mockResolvedValue(undefined),
+          seedLocations: jest.spyOn(service as any, 'seedLocations').mockResolvedValue(undefined),
+        };
+      };
+      const runSeed = () => (service as any).seed(manager) as Promise<void>;
+
+      it('production without the opt-in loads NO sample data — and still seeds the catalogue, the lists, the role and the first administrator', async () => {
+        setNodeEnv('production');
+        const steps = stubSeedSteps();
+
+        await runSeed();
+
+        expect(steps.seedLocations).not.toHaveBeenCalled();
+        expect(steps.seedRoles).toHaveBeenCalledTimes(1);
+        expect(steps.seedSuperAdmin).toHaveBeenCalledTimes(1);
+        expect((ensureSteps.lov as any).seedValues).toHaveBeenCalledTimes(1);
+        expect((ensureSteps.attribute as any).seedValues).toHaveBeenCalledTimes(1);
+        expect(Logger.prototype.log).toHaveBeenCalledWith(expect.stringContaining('Sample Community / Property / Unit data is not loaded'));
+      });
+
+      it('production WITH BOOTSTRAP_SEED_DEMO_DATA=true loads it, once, in the seed transaction\'s own manager', async () => {
+        setNodeEnv('production');
+        configValues.BOOTSTRAP_SEED_DEMO_DATA = 'true';
+        const steps = stubSeedSteps();
+
+        await runSeed();
+
+        expect(steps.seedLocations).toHaveBeenCalledTimes(1);
+        expect(steps.seedLocations).toHaveBeenCalledWith(manager);
+        expect(Logger.prototype.log).not.toHaveBeenCalledWith(expect.stringContaining('Sample Community / Property / Unit data is not loaded'));
+      });
+
+      it('a developer machine keeps loading it by default, and BOOTSTRAP_SEED_DEMO_DATA=false switches it off there too', async () => {
+        setNodeEnv('development');
+        const steps = stubSeedSteps();
+
+        await runSeed();
+        expect(steps.seedLocations).toHaveBeenCalledTimes(1);
+
+        steps.seedLocations.mockClear();
+        configValues.BOOTSTRAP_SEED_DEMO_DATA = 'false';
+        await runSeed();
+        expect(steps.seedLocations).not.toHaveBeenCalled();
+      });
+
+      it('the order is fixed: the administrator is seeded BEFORE the sample data (the whole seed is ONE transaction, so a failure in the optional part still rolls everything back and the next start retries)', async () => {
+        setNodeEnv('production');
+        configValues.BOOTSTRAP_SEED_DEMO_DATA = 'true';
+        const steps = stubSeedSteps();
+
+        await runSeed();
+
+        expect(steps.seedSuperAdmin.mock.invocationCallOrder[0]).toBeLessThan(steps.seedLocations.mock.invocationCallOrder[0]);
+      });
     });
   });
 });

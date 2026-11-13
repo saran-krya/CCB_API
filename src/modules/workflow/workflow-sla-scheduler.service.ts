@@ -317,13 +317,13 @@ export class WorkflowSlaSchedulerService {
   /** Who could actually act on `step`: the holders of its role minus the people the approve path refuses anyway — the submitter
    *  (every domain's approve() runs assertNotSelfReview) and anyone holding SUPER_ADMIN, whatever else they hold
    *  (WorkflowOrchestrationService.assertCanAct). Told "an approval assigned to your role is overdue" they could do nothing
-   *  about it. The SUPER_ADMIN question goes to UserRoleService.holdsSuperAdmin, the existing predicate, rather than being
+   *  about it. The SUPER_ADMIN question goes to UserRoleService.holdsAdministratorRole, the existing predicate, rather than being
    *  re-derived here. */
   private async eligibleApproverIds(step: WorkflowInstanceStep, holderIds: number[]): Promise<number[]> {
     const eligible: number[] = [];
     for (const userId of holderIds) {
       if (userId === step.instance.submittedById) continue;
-      if (await this.userRoleService.holdsSuperAdmin(userId)) continue;
+      if (await this.userRoleService.holdsAdministratorRole(userId)) continue;
       eligible.push(userId);
     }
     return eligible;

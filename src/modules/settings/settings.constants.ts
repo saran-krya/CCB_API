@@ -50,6 +50,9 @@ export interface SystemDefaults {
   pageSize: number;
   tableDensity: string;
   sidebarState: string;
+  /** The primary brand colour, `#RRGGBB` — an installation-wide value (no user chooses their own), delivered with the defaults so
+   *  the app shell can theme itself from the same response that carries the rest. */
+  brandColor: string;
   notifications: { emailEnabled: boolean; inAppEnabled: boolean };
 }
 
@@ -80,7 +83,7 @@ export interface EffectivePreferencesResponse {
 export const PASSWORD_CHANGE_RULES = { mustDifferFromCurrent: true, revokesOtherSessions: true } as const;
 
 export interface SystemSettingsResponse {
-  general: { defaultPageSize: number; defaultTableDensity: string; defaultSidebarState: string };
+  general: { defaultPageSize: number; defaultTableDensity: string; defaultSidebarState: string; brandColor: string };
   regional: { defaultLanguage: string; defaultTimezone: string; defaultDateFormat: string };
   security: {
     /** Read-only: enforced in code (and deployment configuration), not configurable here. */

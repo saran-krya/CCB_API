@@ -4,6 +4,7 @@ import {
   SUPER_ADMIN_ASSIGN_MESSAGE,
   SUPER_ADMIN_MODIFY_MESSAGE,
   SYSTEM_ACTOR,
+  initialSuperAdminProtectedMessage,
 } from '../../common/security/actor';
 import { UserRoleService } from './user-role.service';
 import { UserRole } from './entities/user-role.entity';
@@ -139,11 +140,18 @@ function arrange(initialRows: Row[], userStates: Record<number, Partial<UserStat
   });
   const plainRepo = { manager: { transaction, getRepository: txManager.getRepository } };
   const audit = { record: jest.fn().mockResolvedValue(undefined) };
-  const service = new UserRoleService(plainRepo as any, audit as any);
+  // The assignment boundary is a unit of its own (iam/assignment-boundary.service.spec.ts): here it is a mock, so this suite proves WHEN it is
+  // asked, with WHAT, and that a refusal leaves nothing behind.
+  const boundary = {
+    assertWithinBoundary: jest.fn().mockResolvedValue(undefined),
+    assertAccountWithinBoundary: jest.fn().mockResolvedValue(undefined),
+  };
+  const service = new UserRoleService(plainRepo as any, audit as any, boundary as any);
 
   return {
     service,
     audit,
+    boundary,
     txManager,
     txUserRoles,
     txRoles,
@@ -677,13 +685,33 @@ describe('UserRoleService.removeRoleFromUser', () => {
       expect(t.roleIdsOf(5)).toEqual([SUPER_ADMIN.id, FINANCE.id]);
     });
 
-    it('allows removing SUPER_ADMIN while another ACTIVE user also holds it', async () => {
+    it('allows removing SUPER_ADMIN from a holder who is NOT the initial administrator, while another ACTIVE user also holds it', async () => {
       const t = arrange(ROWS);
 
-      await expect(t.service.removeRoleFromUser(5, SUPER_ADMIN.id, undefined, ROOT)).resolves.toBe(true);
+      // User 5 is the initial administrator (the lowest id among the active holders); user 6 is a later one.
+      await expect(t.service.removeRoleFromUser(6, SUPER_ADMIN.id, undefined, ROOT)).resolves.toBe(true);
 
-      expect(t.roleIdsOf(5)).toEqual([FINANCE.id]);
-      expect(t.roleIdsOf(6)).toEqual([SUPER_ADMIN.id, OPERATIONS.id]);
+      expect(t.roleIdsOf(6)).toEqual([OPERATIONS.id]);
+      expect(t.roleIdsOf(5)).toEqual([SUPER_ADMIN.id, FINANCE.id]);
+    });
+
+    it('refuses to demote the INITIAL administrator even while another ACTIVE SUPER_ADMIN exists; nothing is deleted or audited', async () => {
+      const t = arrange(ROWS);
+
+      await expect(t.service.removeRoleFromUser(5, SUPER_ADMIN.id, undefined, ROOT)).rejects.toThrow(ForbiddenException);
+      await expect(t.service.removeRoleFromUser(5, SUPER_ADMIN.id, undefined, ROOT)).rejects.toThrow(initialSuperAdminProtectedMessage('demote'));
+
+      expect(t.txUserRoles.delete).not.toHaveBeenCalled();
+      expect(t.audit.record).not.toHaveBeenCalled();
+      expect(t.roleIdsOf(5)).toEqual([SUPER_ADMIN.id, FINANCE.id]);
+    });
+
+    it('the initial administrator is the oldest ACTIVE holder: once user 5 is deactivated (server tool), user 6 becomes the protected one', async () => {
+      const rows: Row[] = [...ROWS, { id: 51, userId: 9, roleId: SUPER_ADMIN.id }, { id: 52, userId: 9, roleId: FINANCE.id }];
+      const t = arrange(rows, { 5: { active: false } });
+
+      await expect(t.service.removeRoleFromUser(6, SUPER_ADMIN.id, undefined, ROOT)).rejects.toThrow(initialSuperAdminProtectedMessage('demote'));
+      await expect(t.service.removeRoleFromUser(9, SUPER_ADMIN.id, undefined, ROOT)).resolves.toBe(true);
     });
 
     it('a DEACTIVATED second holder does not count: the remaining active SUPER_ADMIN is still the last one and cannot be demoted', async () => {
@@ -711,20 +739,20 @@ describe('UserRoleService.removeRoleFromUser', () => {
     it("locks the SUPER_ADMIN holders' rows with pessimistic_write, and BEFORE the user's own rows (so two admins demoting each other queue up on one lock instead of deadlocking)", async () => {
       const t = arrange(ROWS);
 
-      await t.service.removeRoleFromUser(5, SUPER_ADMIN.id, undefined, ROOT);
+      await t.service.removeRoleFromUser(6, SUPER_ADMIN.id, undefined, ROOT);
 
       expect(t.lockQueries).toHaveLength(2);
       expect(t.lockQueries[0].setLock).toHaveBeenCalledWith('pessimistic_write');
       expect(t.lockQueries[0].where).toHaveBeenCalledWith('ur.roleId = :roleId', { roleId: SUPER_ADMIN.id });
       expect(t.lockQueries[1].setLock).toHaveBeenCalledWith('pessimistic_write');
-      expect(t.lockQueries[1].where).toHaveBeenCalledWith('ur.userId = :userId', { userId: 5 });
+      expect(t.lockQueries[1].where).toHaveBeenCalledWith('ur.userId = :userId', { userId: 6 });
       expect(t.events).toEqual(['pessimistic_write:role', 'pessimistic_write:user', `delete:${SUPER_ADMIN.id}`]);
     });
 
     it('the holder lock joins only ACTIVE, non-deleted users', async () => {
       const t = arrange(ROWS);
 
-      await t.service.removeRoleFromUser(5, SUPER_ADMIN.id, undefined, ROOT);
+      await t.service.removeRoleFromUser(6, SUPER_ADMIN.id, undefined, ROOT);
 
       expect(t.lockQueries[0].innerJoin).toHaveBeenCalledWith(
         'ur.user',
@@ -739,10 +767,10 @@ describe('UserRoleService.removeRoleFromUser', () => {
       // transaction and then sees its committed delete. Replayed here as the serialized sequence.
       const t = arrange(ROWS);
 
-      await expect(t.service.removeRoleFromUser(5, SUPER_ADMIN.id, undefined, ROOT)).resolves.toBe(true);
-      await expect(t.service.removeRoleFromUser(6, SUPER_ADMIN.id, undefined, ROOT)).rejects.toThrow(LAST_SUPER_ADMIN_MESSAGE);
+      await expect(t.service.removeRoleFromUser(6, SUPER_ADMIN.id, undefined, ROOT)).resolves.toBe(true);
+      await expect(t.service.removeRoleFromUser(5, SUPER_ADMIN.id, undefined, ROOT)).rejects.toThrow(LAST_SUPER_ADMIN_MESSAGE);
 
-      expect(t.roleIdsOf(6)).toEqual([SUPER_ADMIN.id, OPERATIONS.id]);
+      expect(t.roleIdsOf(5)).toEqual([SUPER_ADMIN.id, FINANCE.id]);
     });
 
     it('is checked after the last-role rule: a user whose ONLY role is the last SUPER_ADMIN is refused as a last role', async () => {
@@ -786,11 +814,11 @@ describe('UserRoleService — SUPER_ADMIN protection helpers (used by delete / d
     { id: 41, userId: 8, roleId: FINANCE.id },
   ];
 
-  describe('lockActiveSuperAdminHolders', () => {
+  describe('lockActiveHolders', () => {
     it('returns every ACTIVE, non-deleted holder, locked pessimistic_write', async () => {
       const t = arrange(ROWS);
 
-      await expect(t.service.lockActiveSuperAdminHolders(t.txManager as any)).resolves.toEqual([5, 6]);
+      await expect(t.service.lockActiveHolders(t.txManager as any, 'SUPER_ADMIN')).resolves.toEqual([5, 6]);
 
       expect(t.lockQueries[0].setLock).toHaveBeenCalledWith('pessimistic_write');
     });
@@ -798,41 +826,48 @@ describe('UserRoleService — SUPER_ADMIN protection helpers (used by delete / d
     it('leaves out a deactivated holder and a soft-deleted holder — neither is a usable administrator', async () => {
       const t = arrange(ROWS, { 5: { active: false }, 6: { deletedAt: new Date('2026-01-01') } });
 
-      await expect(t.service.lockActiveSuperAdminHolders(t.txManager as any)).resolves.toEqual([]);
+      await expect(t.service.lockActiveHolders(t.txManager as any, 'SUPER_ADMIN')).resolves.toEqual([]);
     });
 
     it('returns nothing (and takes no lock) when the SUPER_ADMIN role does not exist yet', async () => {
       const t = arrange(ROWS);
       t.txRoles.findOne.mockResolvedValueOnce(null);
 
-      await expect(t.service.lockActiveSuperAdminHolders(t.txManager as any)).resolves.toEqual([]);
+      await expect(t.service.lockActiveHolders(t.txManager as any, 'SUPER_ADMIN')).resolves.toEqual([]);
 
       expect(t.lockQueries).toHaveLength(0);
     });
   });
 
-  describe('assertNotLastActiveSuperAdmin', () => {
+  describe('assertNotLastActiveAdministrator', () => {
     it('refuses (403, naming the action) when the user is the ONLY active SUPER_ADMIN', async () => {
       const t = arrange(ROWS, { 6: { active: false } });
 
-      await expect(t.service.assertNotLastActiveSuperAdmin(5, t.txManager as any, 'delete')).rejects.toThrow(ForbiddenException);
-      await expect(t.service.assertNotLastActiveSuperAdmin(5, t.txManager as any, 'deactivate')).rejects.toThrow(
+      await expect(t.service.assertNotLastActiveAdministrator(5, t.txManager as any, 'delete')).rejects.toThrow(ForbiddenException);
+      await expect(t.service.assertNotLastActiveAdministrator(5, t.txManager as any, 'deactivate')).rejects.toThrow(
         'Cannot deactivate the last active SUPER_ADMIN — at least one active user must hold this role.',
       );
     });
 
-    it('passes while another ACTIVE SUPER_ADMIN exists', async () => {
+    it('passes for a LATER administrator while another ACTIVE SUPER_ADMIN exists', async () => {
       const t = arrange(ROWS);
 
-      await expect(t.service.assertNotLastActiveSuperAdmin(5, t.txManager as any, 'delete')).resolves.toBeUndefined();
+      await expect(t.service.assertNotLastActiveAdministrator(6, t.txManager as any, 'delete')).resolves.toBeUndefined();
+    });
+
+    it('refuses the INITIAL administrator (the oldest active holder) even while another ACTIVE SUPER_ADMIN exists — the owner cannot be deleted or deactivated by accident', async () => {
+      const t = arrange(ROWS);
+
+      await expect(t.service.assertNotLastActiveAdministrator(5, t.txManager as any, 'delete')).rejects.toThrow(initialSuperAdminProtectedMessage('delete'));
+      await expect(t.service.assertNotLastActiveAdministrator(5, t.txManager as any, 'deactivate')).rejects.toThrow(initialSuperAdminProtectedMessage('deactivate'));
     });
 
     it('passes for a user who is not an active SUPER_ADMIN at all (an ordinary user, or an already-deactivated holder)', async () => {
       const ordinary = arrange(ROWS, { 6: { active: false } });
-      await expect(ordinary.service.assertNotLastActiveSuperAdmin(8, ordinary.txManager as any, 'delete')).resolves.toBeUndefined();
+      await expect(ordinary.service.assertNotLastActiveAdministrator(8, ordinary.txManager as any, 'delete')).resolves.toBeUndefined();
 
       const alreadyInactive = arrange(ROWS, { 5: { active: false }, 6: { active: false } });
-      await expect(alreadyInactive.service.assertNotLastActiveSuperAdmin(5, alreadyInactive.txManager as any, 'delete')).resolves.toBeUndefined();
+      await expect(alreadyInactive.service.assertNotLastActiveAdministrator(5, alreadyInactive.txManager as any, 'delete')).resolves.toBeUndefined();
     });
   });
 
@@ -860,26 +895,26 @@ describe('UserRoleService — SUPER_ADMIN protection helpers (used by delete / d
     });
   });
 
-  describe('holdsSuperAdmin / getRoleNamesForUser', () => {
+  describe('holdsAdministratorRole / getRoleNamesForUser', () => {
     it('answers from the live role names, inside the given transaction', async () => {
       const t = arrange(ROWS);
 
-      await expect(t.service.holdsSuperAdmin(5, t.txManager as any)).resolves.toBe(true);
-      await expect(t.service.holdsSuperAdmin(8, t.txManager as any)).resolves.toBe(false);
+      await expect(t.service.holdsAdministratorRole(5, t.txManager as any)).resolves.toBe(true);
+      await expect(t.service.holdsAdministratorRole(8, t.txManager as any)).resolves.toBe(false);
       await expect(t.service.getRoleNamesForUser(8, t.txManager as any)).resolves.toEqual(['FINANCE']);
     });
 
     it('works without a transaction too (read through the repository manager)', async () => {
       const t = arrange(ROWS);
 
-      await expect(t.service.holdsSuperAdmin(6)).resolves.toBe(true);
+      await expect(t.service.holdsAdministratorRole(6)).resolves.toBe(true);
     });
   });
 });
 
 describe('UserRoleService read helpers', () => {
   function buildReadService(repo: Record<string, unknown>) {
-    return new UserRoleService(repo as any, { record: jest.fn() } as any);
+    return new UserRoleService(repo as any, { record: jest.fn() } as any, { assertWithinBoundary: jest.fn() } as any);
   }
 
   describe('getRolesForUser', () => {
@@ -1029,5 +1064,235 @@ describe('UserRoleService read helpers', () => {
         { userId: 4, roleId: 17, roleName: 'OPERATIONS' },
       ]);
     });
+  });
+});
+
+// ── A delegated administrator ("ADMIN") is not a super administrator ─────────────────────────────────────────────────────
+// A role that is merely CALLED ADMIN is an ordinary dynamic role. Whatever user-management permissions its policies grant, it can hand out
+// ordinary roles, but it can never mint, demote, take over or remove a SUPER_ADMIN: those rules are decided here, against the actor's live
+// role names, so the permissions that carry EDIT_USER / ASSIGN_ROLE never reach them. Written, never run.
+describe('UserRoleService — a delegated ADMIN cannot escalate to SUPER_ADMIN', () => {
+  const ADMIN = { kind: 'user', id: 80, roleNames: ['ADMIN'] } as Actor;
+  // User 55 holds FINANCE; user 56 holds FINANCE and SUPER_ADMIN; user 57 holds SUPER_ADMIN alone (a second administrator).
+  const ROWS: Row[] = [
+    { id: 1, userId: 55, roleId: FINANCE.id },
+    { id: 2, userId: 56, roleId: FINANCE.id },
+    { id: 3, userId: 56, roleId: SUPER_ADMIN.id },
+    { id: 4, userId: 57, roleId: SUPER_ADMIN.id },
+  ];
+
+  it('refuses to GRANT SUPER_ADMIN — alone or smuggled into a list of ordinary roles — and writes nothing', async () => {
+    const t = arrange(ROWS);
+
+    await expect(t.service.addRolesToUser(55, [SUPER_ADMIN.id], undefined, ADMIN)).rejects.toThrow(SUPER_ADMIN_ASSIGN_MESSAGE);
+    await expect(t.service.addRolesToUser(55, [BILLING.id, SUPER_ADMIN.id, OPERATIONS.id], undefined, ADMIN)).rejects.toThrow(SUPER_ADMIN_ASSIGN_MESSAGE);
+
+    expect(t.roleIdsOf(55)).toEqual([FINANCE.id]);
+    expect(t.audit.record).not.toHaveBeenCalled();
+  });
+
+  it('may still hand out ordinary roles — administering users is exactly what the role is for', async () => {
+    const t = arrange(ROWS);
+
+    await expect(t.service.addRolesToUser(55, [BILLING.id], undefined, ADMIN)).resolves.toEqual([BILLING.id]);
+
+    expect(t.roleIdsOf(55)).toEqual([FINANCE.id, BILLING.id]);
+  });
+
+  it('may not change the roles of a SUPER_ADMIN holder — not even to add or remove an ordinary role', async () => {
+    const t = arrange(ROWS);
+
+    await expect(t.service.addRolesToUser(56, [BILLING.id], undefined, ADMIN)).rejects.toThrow(SUPER_ADMIN_MODIFY_MESSAGE);
+    await expect(t.service.removeRoleFromUser(56, FINANCE.id, undefined, ADMIN)).rejects.toThrow(SUPER_ADMIN_MODIFY_MESSAGE);
+    await expect(t.service.removeRoleFromUser(56, SUPER_ADMIN.id, undefined, ADMIN)).rejects.toThrow(SUPER_ADMIN_MODIFY_MESSAGE);
+
+    expect(t.roleIdsOf(56)).toEqual([FINANCE.id, SUPER_ADMIN.id]);
+  });
+
+  it('may not modify a SUPER_ADMIN account at all (profile, deactivation, deletion, credentials and sessions all ask this first)', async () => {
+    const t = arrange(ROWS);
+
+    await expect(t.service.assertActorMayModifyUser(ADMIN, 56, t.txManager as any)).rejects.toThrow(SUPER_ADMIN_MODIFY_MESSAGE);
+    await expect(t.service.assertActorMayModifyUser(ADMIN, 55, t.txManager as any)).resolves.toBeUndefined();
+  });
+
+  it('a SUPER_ADMIN may do all of it — create further administrators and change another administrator\'s roles', async () => {
+    const t = arrange(ROWS);
+
+    await expect(t.service.addRolesToUser(55, [SUPER_ADMIN.id], undefined, ROOT)).resolves.toEqual([SUPER_ADMIN.id]);
+    await expect(t.service.addRolesToUser(56, [BILLING.id], undefined, ROOT)).resolves.toEqual([BILLING.id]);
+  });
+
+  it('the boot-time system may grant SUPER_ADMIN (it is how the installation\'s first administrator receives it)', async () => {
+    const t = arrange(ROWS);
+
+    await expect(t.service.addRolesToUser(55, [SUPER_ADMIN.id], undefined, SYSTEM_ACTOR)).resolves.toEqual([SUPER_ADMIN.id]);
+  });
+
+  describe('the last ACTIVE SUPER_ADMIN cannot be demoted — the installation always keeps someone who can administer it', () => {
+    it('refuses to remove SUPER_ADMIN from its only holder, even for a SUPER_ADMIN; nothing is deleted or audited', async () => {
+      const t = arrange([
+        { id: 1, userId: 56, roleId: FINANCE.id },
+        { id: 3, userId: 56, roleId: SUPER_ADMIN.id },
+      ]);
+
+      await expect(t.service.removeRoleFromUser(56, SUPER_ADMIN.id, undefined, ROOT)).rejects.toThrow(LAST_SUPER_ADMIN_MESSAGE);
+
+      expect(t.roleIdsOf(56)).toEqual([FINANCE.id, SUPER_ADMIN.id]);
+      expect(t.audit.record).not.toHaveBeenCalled();
+    });
+
+    it('allows it while a second ACTIVE holder exists', async () => {
+      const t = arrange(ROWS);
+
+      await expect(t.service.removeRoleFromUser(56, SUPER_ADMIN.id, undefined, ROOT)).resolves.toBe(true);
+
+      expect(t.roleIdsOf(56)).toEqual([FINANCE.id]);
+      expect(t.roleIdsOf(57)).toEqual([SUPER_ADMIN.id]);
+    });
+
+    it('a DEACTIVATED second holder does not count: the remaining active SUPER_ADMIN is still the last one', async () => {
+      const t = arrange(ROWS, { 57: { active: false } });
+
+      await expect(t.service.removeRoleFromUser(56, SUPER_ADMIN.id, undefined, ROOT)).rejects.toThrow(LAST_SUPER_ADMIN_MESSAGE);
+
+      expect(t.roleIdsOf(56)).toEqual([FINANCE.id, SUPER_ADMIN.id]);
+    });
+  });
+});
+
+// ── The INITIAL administrator: the oldest ACTIVE SUPER_ADMIN holder cannot be lost by accident ─────────────────────────────────
+// Derived from the data (the lowest user id among the active holders), so it needs no marker column and moves on by itself if that account
+// is ever retired through the server maintenance tool. Written, never run.
+describe('UserRoleService — the initial administrator (read-only guard for paths outside a locking transaction)', () => {
+  // 5, 6 and 9 hold SUPER_ADMIN (5 is the oldest account); 8 holds only an ordinary role.
+  const ROWS: Row[] = [
+    { id: 11, userId: 5, roleId: SUPER_ADMIN.id },
+    { id: 21, userId: 6, roleId: SUPER_ADMIN.id },
+    { id: 31, userId: 9, roleId: SUPER_ADMIN.id },
+    { id: 41, userId: 8, roleId: FINANCE.id },
+  ];
+
+  it('is the lowest-id ACTIVE holder: initialAdministratorId picks it from the holders', () => {
+    const t = arrange(ROWS);
+
+    expect(t.service.initialAdministratorId([9, 5, 6])).toBe(5);
+    expect(t.service.initialAdministratorId([6])).toBe(6);
+    expect(t.service.initialAdministratorId([])).toBeNull();
+  });
+
+  it('refuses the initial administrator — and only the initial one — with the explicit message that names the action', async () => {
+    const t = arrange(ROWS);
+
+    await expect(t.service.assertNotInitialAdministrator(5, 'disable the sign-in access of')).rejects.toThrow(ForbiddenException);
+    await expect(t.service.assertNotInitialAdministrator(5, 'disable the sign-in access of')).rejects.toThrow(
+      initialSuperAdminProtectedMessage('disable the sign-in access of'),
+    );
+    await expect(t.service.assertNotInitialAdministrator(6, 'disable the sign-in access of')).resolves.toBeUndefined();
+    await expect(t.service.assertNotInitialAdministrator(9, 'disable the sign-in access of')).resolves.toBeUndefined();
+  });
+
+  it('never refuses an ordinary account', async () => {
+    const t = arrange(ROWS);
+
+    await expect(t.service.assertNotInitialAdministrator(8, 'disable the sign-in access of')).resolves.toBeUndefined();
+  });
+
+  it('takes NO lock: it is a plain read, so it is safe outside a transaction', async () => {
+    const t = arrange(ROWS);
+
+    await t.service.assertNotInitialAdministrator(6, 'disable the sign-in access of');
+
+    expect(t.lockQueries).toHaveLength(1);
+    expect(t.lockQueries[0].setLock).not.toHaveBeenCalled();
+  });
+
+  it('counts only ACTIVE, non-deleted holders: when the oldest is deactivated the next one is the protected one', async () => {
+    const t = arrange(ROWS, { 5: { active: false } });
+
+    await expect(t.service.assertNotInitialAdministrator(5, 'delete')).resolves.toBeUndefined();
+    await expect(t.service.assertNotInitialAdministrator(6, 'delete')).rejects.toThrow(initialSuperAdminProtectedMessage('delete'));
+  });
+
+  it('protects nobody while nobody holds the role (nothing to lose)', async () => {
+    const t = arrange([{ id: 41, userId: 8, roleId: FINANCE.id }]);
+
+    await expect(t.service.assertNotInitialAdministrator(8, 'delete')).resolves.toBeUndefined();
+  });
+});
+
+// ── The ASSIGNMENT BOUNDARY: a delegated administrator can only hand out what it holds itself ──────────────────────────────────
+// What a role grants and what the actor holds is the boundary service's own business (iam/assignment-boundary.service.spec.ts). Here: that
+// EVERY grant goes through it, in the right place, and that a refusal writes nothing. Written, never run.
+describe('UserRoleService — the assignment boundary on every grant', () => {
+  const ADMIN = { kind: 'user', id: 80, roleNames: ['ADMIN'] } as Actor;
+  const ROWS: Row[] = [{ id: 1, userId: 55, roleId: FINANCE.id }];
+
+  it('asks the boundary about exactly the roles being ADDED — a role the user already holds is not re-checked — inside the same transaction', async () => {
+    const t = arrange(ROWS);
+
+    await t.service.addRolesToUser(55, [FINANCE.id, BILLING.id], undefined, ADMIN);
+
+    expect(t.boundary.assertWithinBoundary).toHaveBeenCalledTimes(1);
+    expect(t.boundary.assertWithinBoundary).toHaveBeenCalledWith(ADMIN, [BILLING], t.txManager);
+  });
+
+  it('a refusal by the boundary stops the WHOLE request: nothing is written, nothing is audited', async () => {
+    const t = arrange(ROWS);
+    t.boundary.assertWithinBoundary.mockRejectedValue(new ForbiddenException('beyond your scope'));
+
+    await expect(t.service.addRolesToUser(55, [BILLING.id, OPERATIONS.id], undefined, ADMIN)).rejects.toThrow('beyond your scope');
+
+    expect(t.txUserRoles.save).not.toHaveBeenCalled();
+    expect(t.audit.record).not.toHaveBeenCalled();
+    expect(t.roleIdsOf(55)).toEqual([FINANCE.id]);
+  });
+
+  it('a super administrator and the system are unbounded: the boundary is not even consulted', async () => {
+    const t = arrange(ROWS);
+
+    await t.service.addRolesToUser(55, [BILLING.id], undefined, ROOT);
+    await t.service.addRolesToUser(55, [OPERATIONS.id], undefined, SYSTEM_ACTOR);
+
+    expect(t.boundary.assertWithinBoundary).not.toHaveBeenCalled();
+  });
+
+  it('is checked AFTER the privilege rules (an administrator role is refused with its own message first) and after the self-change rule', async () => {
+    const t = arrange(ROWS);
+
+    await expect(t.service.addRolesToUser(55, [SUPER_ADMIN.id], undefined, ADMIN)).rejects.toThrow(SUPER_ADMIN_ASSIGN_MESSAGE);
+    await expect(t.service.addRolesToUser(80, [BILLING.id], undefined, ADMIN)).rejects.toThrow('You cannot change your own roles.');
+
+    expect(t.boundary.assertWithinBoundary).not.toHaveBeenCalled();
+  });
+
+  it('is not consulted when the request adds nothing: an idempotent re-grant stays a free no-op', async () => {
+    const t = arrange(ROWS);
+
+    await expect(t.service.addRolesToUser(55, [FINANCE.id], undefined, ADMIN)).resolves.toEqual([]);
+
+    expect(t.boundary.assertWithinBoundary).not.toHaveBeenCalled();
+  });
+});
+
+// Taking over an account (resetting its password) is the same grant by another route: AuthService.adminResetPassword asks UserRoleService,
+// which hands the question to the boundary (iam/assignment-boundary.service.spec.ts decides it). Written, never run.
+describe('UserRoleService.assertActorMayTakeOverAccount — the boundary on a credential reset', () => {
+  const ADMIN = { kind: 'user', id: 80, roleNames: ['ADMIN'] } as Actor;
+
+  it('hands the question to the assignment boundary: the actor, the account, the action and the caller\'s transaction', async () => {
+    const t = arrange([]);
+
+    await t.service.assertActorMayTakeOverAccount(ADMIN, 55, 'reset the password of', t.txManager as any);
+
+    expect(t.boundary.assertAccountWithinBoundary).toHaveBeenCalledTimes(1);
+    expect(t.boundary.assertAccountWithinBoundary).toHaveBeenCalledWith(ADMIN, 55, 'reset the password of', t.txManager);
+  });
+
+  it('a refusal by the boundary is the refusal — nothing swallows it', async () => {
+    const t = arrange([]);
+    t.boundary.assertAccountWithinBoundary.mockRejectedValue(new ForbiddenException('beyond your scope'));
+
+    await expect(t.service.assertActorMayTakeOverAccount(ADMIN, 55, 'reset the password of')).rejects.toThrow('beyond your scope');
   });
 });

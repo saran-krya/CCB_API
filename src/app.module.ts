@@ -45,6 +45,9 @@ import { WorkflowModule } from './modules/workflow/workflow.module';
 import { IamModule } from './modules/iam/iam.module';
 import { SettingsModule } from './modules/settings/settings.module';
 import { GlobalSearchModule } from './modules/global-search/global-search.module';
+import { SystemHealthModule } from './modules/system-health/system-health.module';
+import { EmailTemplateModule } from './modules/email-template/email-template.module';
+import { AccountInvitationModule } from './modules/account-invitation/account-invitation.module';
 
 @Module({
   imports: [
@@ -91,6 +94,9 @@ import { GlobalSearchModule } from './modules/global-search/global-search.module
     IamModule,
     SettingsModule,
     GlobalSearchModule,
+    SystemHealthModule,
+    EmailTemplateModule,
+    AccountInvitationModule,
   ],
 })
 export class AppModule {}

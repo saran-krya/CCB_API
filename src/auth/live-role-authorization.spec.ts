@@ -106,10 +106,11 @@ describe('Live role authorization — the same token, re-evaluated against curre
         return { id, active: true, mustChangePassword: false, roles: [...roles] };
       }),
     };
-    strategy = new JwtStrategy({ getOrThrow: () => 'test-secret' } as never, users as never, {} as never);
+    // These tokens carry no `sid`, so the session-liveness check is skipped and its stub is never consulted.
+    strategy = new JwtStrategy({ getOrThrow: () => 'test-secret' } as never, users as never, {} as never, { isLive: jest.fn() } as never);
     permissionGuard = new PermissionGuard(new Reflector(), rolePermissions);
     rolesGuard = new RolesGuard(new Reflector());
-    controller = new AuthController({} as never, {} as never, rolePermissions);
+    controller = new AuthController({} as never, rolePermissions);
   });
 
   /** One request: JwtStrategy.validate builds the principal (and may reject the request outright). */
@@ -428,6 +429,8 @@ describe('Issued tokens carry the primary role only — never the live role set'
     );
   });
 
+  // The session id (`sid`) is signed into every access token as well: a fresh UUID on login, the SAME refresh-token family
+  // (here 'family-1') across a refresh. The role claim stays the primary role only.
   const EXPECTED_PAYLOAD = { sub: USER_ID, email: 'staff@ccb.local', roleId: OPERATIONS.id, roleName: 'OPERATIONS', type: 'staff' };
 
   it('login signs exactly { sub, email, roleId, roleName, type } — the primary role — and no roleIds/roleNames', async () => {
@@ -435,7 +438,7 @@ describe('Issued tokens carry the primary role only — never the live role set'
 
     expect(jwt.sign).toHaveBeenCalledTimes(1);
     const [signed] = jwt.sign.mock.calls[0];
-    expect(signed).toEqual(EXPECTED_PAYLOAD);
+    expect(signed).toEqual({ ...EXPECTED_PAYLOAD, sid: expect.any(String) });
     expect(signed).not.toHaveProperty('roleIds');
     expect(signed).not.toHaveProperty('roleNames');
   });
@@ -445,7 +448,7 @@ describe('Issued tokens carry the primary role only — never the live role set'
 
     expect(jwt.sign).toHaveBeenCalledTimes(1);
     const [signed] = jwt.sign.mock.calls[0];
-    expect(signed).toEqual(EXPECTED_PAYLOAD);
+    expect(signed).toEqual({ ...EXPECTED_PAYLOAD, sid: 'family-1' });
     expect(signed).not.toHaveProperty('roleIds');
     expect(signed).not.toHaveProperty('roleNames');
   });

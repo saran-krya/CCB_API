@@ -31,15 +31,16 @@ export class UserController {
 
   @Get()
   @Permission(ACTION_CODES.VIEW_USER)
-  findAll(@Query() query: UserQueryDto) {
-    return this.users.findAll(query);
+  findAll(@Query() query: UserQueryDto, @CurrentUser() user: AuthenticatedUser) {
+    // The viewer decides whether SUPER_ADMIN accounts are in the list: only a super administrator sees them.
+    return this.users.findAll(query, actorFrom(user));
   }
 
   // Declared above ":id" so it is never read as a user id.
   @Get("filters")
   @Permission(ACTION_CODES.VIEW_USER)
-  getFilterOptions() {
-    return this.users.getFilterOptions();
+  getFilterOptions(@CurrentUser() user: AuthenticatedUser) {
+    return this.users.getFilterOptions(actorFrom(user));
   }
 
   @Get("profile")
@@ -93,8 +94,8 @@ export class UserController {
 
   @Get(":id")
   @Permission(ACTION_CODES.VIEW_USER)
-  findOne(@Param("id", ParseIntPipe) id: number) {
-    return this.users.findOne(id);
+  findOne(@Param("id", ParseIntPipe) id: number, @CurrentUser() user: AuthenticatedUser) {
+    return this.users.findOne(id, actorFrom(user));
   }
 
   @Patch(':id')

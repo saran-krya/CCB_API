@@ -1,7 +1,7 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, In, Repository } from 'typeorm';
-import { ROLES } from '@app/common/constants/global';
+import { isAdministratorRoleName } from '../../common/security/administrator-roles';
 import { Role } from '../role/entities/role.entity';
 import { RolePermissionsService } from '../role-permissions/role-permissions.service';
 import { ApprovalLevelDto, UpdateApprovalLevelsDto } from './dto/approval-level.dto';
@@ -130,8 +130,10 @@ export class WorkflowDefinitionService {
 
       if (typeof level.roleId !== 'number' || !Number.isInteger(level.roleId) || !validRoleIds.has(level.roleId)) {
         problems.push(`${at}: unknown approver role "${String(level.roleId)}".`);
-      } else if (existingRoles.find((r) => r.id === level.roleId)?.roleName === ROLES.SUPER_ADMIN) {
-        problems.push(`${at}: SUPER_ADMIN is a system-administration role and cannot be a workflow approver — choose a business role.`);
+      } else if (isAdministratorRoleName(existingRoles.find((r) => r.id === level.roleId)?.roleName)) {
+        // SUPER_ADMIN is a system-administration role.
+        const administratorName = existingRoles.find((r) => r.id === level.roleId)?.roleName;
+        problems.push(`${at}: ${administratorName} is a system-administration role and cannot be a workflow approver — choose a business role.`);
       } else if (!eligibleRoleIds.has(level.roleId)) {
         const roleName = existingRoles.find((r) => r.id === level.roleId)?.roleName ?? String(level.roleId);
         problems.push(

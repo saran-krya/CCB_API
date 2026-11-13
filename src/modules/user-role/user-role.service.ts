@@ -2,13 +2,9 @@ import { ForbiddenException, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { EntityManager, In, Repository } from 'typeorm';
 import { ROLES } from '@app/common/constants/global';
-import {
-  Actor,
-  actorUserId,
-  isSuperAdminActor,
-  SUPER_ADMIN_ASSIGN_MESSAGE,
-  SUPER_ADMIN_MODIFY_MESSAGE,
-} from '../../common/security/actor';
+import { Actor, actorUserId, initialSuperAdminProtectedMessage, SUPER_ADMIN_ASSIGN_MESSAGE, SUPER_ADMIN_MODIFY_MESSAGE, isSuperAdminActor } from '../../common/security/actor';
+import { ADMINISTRATOR_ROLES, isAdministratorRoleName } from '../../common/security/administrator-roles';
+import { AssignmentBoundaryService } from '../iam/assignment-boundary.service';
 import { UserRole } from './entities/user-role.entity';
 import { Role } from '../role/entities/role.entity';
 import { AuditService } from '../../audit/audit.service';
@@ -40,9 +36,17 @@ const isDuplicateKeyError = (err: unknown): boolean =>
  * all of a user's roles" operation — a replace would silently drop roles that were granted elsewhere.
  *
  * Both writes take the `Actor` performing them and enforce the PRIVILEGE rules here, in the one place
- * every role change goes through: only a SUPER_ADMIN may grant the SUPER_ADMIN role, and only a
- * SUPER_ADMIN may change the roles of a user who holds it. The EDIT_USER / CREATE_USER permissions
- * deliberately carry no such authority.
+ * every role change goes through: only a super administrator (a SUPER_ADMIN, see
+ * common/security/administrator-roles.ts — or the system) may grant the SUPER_ADMIN
+ * role, and only one may change the roles of a user who holds it. The CREATE_USER / EDIT_USER
+ * permissions (adding or removing roles is gated by EDIT_USER; "ASSIGN_ROLE" is only the name of the audit
+ * row) deliberately carry no such authority: a delegated administrator ("ADMIN") can assign every
+ * ordinary role it is allowed to, but can never mint, demote or take over a super administrator. The last
+ * active holder of an administrator role can never be removed, deactivated or deleted, so the installation
+ * always keeps someone who can administer it — and neither can the INITIAL administrator (the oldest active
+ * holder), however many others there are. Every grant is also held to the ASSIGNMENT BOUNDARY: an actor may
+ * hand out only roles whose permissions it holds itself (iam/assignment-boundary.service.ts) — and so is
+ * taking over an account by resetting its password (assertActorMayTakeOverAccount).
  */
 @Injectable()
 export class UserRoleService {
@@ -51,6 +55,8 @@ export class UserRoleService {
     private readonly userRoles: Repository<UserRole>,
 
     private readonly audit: AuditService,
+
+    private readonly boundary: AssignmentBoundaryService,
   ) {}
 
   async getPrimaryRoleId(userId: number): Promise<number | null> {
@@ -202,29 +208,44 @@ export class UserRoleService {
     return rows.map((row) => row.role?.roleName).filter((name): name is string => !!name);
   }
 
-  async holdsSuperAdmin(userId: number, manager?: EntityManager): Promise<boolean> {
-    return (await this.getRoleNamesForUser(userId, manager)).includes(ROLES.SUPER_ADMIN);
+  /** True when the user holds the administrator role (SUPER_ADMIN). What the workflow engine asks: an
+   *  administrator role administers the system and never acts at an approval level. */
+  async holdsAdministratorRole(userId: number, manager?: EntityManager): Promise<boolean> {
+    return (await this.getRoleNamesForUser(userId, manager)).some(isAdministratorRoleName);
   }
 
   /** A SUPER_ADMIN account may only be modified (profile, deactivation, deletion, role change,
-   *  credentials, sessions) by a SUPER_ADMIN — EDIT_USER, DELETE_USER and RESET_USER_PASSWORD are
+   *  credentials, sessions) by a super administrator — EDIT_USER, DELETE_USER and RESET_USER_PASSWORD are
    *  delegable permissions and must never be a path to taking over, locking out or removing the
    *  accounts that sit above them. Throws 403 otherwise. */
   async assertActorMayModifyUser(actor: Actor, targetUserId: number, manager?: EntityManager): Promise<void> {
     if (isSuperAdminActor(actor)) return;
-    if (await this.holdsSuperAdmin(targetUserId, manager)) {
+    const heldRoleNames = await this.getRoleNamesForUser(targetUserId, manager);
+    if (heldRoleNames.some(isAdministratorRoleName)) {
       throw new ForbiddenException(SUPER_ADMIN_MODIFY_MESSAGE);
     }
   }
 
-  /** The ids of every ACTIVE, non-deleted holder of the SUPER_ADMIN role, read with a pessimistic write
+  /**
+   * Resetting someone's credentials hands the actor a working login for that account, which is a grant of everything the account can do —
+   * so it is held to the same ASSIGNMENT BOUNDARY as handing out a role: a delegated administrator may take over an account only if every
+   * permission the account holds is one the administrator holds itself. Without this, RESET_USER_PASSWORD (a delegable permission) would be
+   * a way around the boundary on addRolesToUser: reset a more privileged user's password, then sign in as them. A super administrator and
+   * the system are unbounded, and nobody is "beyond" their own account. `action` completes "Cannot …" ("reset the password of"). 403 otherwise.
+   * Only taking over is bounded: ordinary edits, deactivation, deletion and ending sessions stay governed by their own permissions.
+   */
+  async assertActorMayTakeOverAccount(actor: Actor, targetUserId: number, action: string, manager?: EntityManager): Promise<void> {
+    await this.boundary.assertAccountWithinBoundary(actor, targetUserId, action, manager);
+  }
+
+  /** The ids of every ACTIVE, non-deleted holder of the administrator role `roleName`, read with a pessimistic write
    *  lock inside `tx`. A deactivated or soft-deleted holder is not a usable administrator, so it must
    *  not count toward "someone can still grant this back". Held to commit: two admins removing each
    *  other at the same moment queue on this lock, so the second reads the first's result (and is
    *  refused) instead of both passing the check. */
-  async lockActiveSuperAdminHolders(tx: EntityManager): Promise<number[]> {
+  async lockActiveHolders(tx: EntityManager, roleName: string): Promise<number[]> {
     const role = await tx.getRepository(Role).findOne({
-      where: { roleName: ROLES.SUPER_ADMIN },
+      where: { roleName },
       select: { id: true },
       loadEagerRelations: false,
     });
@@ -239,16 +260,60 @@ export class UserRoleService {
     return rows.map((row) => row.userId);
   }
 
-  /** Refuses (403) an operation that would leave the system with no active SUPER_ADMIN: if `userId` is
-   *  currently an active SUPER_ADMIN and nobody else is, they cannot be deleted, deactivated, demoted or
-   *  have their sign-in disabled. Must run inside the same transaction as the change it guards. */
-  async assertNotLastActiveSuperAdmin(userId: number, tx: EntityManager, action: string): Promise<void> {
-    const holders = await this.lockActiveSuperAdminHolders(tx);
-    if (holders.includes(userId) && !holders.some((holder) => holder !== userId)) {
-      throw new ForbiddenException(
-        `Cannot ${action} the last active SUPER_ADMIN — at least one active user must hold this role.`,
-      );
+  /** Refuses (403) an operation that would leave the installation with no active administrator: if `userId` is the last ACTIVE holder of SUPER_ADMIN,
+   *  they cannot be deleted, deactivated, demoted or have their sign-in disabled — an installation must always keep someone who can
+   *  administer it. This is also what keeps the initial SUPER_ADMIN from being removed by accident: while it is the only one, nothing in
+   *  the application can take the role away. Only the administrator roles the user actually holds are locked (a user who holds none cannot
+   *  be the last administrator), in ADMINISTRATOR_ROLES order so two concurrent checks never take the locks in opposite orders. The
+   *  message names the stored role. Must run inside the same transaction as the change it guards. */
+  async assertNotLastActiveAdministrator(userId: number, tx: EntityManager, action: string): Promise<void> {
+    const heldRoleNames = await this.getRoleNamesForUser(userId, tx);
+    for (const roleName of ADMINISTRATOR_ROLES) {
+      if (!heldRoleNames.includes(roleName)) continue;
+      const holders = await this.lockActiveHolders(tx, roleName);
+      if (holders.includes(userId) && !holders.some((holder) => holder !== userId)) {
+        throw new ForbiddenException(`Cannot ${action} the last active ${roleName} — at least one active user must hold this role.`);
+      }
+      // The INITIAL administrator is protected even while others exist (see initialAdministratorId).
+      if (userId === this.initialAdministratorId(holders)) {
+        throw new ForbiddenException(initialSuperAdminProtectedMessage(action));
+      }
     }
+  }
+
+  /**
+   * The installation's INITIAL administrator: the lowest-id ACTIVE, non-deleted holder of SUPER_ADMIN — the account the first-start seed
+   * (or the maintenance tool) created first, because user ids only ever grow. It is derived from the data, so it needs no marker column
+   * and moves on by itself if that account is ever retired through the server maintenance tool (the next-oldest active administrator
+   * becomes the initial one). `null` when nobody holds the role.
+   */
+  initialAdministratorId(activeHolderIds: readonly number[]): number | null {
+    return activeHolderIds.length === 0 ? null : Math.min(...activeHolderIds);
+  }
+
+  /**
+   * Refuses (403) an action that would delete, deactivate, demote or lock out the INITIAL administrator (see initialAdministratorId) — for
+   * the paths that are not already guarded inside a locking transaction (disabling someone's sign-in is one). Read-only, no lock. The
+   * transactional paths get the same rule from assertNotLastActiveAdministrator / removeRoleFromUser. It is deliberately NOT a rule
+   * against changing the account's other details or resetting its password: only losing the owner is guarded, not looking after them.
+   */
+  async assertNotInitialAdministrator(userId: number, action: string, manager?: EntityManager): Promise<void> {
+    const holders = await this.activeAdministratorIds(manager);
+    if (userId === this.initialAdministratorId(holders)) throw new ForbiddenException(initialSuperAdminProtectedMessage(action));
+  }
+
+  /** The ids of every ACTIVE, non-deleted SUPER_ADMIN holder, read WITHOUT a lock (callers that need the lock use lockActiveHolders). */
+  private async activeAdministratorIds(manager?: EntityManager): Promise<number[]> {
+    const db = manager ?? this.userRoles.manager;
+    const role = await db.getRepository(Role).findOne({ where: { roleName: ROLES.SUPER_ADMIN }, select: { id: true }, loadEagerRelations: false });
+    if (!role) return [];
+    const rows = await db
+      .getRepository(UserRole)
+      .createQueryBuilder('ur')
+      .innerJoin('ur.user', 'user', 'user.active = :active AND user.deletedAt IS NULL', { active: true })
+      .where('ur.roleId = :roleId', { roleId: role.id })
+      .getMany();
+    return rows.map((row) => row.userId);
   }
 
   /** Grants `roleIds` to `userId` — ADDITIVE and idempotent: ids the user already holds are skipped
@@ -262,11 +327,14 @@ export class UserRoleService {
    *  way. The boot-time seed passes SYSTEM_ACTOR; every request-driven call passes the signed-in user.
    *
    *  Privilege rules, enforced HERE (not by the callers) against the rows read inside this transaction:
-   *   - only a SUPER_ADMIN actor may grant the SUPER_ADMIN role — a 403 with SUPER_ADMIN_ASSIGN_MESSAGE
-   *     for anyone else, whatever else is in the request, so a manipulated payload cannot smuggle it in;
-   *   - only a SUPER_ADMIN actor may change the roles of a user who already holds SUPER_ADMIN;
+   *   - only a super administrator actor (SUPER_ADMIN, or the system) may grant an administrator role —
+   *     a 403 with SUPER_ADMIN_ASSIGN_MESSAGE for anyone else (a delegated "ADMIN" included), whatever else is in the request, so a
+   *     manipulated payload cannot smuggle it in;
+   *   - only a super administrator actor may change the roles of a user who already holds an administrator role;
    *   - an actor may not grant roles to their OWN user (self-escalation with no second party
-   *     accountable for it), yet a request that adds nothing is a no-op and stays allowed.
+   *     accountable for it), yet a request that adds nothing is a no-op and stays allowed;
+   *   - the ASSIGNMENT BOUNDARY: a delegated administrator may hand out only roles whose permissions it holds ITSELF — a role that grants
+   *     anything the actor lacks refuses the whole request (AssignmentBoundaryService). A super administrator and the system are unbounded.
    *  Granting can only grow the set, so unlike removal it needs no row locks: the unique (user_id,
    *  role_id) key already makes a duplicate grant impossible. A locking read here would also be harmful —
    *  over a brand-new user's still-empty range (UserService.create) it only takes a gap lock, and two
@@ -281,19 +349,33 @@ export class UserRoleService {
       const missing = requested.filter((roleId) => !heldRoleIds.includes(roleId));
       if (missing.length === 0) return [];
 
+      let involved: Role[] = [];
       if (!isSuperAdminActor(actor)) {
-        const involved = await tx.getRepository(Role).find({
+        involved = await tx.getRepository(Role).find({
           where: { id: In([...heldRoleIds, ...missing]) },
           select: { id: true, roleName: true },
           loadEagerRelations: false,
         });
-        const superAdmin = involved.find((role) => role.roleName === ROLES.SUPER_ADMIN);
-        if (superAdmin && missing.includes(superAdmin.id)) throw new ForbiddenException(SUPER_ADMIN_ASSIGN_MESSAGE);
-        if (superAdmin) throw new ForbiddenException(SUPER_ADMIN_MODIFY_MESSAGE);
+        // Matched on the EXACT stored name (isAdministratorRoleName), never on what the database would also match. Handing an
+        // administrator role out is refused first; merely touching the roles of someone who already holds one is refused second.
+        // (A super administrator actor and the system skip this whole block.)
+        const administrators = involved.filter((role) => isAdministratorRoleName(role.roleName));
+        if (administrators.some((role) => missing.includes(role.id))) throw new ForbiddenException(SUPER_ADMIN_ASSIGN_MESSAGE);
+        if (administrators.length > 0) throw new ForbiddenException(SUPER_ADMIN_MODIFY_MESSAGE);
       }
 
       if (actor.kind === ACTOR_KIND.USER && actor.id === userId) {
         throw new ForbiddenException(ERROR_MESSAGES.CANNOT_CHANGE_OWN_ROLES);
+      }
+
+      // The assignment boundary: only what the actor holds itself may be handed on. Checked before anything is written, so a refused
+      // request changes nothing; a super administrator (and the system) is unbounded and skips the lookup.
+      if (!isSuperAdminActor(actor)) {
+        await this.boundary.assertWithinBoundary(
+          actor,
+          involved.filter((role) => missing.includes(role.id)),
+          tx,
+        );
       }
 
       const added: number[] = [];
@@ -332,8 +414,8 @@ export class UserRoleService {
    *  Rules, all ForbiddenException, all evaluated inside THIS transaction against rows locked
    *  with pessimistic_write (a check made before the transaction could be invalidated by a concurrent
    *  change before the delete lands), in this order:
-   *    1. Privilege — only a SUPER_ADMIN actor may change the roles of a user who holds SUPER_ADMIN
-   *       (which includes removing SUPER_ADMIN itself).
+   *    1. Privilege — only a super administrator actor may change the roles of a user who holds an administrator
+   *       role (which includes removing that role itself).
    *    2. No self-change — an actor cannot revoke roles from their own user; role changes must be
    *       made by someone else so a second party is always accountable. A no-op is still allowed.
    *    3. Last role — a user must keep at least one. Login and JwtStrategy both reject a role-less
@@ -341,6 +423,7 @@ export class UserRoleService {
    *    4. Last active SUPER_ADMIN — the role RolesGuard bypasses on and the bootstrap grant reconciliation
    *       keys on must always keep at least one ACTIVE, non-deleted holder, or every admin-only surface
    *       (including user/role management itself) is left with no one able to grant it back.
+   *    5. The INITIAL administrator (the oldest active holder) can never be demoted, even while others exist.
    *
    *  Lock order: the SUPER_ADMIN holders' rows (only when revoking SUPER_ADMIN) are locked BEFORE the
    *  user's own rows. Two admins demoting each other's SUPER_ADMIN at the same moment then queue up on
@@ -356,9 +439,11 @@ export class UserRoleService {
         select: { id: true, roleName: true },
         loadEagerRelations: false,
       });
-      const removesSuperAdmin = role?.roleName === ROLES.SUPER_ADMIN;
+      const removedRoleName = role?.roleName;
+      // Only an administrator role carries the last-holder protection (exact stored name).
+      const removedAdministratorRole = isAdministratorRoleName(removedRoleName) ? removedRoleName : null;
 
-      const activeSuperAdminHolders = removesSuperAdmin ? await this.lockActiveSuperAdminHolders(tx) : [];
+      const activeAdministratorHolders = removedAdministratorRole ? await this.lockActiveHolders(tx, removedAdministratorRole) : [];
       const held = await this.lockRowsOfUser(repo, userId);
 
       if (!held.some((row) => row.roleId === roleId)) return false;
@@ -372,11 +457,14 @@ export class UserRoleService {
         throw new ForbiddenException('A user must hold at least one role.');
       }
       if (
-        removesSuperAdmin &&
-        activeSuperAdminHolders.includes(userId) &&
-        !activeSuperAdminHolders.some((holder) => holder !== userId)
+        removedAdministratorRole &&
+        activeAdministratorHolders.includes(userId) &&
+        !activeAdministratorHolders.some((holder) => holder !== userId)
       ) {
-        throw new ForbiddenException('Cannot remove the last active SUPER_ADMIN — at least one active user must hold this role.');
+        throw new ForbiddenException(`Cannot remove the last active ${removedAdministratorRole} — at least one active user must hold this role.`);
+      }
+      if (removedAdministratorRole && userId === this.initialAdministratorId(activeAdministratorHolders)) {
+        throw new ForbiddenException(initialSuperAdminProtectedMessage('demote'));
       }
 
       await repo.delete({ userId, roleId });

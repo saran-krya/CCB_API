@@ -1,5 +1,6 @@
 import {
   ConflictException,
+  ForbiddenException,
   Injectable,
   Logger,
   NotFoundException,
@@ -8,6 +9,17 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 
 import { PModule } from './entities/pmodule.entity';
+import { SubModule } from '../sub-modules/entities/sub-module.entity';
+import { Screen } from '../screens/entities/screen.entity';
+import { Action } from '../actions/entities/action.entity';
+import {
+  CatalogModule,
+  CatalogScreen,
+  CatalogSubModule,
+  ModuleCatalogQueryDto,
+  ModuleCatalogResponse,
+} from './dto/module-catalog.dto';
+import { MODULE_CATALOG_STATUS_FILTER, PROTECTED_MODULE_CODES } from './pmodules.constants';
 
 import {
   CreatePModuleDto,
@@ -28,7 +40,110 @@ export class PModulesService {
   constructor(
     @InjectRepository(PModule)
     private readonly pModuleRepository: Repository<PModule>,
+    @InjectRepository(SubModule)
+    private readonly subModuleRepository: Repository<SubModule>,
+    @InjectRepository(Screen)
+    private readonly screenRepository: Repository<Screen>,
+    @InjectRepository(Action)
+    private readonly actionRepository: Repository<Action>,
   ) {}
+
+  /**
+   * The whole module catalog as the administrator manages it: every module (inactive ones too) with its sub-modules, the screens
+   * under them and how many permission actions each screen defines. Assembled here so the screen is a thin view. `search` keeps a
+   * module when its own name/code — or any sub-module's or screen's under it — matches; `status` filters on the module's own
+   * availability. The totals always describe the WHOLE catalog.
+   */
+  async getCatalog(query: ModuleCatalogQueryDto = {}): Promise<ModuleCatalogResponse> {
+    const order = { displayOrder: SORT_ORDER.ASC, id: SORT_ORDER.ASC } as const;
+    const [modules, subModules, screens, actionRows] = await Promise.all([
+      this.pModuleRepository.find({ order }),
+      this.subModuleRepository.find({ order }),
+      this.screenRepository.find({ order }),
+      this.actionRepository
+        .createQueryBuilder('action')
+        .select('action.screenId', 'screenId')
+        .addSelect('COUNT(*)', 'count')
+        .where('action.isActive = :active', { active: true })
+        .andWhere('action.screenId IS NOT NULL')
+        .groupBy('action.screenId')
+        .getRawMany<{ screenId: number | string; count: number | string }>(),
+    ]);
+
+    const actionCounts = new Map(actionRows.map((row) => [Number(row.screenId), Number(row.count)]));
+    const toScreen = (screen: Screen): CatalogScreen => ({
+      id: screen.id,
+      name: screen.name,
+      code: screen.code,
+      url: screen.url ?? null,
+      displayOrder: screen.displayOrder,
+      isActive: screen.isActive,
+      actionCount: actionCounts.get(screen.id) ?? 0,
+    });
+
+    const screensOfSubModule = new Map<number, CatalogScreen[]>();
+    const screensOfModule = new Map<number, CatalogScreen[]>();
+    for (const screen of screens) {
+      const target = screen.subModuleId ? screensOfSubModule : screen.pModuleId ? screensOfModule : null;
+      const key = screen.subModuleId ?? screen.pModuleId;
+      if (!target || !key) continue; // a screen attached to nothing is not part of any module's catalog
+      target.set(key, [...(target.get(key) ?? []), toScreen(screen)]);
+    }
+    const subModulesOfModule = new Map<number, CatalogSubModule[]>();
+    for (const subModule of subModules) {
+      const entry: CatalogSubModule = {
+        id: subModule.id,
+        name: subModule.name,
+        code: subModule.code,
+        url: subModule.url ?? null,
+        displayOrder: subModule.displayOrder,
+        isActive: subModule.isActive,
+        screens: screensOfSubModule.get(subModule.id) ?? [],
+      };
+      subModulesOfModule.set(subModule.pModuleId, [...(subModulesOfModule.get(subModule.pModuleId) ?? []), entry]);
+    }
+
+    const catalog: CatalogModule[] = modules.map((module) => ({
+      id: module.id,
+      moduleName: module.moduleName,
+      code: module.code,
+      type: module.type,
+      icon: module.icon ?? null,
+      url: module.url ?? null,
+      displayOrder: module.displayOrder ?? 0,
+      isActive: module.isActive !== false,
+      isProtected: PROTECTED_MODULE_CODES.includes(module.code),
+      subModules: subModulesOfModule.get(module.id) ?? [],
+      screens: screensOfModule.get(module.id) ?? [],
+    }));
+
+    const term = query.search?.trim().toLowerCase();
+    const matches = (name: string, code: string) => name.toLowerCase().includes(term!) || code.toLowerCase().includes(term!);
+    const statusFilter = query.status ?? MODULE_CATALOG_STATUS_FILTER.ALL;
+    const visible = catalog.filter((module) => {
+      if (statusFilter === MODULE_CATALOG_STATUS_FILTER.ACTIVE && !module.isActive) return false;
+      if (statusFilter === MODULE_CATALOG_STATUS_FILTER.INACTIVE && module.isActive) return false;
+      if (!term) return true;
+      return (
+        matches(module.moduleName, module.code) ||
+        module.screens.some((screen) => matches(screen.name, screen.code)) ||
+        module.subModules.some(
+          (sub) => matches(sub.name, sub.code) || sub.screens.some((screen) => matches(screen.name, screen.code)),
+        )
+      );
+    });
+
+    return {
+      totals: {
+        modules: catalog.length,
+        activeModules: catalog.filter((module) => module.isActive).length,
+        subModules: subModules.length,
+        screens: screens.length,
+        actions: [...actionCounts.values()].reduce((sum, count) => sum + count, 0),
+      },
+      modules: visible,
+    };
+  }
 
   async create(dto: CreatePModuleDto) {
     const exists =
@@ -97,6 +212,16 @@ async findAll() {
     const pModule =
       await this.findOne(id);
 
+    // A module the platform needs keeps its code and stays available: an inactive module disappears from every user's menu.
+    if (PROTECTED_MODULE_CODES.includes(pModule.code)) {
+      if (dto.isActive === false) {
+        throw new ForbiddenException(ERROR_MESSAGES.MODULE_PROTECTED_CANNOT_DEACTIVATE);
+      }
+      if (dto.code !== undefined && dto.code !== pModule.code) {
+        throw new ForbiddenException(ERROR_MESSAGES.MODULE_PROTECTED_CODE_LOCKED);
+      }
+    }
+
     if (
       dto.moduleName &&
       dto.moduleName !==
@@ -127,6 +252,15 @@ async findAll() {
   async remove(id: number) {
     const pModule =
       await this.findOne(id);
+
+    if (PROTECTED_MODULE_CODES.includes(pModule.code)) {
+      throw new ForbiddenException(ERROR_MESSAGES.MODULE_PROTECTED_CANNOT_DELETE);
+    }
+    // Deleting a module that still has sub-modules or screens would leave them attached to nothing.
+    const screenCount = await this.screenRepository.count({ where: { pModuleId: id } });
+    if ((pModule.subModules?.length ?? 0) > 0 || screenCount > 0) {
+      throw new ConflictException(ERROR_MESSAGES.MODULE_HAS_CHILDREN);
+    }
 
     await this.pModuleRepository.softRemove(
       pModule,

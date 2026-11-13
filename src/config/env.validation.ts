@@ -67,6 +67,7 @@ export function validateEnv(raw: Record<string, unknown>): Record<string, unknow
     }
   }
 
+
   if (problems.length > 0) {
     throw new Error(`Invalid environment configuration:\n - ${problems.join('\n - ')}`);
   }

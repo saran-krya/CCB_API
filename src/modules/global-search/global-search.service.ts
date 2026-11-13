@@ -60,7 +60,7 @@ export class GlobalSearchService {
   private async buildAuthContext(roleIds: number[], userId?: number): Promise<SearchAuthContext> {
     const [grantedActionCodes, isSuperAdmin] = await Promise.all([
       this.rolePermissions.getMyActionCodesForRoles(roleIds, userId),
-      this.rolePermissions.anyRoleIsSuperAdmin(roleIds),
+      this.rolePermissions.anyRoleIsAdministrator(roleIds),
     ]);
     return { grantedActionCodes: new Set(grantedActionCodes), isSuperAdmin };
   }

@@ -1,7 +1,7 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { IsBoolean, IsIn, IsInt, IsOptional, IsString, MaxLength, ValidateNested } from 'class-validator';
-import { PAGE_SIZE_OPTIONS, SIDEBAR_STATES, TABLE_DENSITIES } from '../../attribute/system-setting.rules';
+import { IsBoolean, IsIn, IsInt, IsOptional, IsString, Matches, MaxLength, ValidateNested } from 'class-validator';
+import { BRAND_COLOR_PATTERN, PAGE_SIZE_OPTIONS, SIDEBAR_STATES, TABLE_DENSITIES } from '../../attribute/system-setting.rules';
 
 export class GeneralSettingsDto {
   @ApiPropertyOptional({ enum: PAGE_SIZE_OPTIONS })
@@ -19,6 +19,12 @@ export class GeneralSettingsDto {
   @IsOptional()
   @IsIn(SIDEBAR_STATES)
   defaultSidebarState?: string;
+
+  @ApiPropertyOptional({ description: 'The primary brand colour as #RRGGBB; the web app derives every hover, pressed and light / dark shade from it', example: '#0071DF' })
+  @IsOptional()
+  @IsString()
+  @Matches(BRAND_COLOR_PATTERN, { message: 'brandColor must be a hex colour written as #RRGGBB, for example #0071DF' })
+  brandColor?: string;
 }
 
 export class RegionalSettingsDto {

@@ -14,6 +14,7 @@ import { Role } from '../role/entities/role.entity';
 import { Action } from '../actions/entities/action.entity';
 import { AuditService } from '../../audit/audit.service';
 import { RESOURCES } from './resource-catalog';
+import { ADMINISTRATION_ACTION_CODES } from './administration-permissions';
 import { ACTIONS } from '../../bootstrap/seed-data';
 import { BUSINESS_APPROVAL_ACTION_CODES } from './business-approval-actions';
 import { CreatePolicyDto } from './dto/policy.dto';
@@ -760,6 +761,160 @@ describe('IamService — SUPER_ADMIN business-approval restriction', () => {
         const resolved = await service.validateStatements([{ resourceCode: 'TARIFF', actionCodes: ['TARIFF_VIEW', 'TARIFF_VIEW', 'TARIFF_APPROVE'] }]);
 
         expect(resolved).toEqual([{ resourceId: 10, actions: ['TARIFF_VIEW', 'TARIFF_APPROVE'] }]);
+      });
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────────────────────
+  // The mirror image of the approval rule: the administration console's permissions (Users, Roles, the nav-only Policy / Resource codes —
+  // administration-permissions.ts) belong to SUPER_ADMIN alone.
+  describe('administration-console permissions belong to SUPER_ADMIN alone', () => {
+    const ALL_ADMINISTRATION = [...ADMINISTRATION_ACTION_CODES];
+
+    describe('the permission resolver', () => {
+      it('never gives them to a principal without SUPER_ADMIN, whichever policy, role inline policy or personal inline policy lists them', async () => {
+        attached = [{ roleId: FINANCE, policy: { id: 2, statements: [allow(...ALL_ADMINISTRATION, 'TARIFF_VIEW')] } }];
+        roleInline = [{ roleId: FINANCE, statements: [allow('VIEW_USER', 'VIEW_CUSTOMER')] }];
+        userInline = [{ userId: 7, statements: [allow('RESET_USER_PASSWORD', 'BILL_RUN_VIEW')] }];
+
+        const codes = await service.getActionCodesGrantedByPoliciesForRoles([FINANCE], 7);
+
+        expect([...codes].sort()).toEqual(['BILL_RUN_VIEW', 'TARIFF_VIEW', 'VIEW_CUSTOMER']);
+      });
+
+      it.each(ALL_ADMINISTRATION)('a role that lists %s is still refused it', async (code) => {
+        attached = [{ roleId: FINANCE, policy: { id: 2, statements: [allow(code)] } }];
+
+        expect(await service.rolesHaveActionViaPolicy([FINANCE], code)).toBe(false);
+      });
+
+      it('leaves them all to SUPER_ADMIN (and still takes its business approvals)', async () => {
+        attached = [{ roleId: SUPER_ADMIN, policy: { id: 1, statements: [allow(...ALL_ADMINISTRATION, 'TARIFF_APPROVE')] } }];
+
+        const codes = await service.getActionCodesGrantedByPoliciesForRoles([SUPER_ADMIN]);
+
+        expect([...codes].sort()).toEqual([...ALL_ADMINISTRATION].sort());
+      });
+
+      it('a user who holds SUPER_ADMIN AND another role keeps them, whichever role lists them', async () => {
+        attached = [{ roleId: FINANCE, policy: { id: 2, statements: [allow('VIEW_USER', 'EDIT_ROLE', 'TARIFF_VIEW')] } }];
+
+        const codes = await service.getActionCodesGrantedByPoliciesForRoles([FINANCE, SUPER_ADMIN]);
+
+        expect([...codes].sort()).toEqual(['EDIT_ROLE', 'TARIFF_VIEW', 'VIEW_USER']);
+      });
+
+      it('matches the EXACT reserved role name — a look-alike such as "Super_Admin" does not get them', async () => {
+        attached = [{ roleId: LOOKALIKE, policy: { id: 9, statements: [allow('VIEW_USER', 'TARIFF_VIEW')] } }];
+
+        expect(await service.rolesHaveActionViaPolicy([LOOKALIKE], 'VIEW_USER')).toBe(false);
+        expect(await service.rolesHaveActionViaPolicy([LOOKALIKE], 'TARIFF_VIEW')).toBe(true);
+      });
+
+      it('has no effect on a principal that holds nothing administrative — ordinary business codes pass through unchanged', async () => {
+        attached = [{ roleId: OPERATIONS, policy: { id: 3, statements: [allow('METER_VIEW', 'TARIFF_VIEW')] } }];
+
+        const codes = await service.getActionCodesGrantedByPoliciesForRoles([OPERATIONS]);
+
+        expect([...codes].sort()).toEqual(['METER_VIEW', 'TARIFF_VIEW']);
+      });
+    });
+
+    describe('policy writes', () => {
+      beforeEach(() => {
+        resourcesRepo.find.mockResolvedValue([
+          { id: 10, code: 'USER' },
+          { id: 11, code: 'ROLE' },
+          { id: 12, code: 'CUSTOMER' },
+        ]);
+        actionsRepo.find.mockResolvedValue(['VIEW_USER', 'CREATE_USER', 'VIEW_ROLE', 'VIEW_CUSTOMER'].map((code, index) => ({ id: index + 1, code, isActive: true })));
+      });
+
+      it('validateStatements refuses a statement that lists an administration code, naming it — for managed, role-inline and user-inline policies alike', async () => {
+        await expect(service.validateStatements([{ resourceCode: 'USER', actionCodes: ['VIEW_USER', 'CREATE_USER'] }])).rejects.toThrow(BadRequestException);
+        await expect(service.validateStatements([{ resourceCode: 'USER', actionCodes: ['VIEW_USER', 'CREATE_USER'] }])).rejects.toThrow(
+          /CREATE_USER, VIEW_USER are administration permissions: they belong to the SUPER_ADMIN Administration Console alone/,
+        );
+        await expect(service.validateStatements([{ resourceCode: 'ROLE', actionCodes: ['VIEW_ROLE'] }])).rejects.toThrow(/VIEW_ROLE is an administration permission/);
+      });
+
+      it('refuses the administration resources themselves, even with no action listed', async () => {
+        await expect(service.validateStatements([{ resourceCode: 'USER', actionCodes: [] }])).rejects.toThrow(
+          /Resource "USER" belongs to the SUPER_ADMIN Administration Console alone/,
+        );
+      });
+
+      it('still accepts a business resource', async () => {
+        await expect(service.validateStatements([{ resourceCode: 'CUSTOMER', actionCodes: ['VIEW_CUSTOMER'] }])).resolves.toEqual([{ resourceId: 12, actions: ['VIEW_CUSTOMER'] }]);
+      });
+
+      it('createPolicy and updatePolicy therefore refuse them, before any write', async () => {
+        policiesRepo.findOne.mockResolvedValue(null);
+
+        await expect(service.createPolicy({ name: 'User support', statements: [{ resourceCode: 'USER', actionCodes: ['CREATE_USER'] }] }, 99)).rejects.toThrow(BadRequestException);
+
+        expect(dataSource.transaction).not.toHaveBeenCalled();
+        expect(statementsRepo.save).not.toHaveBeenCalled();
+      });
+
+      describe('attachPolicyToRole', () => {
+        beforeEach(() => {
+          policiesRepo.findOne.mockResolvedValue({ id: 7, name: 'Old user management' });
+          rolePoliciesRepo.findOne.mockResolvedValue(null);
+          // a policy written before this rule existed
+          statementsRepo.find.mockResolvedValue([{ effect: 'Allow', actions: ['VIEW_USER', 'CREATE_USER', 'VIEW_CUSTOMER'] }]);
+        });
+
+        it('refuses to attach a policy that lists administration codes to any role but SUPER_ADMIN, naming them — and attaches nothing', async () => {
+          rolesRepo.findOne.mockResolvedValue({ id: FINANCE, roleName: 'FINANCE' });
+
+          await expect(service.attachPolicyToRole(FINANCE, 7, 99)).rejects.toThrow(/CREATE_USER, VIEW_USER are administration permissions/);
+
+          expect(rolePoliciesRepo.save).not.toHaveBeenCalled();
+          expect(auditService.record).not.toHaveBeenCalled();
+        });
+
+        it('a role merely NAMED like SUPER_ADMIN (a look-alike) gets no exception either', async () => {
+          rolesRepo.findOne.mockResolvedValue({ id: LOOKALIKE, roleName: 'Super_Admin' });
+
+          await expect(service.attachPolicyToRole(LOOKALIKE, 7, 99)).rejects.toThrow(BadRequestException);
+        });
+
+        it('attaches the same policy to SUPER_ADMIN', async () => {
+          rolesRepo.findOne.mockResolvedValue({ id: SUPER_ADMIN, roleName: 'SUPER_ADMIN' });
+
+          await service.attachPolicyToRole(SUPER_ADMIN, 7, 99);
+
+          expect(rolePoliciesRepo.save).toHaveBeenCalledWith({ roleId: SUPER_ADMIN, policyId: 7 });
+        });
+
+        it('attaches a policy with business codes only to any role', async () => {
+          rolesRepo.findOne.mockResolvedValue({ id: FINANCE, roleName: 'FINANCE' });
+          statementsRepo.find.mockResolvedValue([{ effect: 'Allow', actions: ['VIEW_CUSTOMER', 'TARIFF_VIEW'] }]);
+
+          await service.attachPolicyToRole(FINANCE, 7, 99);
+
+          expect(rolePoliciesRepo.save).toHaveBeenCalledWith({ roleId: FINANCE, policyId: 7 });
+        });
+      });
+    });
+
+    describe('the resource catalogue', () => {
+      it('flags the administration resources, so the Policy editor can leave them out of its picker (and still read an existing statement)', async () => {
+        resourcesRepo.find.mockResolvedValue([
+          { id: 10, code: 'USER', name: 'Users', displayOrder: 1 },
+          { id: 11, code: 'ROLE', name: 'Roles', displayOrder: 2 },
+          { id: 12, code: 'CUSTOMER', name: 'Customers', displayOrder: 11 },
+        ]);
+        actionsRepo.find.mockResolvedValue([]);
+
+        const resources = await service.findAllResourcesWithActions();
+
+        expect(resources.map((resource) => [resource.code, resource.reservedForSuperAdmin])).toEqual([
+          ['USER', true],
+          ['ROLE', true],
+          ['CUSTOMER', false],
+        ]);
       });
     });
   });

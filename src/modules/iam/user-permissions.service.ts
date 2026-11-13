@@ -1,7 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { ROLES } from '@app/common/constants/global';
+import { isAdministratorRoleName } from '../../common/security/administrator-roles';
 import { AuthenticatedUser } from '../../auth/interfaces/authenticated-user.interface';
 import { User } from '../user/entities/user.entity';
 import { UserRole } from '../user-role/entities/user-role.entity';
@@ -54,7 +54,8 @@ export class UserPermissionsService {
   async list(userId: number, query: UserPermissionsQueryDto, actor: AuthenticatedUser) {
     if (!(await this.users.exist({ where: { id: userId } }))) throw new NotFoundException(ERROR_MESSAGES.USER_NOT_FOUND);
 
-    const canSeeInline = (actor.roleNames ?? [actor.roleName]).includes(ROLES.SUPER_ADMIN);
+    // Inline policies are administrator-only everywhere (SUPER_ADMIN).
+    const canSeeInline = (actor.roleNames ?? [actor.roleName]).some(isAdministratorRoleName);
     const kinds: UserPermissionKind[] = canSeeInline ? ['role', 'inline'] : ['role'];
     // A type the caller can't see is simply an empty list, never an error that reveals it exists.
     const wanted = query.type ? kinds.filter((kind) => kind === query.type) : kinds;

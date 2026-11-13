@@ -1,4 +1,5 @@
 import { UserService } from './user.service';
+import { Actor, SYSTEM_ACTOR } from '../../common/security/actor';
 
 // Users list has ONE search box (matching Role Management's own single-search layout) instead of four
 // independent AND'd filters (search.fullName/search.email/search.mobile/search.role) — this suite proves
@@ -234,6 +235,46 @@ describe('UserService.findAll — single combined search (name OR email OR mobil
       await service.findAll({ page: 1, limit: 10, sortOrder: 'DESC', sortBy: 'passwordHash' } as any);
       expect(orderByCalls[0].column).toBe('user.createdAt');
       expect(addSelectCalls).toHaveLength(0);
+    });
+  });
+
+  // A SUPER_ADMIN account is invisible to anyone who is not a super administrator — in the list and in its count.
+  describe('SUPER_ADMIN accounts are hidden from a viewer who is not a super administrator', () => {
+    const delegated: Actor = { kind: 'user', id: 2, roleNames: ['USER_MANAGER'] };
+    const superAdmin: Actor = { kind: 'user', id: 1, roleNames: ['SUPER_ADMIN'] };
+    const secondarySuperAdmin: Actor = { kind: 'user', id: 3, roleNames: ['USER_MANAGER', 'SUPER_ADMIN'] };
+    const query = { page: 1, limit: 10, sortOrder: 'DESC' } as any;
+
+    it('adds one NOT EXISTS over the live role assignments, matched on the EXACT role name, for any other viewer', async () => {
+      await service.findAll(query, delegated);
+
+      expect(andWhereCalls).toHaveLength(1);
+      const [{ sql, params }] = andWhereCalls;
+      expect(sql).toMatch(/NOT EXISTS\s*\(/);
+      expect(sql).toMatch(/ur_admin\.user_id\s*=\s*user\.id/);
+      expect(sql).toMatch(/ur_admin\.deleted_at IS NULL/);
+      expect(sql).toMatch(/r_admin\.deleted_at IS NULL/);
+      expect(sql).toMatch(/BINARY r_admin\.role_name = :administratorRole0/);
+      expect(params).toEqual({ administratorRole0: 'SUPER_ADMIN' });
+      // still no join: the page keeps one row per user
+      expect(joinCalls).toEqual([]);
+    });
+
+    it('hides nothing from a super administrator (even by a secondary role), from the system, or when there is no viewer', async () => {
+      await service.findAll(query, superAdmin);
+      await service.findAll(query, secondarySuperAdmin);
+      await service.findAll(query, SYSTEM_ACTOR);
+      await service.findAll(query);
+
+      expect(andWhereCalls).toHaveLength(0);
+    });
+
+    it('combines with the search term — both conditions apply', async () => {
+      await service.findAll({ ...query, ['search.query']: 'fin' }, delegated);
+
+      expect(andWhereCalls).toHaveLength(2);
+      expect(andWhereCalls.some((call) => /NOT EXISTS/.test(call.sql))).toBe(true);
+      expect(andWhereCalls.some((call) => call.params?.term === '%fin%')).toBe(true);
     });
   });
 });

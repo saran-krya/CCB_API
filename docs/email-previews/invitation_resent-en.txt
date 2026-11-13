@@ -1,0 +1,19 @@
+Subject: Your CCB invitation has been sent again
+
+Here is your new invitation link
+
+Hello Sara,
+
+System Administrator sent your invitation again. The earlier link no longer works, so please use the new one below.
+
+Account: sara.ahmed@example.com
+Invited by: System Administrator
+Link expires: in 24 hours (until 13 Nov 2026, 08:22 UTC)
+
+Accept invitation: https://app.example.com/accept-invitation?token=SAMPLE-LINK-THAT-DOES-NOT-WORK
+
+Or copy and paste this link into your browser
+
+https://app.example.com/accept-invitation?token=SAMPLE-LINK-THAT-DOES-NOT-WORK
+
+This link can be used only once. If you weren't expecting this invitation, you can safely ignore this email.

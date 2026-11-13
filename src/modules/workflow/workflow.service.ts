@@ -1,7 +1,7 @@
 import { BadRequestException, GoneException, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, In, Repository } from 'typeorm';
-import { ROLES } from '@app/common/constants/global';
+import { isAdministratorRoleName } from '../../common/security/administrator-roles';
 import { APPROVE_ACTION_CODES } from '../iam/business-approval-actions';
 import { RolePermissionsService } from '../role-permissions/role-permissions.service';
 import { Role } from '../role/entities/role.entity';
@@ -171,7 +171,8 @@ export class WorkflowService {
     const roleIds = [...new Set(levels.map((l) => l.roleId).filter((id): id is number => typeof id === 'number'))];
     const existingRoles = roleIds.length ? await this.roles.find({ where: { id: In(roleIds) } }) : [];
     const validRoleIds = new Set(existingRoles.map((r) => r.id));
-    const superAdminRoleIds = new Set(existingRoles.filter((r) => r.roleName === ROLES.SUPER_ADMIN).map((r) => r.id));
+    // SUPER_ADMIN is a system-administration role: it can never be a workflow approver.
+    const administratorRoleNames = new Map(existingRoles.filter((r) => isAdministratorRoleName(r.roleName)).map((r) => [r.id, r.roleName]));
 
     const problems: string[] = [];
     levels.forEach((level, i) => {
@@ -179,8 +180,8 @@ export class WorkflowService {
 
       if (typeof level.roleId !== 'number' || !Number.isInteger(level.roleId) || !validRoleIds.has(level.roleId)) {
         problems.push(`${at}: unknown approver role "${String(level.roleId)}".`);
-      } else if (superAdminRoleIds.has(level.roleId)) {
-        problems.push(`${at}: SUPER_ADMIN is a system-administration role and cannot be a workflow approver.`);
+      } else if (administratorRoleNames.has(level.roleId)) {
+        problems.push(`${at}: ${administratorRoleNames.get(level.roleId)} is a system-administration role and cannot be a workflow approver.`);
       }
       if (level.department !== null && level.department !== undefined && !DEPARTMENTS.includes(level.department as WorkflowDepartment)) {
         problems.push(`${at}: unknown department "${String(level.department)}".`);

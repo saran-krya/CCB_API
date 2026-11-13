@@ -2,7 +2,7 @@ import { CanActivate, ExecutionContext, Injectable } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { ROLES_KEY } from '../decorators/roles.decorator';
 import { AuthPrincipal } from '../../auth/interfaces/authenticated-user.interface';
-import { ROLES } from '../constants/global';
+import { isAdministratorRoleName } from '../security/administrator-roles';
 import { PRINCIPAL_TYPE } from '../constants/auth.constants';
 
 @Injectable()
@@ -34,7 +34,11 @@ export class RolesGuard implements CanActivate {
     // only covers a principal built without `roleNames` (the live primary).
     const roleNames = user.roleNames ?? [user.roleName];
 
-    if (roleNames.includes(ROLES.SUPER_ADMIN)) {
+    // The installation's super administrator (SUPER_ADMIN — see
+    // common/security/administrator-roles.ts) passes every @Roles check: every @Roles route is an administration route of THIS
+    // installation. A delegated administrator ("ADMIN") is not in the family: it passes only the routes that name its role, and
+    // otherwise has exactly the permissions its Policies grant.
+    if (roleNames.some(isAdministratorRoleName)) {
       return true;
     }
 

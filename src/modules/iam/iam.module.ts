@@ -12,6 +12,7 @@ import { Role } from '../role/entities/role.entity';
 import { User } from '../user/entities/user.entity';
 import { Action } from '../actions/entities/action.entity';
 import { IamService } from './iam.service';
+import { AssignmentBoundaryService } from './assignment-boundary.service';
 import { PolicyQueryService } from './policy-query.service';
 import { UserInlinePolicyService } from './user-inline-policy.service';
 import { RoleInlinePolicyService } from './role-inline-policy.service';
@@ -44,7 +45,7 @@ import { AuditModule } from '../../audit/audit.module';
     PolicyController, ResourceController, RolePolicyController, UserInlinePolicyController,
     RoleInlinePolicyController, UserPermissionsController,
   ],
-  providers: [IamService, PolicyQueryService,UserInlinePolicyService, RoleInlinePolicyService, UserPermissionsService],
-  exports: [IamService],
+  providers: [IamService, AssignmentBoundaryService, PolicyQueryService,UserInlinePolicyService, RoleInlinePolicyService, UserPermissionsService],
+  exports: [IamService, AssignmentBoundaryService],
 })
 export class IamModule {}

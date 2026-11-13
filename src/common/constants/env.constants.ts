@@ -15,6 +15,12 @@ export const ENV_KEY = {
   DEFAULT_ADMIN_PASSWORD: 'DEFAULT_ADMIN_PASSWORD',
   SESSION_TIMEOUT_MINUTES: 'SESSION_TIMEOUT_MINUTES',
   DEFAULT_ADMIN_EMAIL: 'DEFAULT_ADMIN_EMAIL',
+  /** "false" = a fresh database's first start creates no default administrator account (the first administrator is created afterwards with the
+   *  server maintenance tool, `npm run maintenance:super-admin`). Unset = unchanged. */
+  BOOTSTRAP_SEED_ADMIN: 'BOOTSTRAP_SEED_ADMIN',
+  /** "true" = a fresh database's first start also loads the sample Community / Property / Unit data; "false" = never. Unset: loaded on a developer
+   *  machine and in tests, NEVER in production (see BootstrapService.seedsDemoData). */
+  BOOTSTRAP_SEED_DEMO_DATA: 'BOOTSTRAP_SEED_DEMO_DATA',
   SMTP_USER: 'SMTP_USER',
   SFTP_REMOTE_PATH: 'SFTP_REMOTE_PATH',
 };

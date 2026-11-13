@@ -12,11 +12,12 @@ import { AttributeService } from '../attribute/attribute.service';
 import { LovService } from '../lov/lov.service';
 import { UserRoleService } from '../user-role/user-role.service';
 import { UserRole } from '../user-role/entities/user-role.entity';
+import { AssignmentBoundaryService } from '../iam/assignment-boundary.service';
 import { UserInlinePolicy } from '../iam/entities/user-inline-policy.entity';
 import { RefreshToken } from '../../auth/entities/refresh-token.entity';
 import { AuditService } from '../../audit/audit.service';
 import { ROLES } from '../../common/constants/global';
-import { Actor, SUPER_ADMIN_ASSIGN_MESSAGE, SUPER_ADMIN_MODIFY_MESSAGE, SYSTEM_ACTOR } from '../../common/security/actor';
+import { Actor, SUPER_ADMIN_ASSIGN_MESSAGE, SUPER_ADMIN_MODIFY_MESSAGE, SYSTEM_ACTOR, initialSuperAdminProtectedMessage } from '../../common/security/actor';
 
 // Isolated tests for UserService — every dependency mocked or replaced by an in-memory stand-in, no real
 // database connection. Follows the same mocking conventions as iam.service.spec.ts (plain jest.fn() mocks
@@ -284,6 +285,9 @@ describe('UserService — protections enforced end to end (real UserRoleService 
         { provide: AttributeService, useValue: { isMandatory: jest.fn().mockResolvedValue(false) } },
         { provide: LovService, useValue: { findActiveLanguages: jest.fn().mockResolvedValue([]) } },
         { provide: AuditService, useValue: auditService },
+        // The assignment boundary (what a delegated administrator may hand out) has its own spec; here every role fits inside the actor's
+        // scope, so the rules under test are the SUPER_ADMIN / last-administrator / self-change protections alone.
+        { provide: AssignmentBoundaryService, useValue: { assertWithinBoundary: jest.fn().mockResolvedValue(undefined) } },
       ],
     }).compile();
 
@@ -456,12 +460,23 @@ describe('UserService — protections enforced end to end (real UserRoleService 
       expect(deleted).toEqual([]);
     });
 
-    it('allows removing SUPER_ADMIN from a user when at least one OTHER active user also holds it, and returns the roles after the change', async () => {
-      const result = await service.removeRole(5, SUPER_ADMIN_ROLE.id, ROOT);
+    it('refuses to demote the INITIAL SUPER_ADMIN (the oldest active holder, user 5) even while another active SUPER_ADMIN exists — the owner can never be removed by accident (403, nothing deleted)', async () => {
+      await expect(service.removeRole(5, SUPER_ADMIN_ROLE.id, ROOT)).rejects.toThrow(ForbiddenException);
+      await expect(service.removeRole(5, SUPER_ADMIN_ROLE.id, ROOT)).rejects.toThrow(initialSuperAdminProtectedMessage('demote'));
+
+      expect(deleted).toEqual([]);
+      expect(rolesOf(5)).toEqual([SUPER_ADMIN_ROLE.id, ADMIN_ROLE.id]);
+      expect(auditService.record).not.toHaveBeenCalled();
+    });
+
+    it('allows removing SUPER_ADMIN from a holder who is NOT the initial one when at least one OTHER active user also holds it, and returns the roles after the change', async () => {
+      table.push({ id: 22, userId: 6, roleId: FINANCE_ROLE.id }); // user 6 keeps a second role, so losing SUPER_ADMIN leaves them one
+
+      const result = await service.removeRole(6, SUPER_ADMIN_ROLE.id, ROOT);
 
       expect(deleted).toEqual([SUPER_ADMIN_ROLE.id]);
-      expect(result).toEqual([ADMIN_ROLE]);
-      expect(rolesOf(6)).toEqual([SUPER_ADMIN_ROLE.id]);
+      expect(result).toEqual([FINANCE_ROLE]);
+      expect(rolesOf(5)).toEqual([SUPER_ADMIN_ROLE.id, ADMIN_ROLE.id]);
     });
 
     it('allows removing a non-SUPER_ADMIN role from a user who holds two or more roles, and records ONE REVOKE_ROLE audit row', async () => {
@@ -618,8 +633,16 @@ describe('UserService — protections enforced end to end (real UserRoleService 
       await expect(service.update(5, { active: false } as any, ROOT)).rejects.toThrow(LAST_ACTIVE('deactivate'));
     });
 
-    it('a SUPER_ADMIN can be deactivated while another ACTIVE SUPER_ADMIN exists', async () => {
-      await expect(service.update(5, { active: false } as any, ROOT)).resolves.toMatchObject({ active: false });
+    it('the INITIAL SUPER_ADMIN (user 5) cannot be deactivated even while another ACTIVE SUPER_ADMIN exists — 403 under the row lock, nothing saved', async () => {
+      await expect(service.update(5, { active: false } as any, ROOT)).rejects.toThrow(ForbiddenException);
+      await expect(service.update(5, { active: false } as any, ROOT)).rejects.toThrow(initialSuperAdminProtectedMessage('deactivate'));
+
+      expect(savedUsers).toEqual([]);
+      expect(userStates[5].active).toBe(true);
+    });
+
+    it('a SUPER_ADMIN who is NOT the initial one can be deactivated while another ACTIVE SUPER_ADMIN exists', async () => {
+      await expect(service.update(6, { active: false } as any, ROOT)).resolves.toMatchObject({ active: false });
 
       expect(savedUsers).toHaveLength(1);
     });
@@ -673,29 +696,39 @@ describe('UserService — protections enforced end to end (real UserRoleService 
       await expect(service.remove(5, ROOT)).rejects.toThrow(LAST_ACTIVE('delete'));
     });
 
-    it('deletes a SUPER_ADMIN while another active one exists — and cleans up EVERYTHING that pointed at the account, in the one transaction', async () => {
-      await service.remove(5, ROOT);
+    it('the INITIAL SUPER_ADMIN (user 5) cannot be deleted even while another active SUPER_ADMIN exists — 403 under the row lock, nothing removed', async () => {
+      await expect(service.remove(5, ROOT)).rejects.toThrow(ForbiddenException);
+      await expect(service.remove(5, ROOT)).rejects.toThrow(initialSuperAdminProtectedMessage('delete'));
+
+      expect(softRemoved).toEqual([]);
+      expect(rolesOf(5)).toEqual([SUPER_ADMIN_ROLE.id, ADMIN_ROLE.id]);
+      expect(auditService.record).not.toHaveBeenCalled();
+    });
+
+    it('deletes a SUPER_ADMIN who is NOT the initial one while another active one exists — and cleans up EVERYTHING that pointed at the account, in the one transaction', async () => {
+      await service.remove(6, ROOT);
 
       expect(transactions).toBe(1);
-      expect(softRemoved).toEqual([5]);
-      expect(rolesOf(5)).toEqual([]); // role assignments gone
-      expect(deletedAllRolesFor).toEqual([5]);
-      expect(inlinePolicyDeletes).toEqual([{ userId: 5 }]); // its own inline policies gone
+      expect(softRemoved).toEqual([6]);
+      expect(rolesOf(6)).toEqual([]); // role assignments gone
+      expect(deletedAllRolesFor).toEqual([6]);
+      expect(inlinePolicyDeletes).toEqual([{ userId: 6 }]); // its own inline policies gone
       expect(sessionRevocations).toHaveLength(1); // live sessions revoked
       expect(sessionRevocations[0]).toMatchObject({
         entity: RefreshToken,
-        params: { id: 5, type: 'staff' },
+        params: { id: 6, type: 'staff' },
       });
       expect(auditService.record).toHaveBeenCalledWith(
         expect.objectContaining({
           moduleName: 'users',
-          entityId: 5,
+          entityId: 6,
           action: 'DELETE',
           performedBy: 99,
-          oldValue: expect.objectContaining({ roleIds: [SUPER_ADMIN_ROLE.id, ADMIN_ROLE.id] }),
+          oldValue: expect.objectContaining({ roleIds: [SUPER_ADMIN_ROLE.id] }),
         }),
         expect.anything(),
       );
+      expect(rolesOf(5)).toEqual([SUPER_ADMIN_ROLE.id, ADMIN_ROLE.id]); // the initial administrator is untouched
     });
 
     it('the audit row of a deletion never carries the password hash', async () => {
@@ -744,7 +777,7 @@ describe('UserService', () => {
     addRolesToUser: jest.Mock;
     removeRoleFromUser: jest.Mock;
     assertActorMayModifyUser: jest.Mock;
-    assertNotLastActiveSuperAdmin: jest.Mock;
+    assertNotLastActiveAdministrator: jest.Mock;
   };
   let auditService: { record: jest.Mock };
 
@@ -791,7 +824,7 @@ describe('UserService', () => {
       addRolesToUser: jest.fn().mockResolvedValue([]),
       removeRoleFromUser: jest.fn().mockResolvedValue(false),
       assertActorMayModifyUser: jest.fn().mockResolvedValue(undefined),
-      assertNotLastActiveSuperAdmin: jest.fn().mockResolvedValue(undefined),
+      assertNotLastActiveAdministrator: jest.fn().mockResolvedValue(undefined),
     };
     auditService = { record: jest.fn().mockResolvedValue(undefined) };
 
@@ -961,10 +994,10 @@ describe('UserService', () => {
       userRoleService.getRolesForUser.mockResolvedValue([OPERATIONS_ROLE]);
 
       await service.update(8, { firstName: 'Plain' } as any, staff(50));
-      expect(userRoleService.assertNotLastActiveSuperAdmin).not.toHaveBeenCalled();
+      expect(userRoleService.assertNotLastActiveAdministrator).not.toHaveBeenCalled();
 
       await service.update(8, { active: false } as any, staff(50));
-      expect(userRoleService.assertNotLastActiveSuperAdmin).toHaveBeenCalledWith(8, txManager, 'deactivate');
+      expect(userRoleService.assertNotLastActiveAdministrator).toHaveBeenCalledWith(8, txManager, 'deactivate');
     });
 
     it('refuses to deactivate your own account before opening a transaction', async () => {
@@ -1062,6 +1095,34 @@ describe('UserService', () => {
 
       await expect(service.findOne(5)).rejects.toThrow(NotFoundException);
       expect(userRoleService.getRolesForUser).not.toHaveBeenCalled();
+    });
+
+    describe('a SUPER_ADMIN account is not found by a viewer who is not a super administrator', () => {
+      const delegated: Actor = { kind: 'user', id: 2, roleNames: ['USER_MANAGER'] };
+      const superAdmin: Actor = { kind: 'user', id: 1, roleNames: [ROLES.SUPER_ADMIN] };
+
+      it('is a 404 — the account\'s existence is not confirmed', async () => {
+        usersRepo.findOne.mockResolvedValue(buildUserRow(5));
+        userRoleService.getRolesForUser.mockResolvedValue([OPERATIONS_ROLE, SUPER_ADMIN_ROLE]);
+
+        await expect(service.findOne(5, delegated)).rejects.toThrow(NotFoundException);
+      });
+
+      it('shows an ordinary account to the same viewer', async () => {
+        usersRepo.findOne.mockResolvedValue(buildUserRow(5));
+        userRoleService.getRolesForUser.mockResolvedValue([OPERATIONS_ROLE]);
+
+        await expect(service.findOne(5, delegated)).resolves.toMatchObject({ id: 5 });
+      });
+
+      it('shows it to a super administrator, to the system and to an internal caller with no viewer', async () => {
+        usersRepo.findOne.mockResolvedValue(buildUserRow(5));
+        userRoleService.getRolesForUser.mockResolvedValue([SUPER_ADMIN_ROLE]);
+
+        await expect(service.findOne(5, superAdmin)).resolves.toMatchObject({ id: 5 });
+        await expect(service.findOne(5, SYSTEM_ACTOR)).resolves.toMatchObject({ id: 5 });
+        await expect(service.findOne(5)).resolves.toMatchObject({ id: 5 });
+      });
     });
   });
 

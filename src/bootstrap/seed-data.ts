@@ -1536,10 +1536,12 @@ export const ACTIONS: SeedAction[] = [
 ]
 
 
-// SUPER_ADMIN is the ONLY predefined (static) role. It is seeded once, on a fresh database, so that the first administrator
-// exists. Every other role is created and managed dynamically by SUPER_ADMIN through the application and lives only in the
-// database: nothing may seed, assume, reserve or auto-grant a business role, so never add another role to this list. (Which
-// business-approval codes SUPER_ADMIN is kept out of is BUSINESS_APPROVAL_ACTION_CODES in modules/iam/business-approval-actions.ts.)
+// The ONLY predefined (static) role is the installation's super administrator: SUPER_ADMIN, the customer's own highest administrator
+// (see common/constants/global.ts). BootstrapService seeds it once, on a fresh database, so that the first administrator exists. Every
+// other role — an "ADMIN" with delegated administrative permissions, a finance role, ... — is created and managed dynamically by that
+// administrator through the application and lives only in the database: nothing may seed, assume, reserve or auto-grant a business
+// role, so never add another role to this list. (Which business-approval codes the administrator role is kept out of is
+// BUSINESS_APPROVAL_ACTION_CODES in modules/iam/business-approval-actions.ts.)
 export const ROLES: SeedRole[] = [
   {
     roleName: ROLE_NAMES.SUPER_ADMIN,

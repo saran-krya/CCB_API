@@ -10,6 +10,7 @@ import {
 import { RegistrationRequestService } from '../registration-request/registration-request.service';
 import { isDepositResolved } from '../registration-request/entities/registration-request.entity';
 import { ConfigService } from '@nestjs/config';
+import { ModuleRef } from '@nestjs/core';
 import { InjectRepository } from '@nestjs/typeorm';
 import * as bcrypt from 'bcryptjs';
 import { DataSource, EntityManager, IsNull, Repository } from 'typeorm';
@@ -20,6 +21,7 @@ import { MailService } from '../../mail/mail.service';
 import { customerActivationTemplate } from '../../mail/templates/customer-activation.template';
 import { securityDepositPaymentTemplate } from '../../mail/templates/security-deposit-payment.template';
 import { UnitService } from '../unit/unit.service';
+import { CUSTOMER_INVITATION_ISSUER, CustomerInvitationIssuer } from './customer-invitation.port';
 import { ActivateCustomerDto } from './dto/activate-customer.dto';
 import { UpdateMyProfileDto } from './dto/update-my-profile.dto';
 import {
@@ -62,6 +64,7 @@ export class CustomerService {
     private readonly dataSource: DataSource,
     private readonly mail: MailService,
     private readonly config: ConfigService,
+    private readonly moduleRef: ModuleRef,
   ) {}
 
   /**
@@ -567,12 +570,39 @@ export class CustomerService {
    * setting its usedAt, since only one token should ever be redeemable at a time), so retrying never
    * creates a duplicate Customer or leaves multiple simultaneously-valid links outstanding.
    */
-  async issueActivationEmail(customerId: number, depositAmount?: number): Promise<{ sent: boolean; error?: string }> {
+  async issueActivationEmail(customerId: number, depositAmount?: number, actorId?: number): Promise<{ sent: boolean; error?: string }> {
     const customer = await this.customers.findOne({ where: { id: customerId } });
     if (!customer) throw new NotFoundException(ERROR_MESSAGES.CUSTOMER_NOT_FOUND);
     if (!customer.email) {
       this.logger.warn(`Cannot send activation email for customer ${customerId} — no email on file`);
       return { sent: false, error: 'Customer has no email address on file' };
+    }
+
+    // When the account invitation module is switched on, the activation e-mail IS an account invitation — one mechanism for staff and
+    // customers, with the managed e-mail templates, the 24-hour single-use link and its audit trail — for a customer who is still waiting to
+    // be set up. Nothing provides the issuer otherwise, and any other customer (an ACTIVE one for whom a deposit demand is raised again, an
+    // OVERDUE one) gets the e-mail below exactly as it always has.
+    const invitationIssuer = this.invitationIssuer();
+    if (invitationIssuer && (await invitationIssuer.canIssueForCustomer(customerId))) {
+      const customerReference = customer.businessCode ?? `Customer #${customer.id}`;
+      const delivery = await invitationIssuer.issueForCustomer(customerId, {
+        actorId,
+        // A raised Security Deposit: the invitation uses the managed "Customer Invitation (Security Deposit)" template, which carries the same
+        // information as the legacy deposit message (reference, amount, what happens after the payment) — the amount written the same way.
+        deposit:
+          depositAmount != null
+            ? {
+                customerReference,
+                amountLabel: `AED ${depositAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+              }
+            : undefined,
+      });
+      // The customer now holds a new link, so an activation link issued the old way and never used is withdrawn — a re-send leaves one working
+      // link. A link nobody re-sent is not touched: it stays valid until its own expiry, and POST /customers/activate still accepts it.
+      if (delivery.sent) {
+        await this.activationTokens.update({ customer: { id: customerId }, usedAt: IsNull() }, { usedAt: new Date() });
+      }
+      return delivery;
     }
 
     await this.activationTokens.update(
@@ -638,7 +668,11 @@ export class CustomerService {
       throw new ConflictException('This customer has already activated their account');
     }
 
-    const result = await this.issueActivationEmail(customerId, customer.securityDeposit != null ? Number(customer.securityDeposit) : undefined);
+    const result = await this.issueActivationEmail(
+      customerId,
+      customer.securityDeposit != null ? Number(customer.securityDeposit) : undefined,
+      actorId,
+    );
 
     await this.audit.record({
       moduleName: AUDIT_MODULE.CUSTOMERS,
@@ -719,6 +753,53 @@ export class CustomerService {
       );
       return { customerId: token.customer.id };
     });
+  }
+
+  /**
+   * Account setup through an ACCOUNT INVITATION (the same outcome as activate(), which stays as it is for links issued the old way): the
+   * customer's own password is stored, and the account becomes ACTIVE only when its Security Deposit is already resolved — otherwise it stays
+   * INACTIVE until RegistrationRequestService.verifyDeposit() activates it, exactly as with an activation link. It runs inside the invitation's
+   * transaction, so claiming the single-use link and this change commit together. The password hash is made by the caller. Answers whether the
+   * account is ACTIVE now (false while a Security Deposit is still due), which decides whether the "Account Activated" message may be sent.
+   */
+  async completeAccountSetup(customerId: number, passwordHash: string, manager: EntityManager): Promise<{ activated: boolean }> {
+    const { depositStatus } = await this.registrationRequests.getMyDepositStatus(customerId);
+    const shouldActivateNow = isDepositResolved(depositStatus);
+
+    const updateResult = await manager.update(Customer, customerId, {
+      passwordHash,
+      ...(shouldActivateNow ? { accountStatus: CustomerAccountStatus.ACTIVE } : {}),
+    });
+    if (updateResult.affected !== 1) {
+      this.logger.error(`Invitation setup password update affected ${updateResult.affected} rows for customer ${customerId} — expected exactly 1`);
+      throw new Error('Failed to persist the new password — please try again or contact support');
+    }
+
+    await this.audit.record(
+      {
+        moduleName: AUDIT_MODULE.CUSTOMERS,
+        entityId: customerId,
+        action: 'ACTIVATED',
+        newValue: { accountStatus: shouldActivateNow ? CustomerAccountStatus.ACTIVE : CustomerAccountStatus.INACTIVE },
+      },
+      manager,
+    );
+    this.logger.log(
+      `Customer ${customerId} completed account setup through an invitation — ` +
+        (shouldActivateNow
+          ? 'deposit already resolved, account is now active'
+          : `account stays inactive pending Security Deposit (depositStatus="${depositStatus}")`),
+    );
+    return { activated: shouldActivateNow };
+  }
+
+  /** The account invitation module's issuer, or null while that module is not switched on (nothing provides the token then). */
+  private invitationIssuer(): CustomerInvitationIssuer | null {
+    try {
+      return this.moduleRef.get<CustomerInvitationIssuer>(CUSTOMER_INVITATION_ISSUER, { strict: false });
+    } catch {
+      return null;
+    }
   }
 
   /**

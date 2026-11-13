@@ -1,0 +1,18 @@
+Subject: Activate your CCB customer account
+
+Your account has been approved
+
+Hello Sara,
+
+Your customer account with CCB has been approved. Choose your own password to activate it and sign in to the customer portal.
+
+Account: sara.ahmed@example.com
+Link expires: in 24 hours (until 13 Nov 2026, 08:22 UTC)
+
+Activate my account: https://app.example.com/accept-invitation?token=SAMPLE-LINK-THAT-DOES-NOT-WORK
+
+Or copy and paste this link into your browser
+
+https://app.example.com/accept-invitation?token=SAMPLE-LINK-THAT-DOES-NOT-WORK
+
+This link can be used only once. If you didn't register with us, you can safely ignore this email. Nothing is activated unless you accept the invitation.

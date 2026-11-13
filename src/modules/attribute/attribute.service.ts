@@ -10,7 +10,7 @@ import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { EntityManager, In, Repository } from 'typeorm';
 import { AuditService } from '../../audit/audit.service';
-import { ROLES } from '../../common/constants/global';
+import { isAdministratorRoleName } from '../../common/security/administrator-roles';
 import { paginate } from '../../common/utils/pagination.util';
 import { RedisService } from '../../redis/redis.service';
 import { RolePermissionsService } from '../role-permissions/role-permissions.service';
@@ -247,6 +247,11 @@ function buildAttributeSeed(sessionTimeoutMinutes: number): AttributeSeedRow[] {
       scope: AttributeScope.SYSTEM, key: ATTRIBUTE_KEY.NOTIFICATIONS_IN_APP_ENABLED, label: 'In-App Notifications',
       description: 'Reserved for in-application notifications, which are not available yet; this switch has no effect until they are',
       valueType: AttributeValueType.BOOLEAN, value: 'true', trueLabel: 'Enabled', falseLabel: 'Disabled', displayOrder: 16,
+    },
+    {
+      scope: AttributeScope.SYSTEM, key: ATTRIBUTE_KEY.BRAND_PRIMARY_COLOR, label: 'Primary Brand Colour',
+      description: 'The primary colour of buttons, links, switches, checkboxes, selected tabs and focus rings across the Admin Console and the business application, written as #RRGGBB; hover, pressed and light / dark shades are derived from it',
+      valueType: AttributeValueType.TEXT, value: SYSTEM_SETTING_DEFAULTS.brandColor, displayOrder: 17,
     },
 
     {
@@ -713,8 +718,9 @@ export class AttributeService {
     const attribute = await this.attributes.findOne({ where: { id } });
     if (!attribute) throw new NotFoundException(ERROR_MESSAGES.ATTRIBUTE_NOT_FOUND);
 
-    if (attribute.scope === AttributeScope.SYSTEM && !actorRoleNames?.includes(ROLES.SUPER_ADMIN)) {
-      throw new ForbiddenException('Only Super Admin can edit General Attributes');
+    // SYSTEM-scope attributes are the installation's own business parameters: only its super administrator (SUPER_ADMIN) may change them.
+    if (attribute.scope === AttributeScope.SYSTEM && !actorRoleNames?.some(isAdministratorRoleName)) {
+      throw new ForbiddenException('Only an administrator can edit General Attributes');
     }
 
     if (!viaSettings && SETTINGS_MANAGED_ATTRIBUTE_KEYS.has(attribute.key)) {

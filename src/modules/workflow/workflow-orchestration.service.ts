@@ -276,7 +276,7 @@ export class WorkflowOrchestrationService {
       // withholds every approve code from it (so PermissionGuard stops the request first); this is the workflow
       // engine's own, independent refusal — it also covers a level configured with the SUPER_ADMIN role before this
       // rule existed, and any caller that reaches the engine without going through a guarded route.
-      if (await this.rolePermissionsService.anyRoleIsSuperAdmin(actorRoleIds)) {
+      if (await this.rolePermissionsService.anyRoleIsAdministrator(actorRoleIds)) {
         throw new ForbiddenException('SUPER_ADMIN is a system-administration role and cannot approve or reject business transactions.');
       }
       if (!actorRoleIds.includes(currentStep.roleId)) {

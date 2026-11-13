@@ -1,6 +1,6 @@
 import { Body, Controller, Get, Patch } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { ROLES } from '@app/common/constants/global';
+import { ADMINISTRATOR_ROLES } from '../../common/security/administrator-roles';
 import { AuthenticatedUser } from '../../auth/interfaces/authenticated-user.interface';
 import { ACTION_CODES } from '../../common/constants/action-codes.constants';
 import { Authenticated } from '../../common/decorators/authenticated.decorator';
@@ -66,21 +66,21 @@ export class SettingsController {
   }
 
   @Get('system')
-  @Roles(ROLES.SUPER_ADMIN)
+  @Roles(...ADMINISTRATOR_ROLES)
   @ApiOperation({ summary: 'System-wide settings (SUPER_ADMIN only)' })
   getSystemSettings() {
     return this.settings.getSystemSettings();
   }
 
   @Patch('system')
-  @Roles(ROLES.SUPER_ADMIN)
+  @Roles(...ADMINISTRATOR_ROLES)
   @ApiOperation({ summary: 'Update system-wide settings (SUPER_ADMIN only); every changed value is audit-logged' })
   updateSystemSettings(@Body() dto: UpdateSystemSettingsDto, @CurrentUser() user: AuthenticatedUser) {
     return this.settings.updateSystemSettings(dto, user);
   }
 
   @Get('system/info')
-  @Roles(ROLES.SUPER_ADMIN)
+  @Roles(...ADMINISTRATOR_ROLES)
   @ApiOperation({ summary: 'Application information and version (SUPER_ADMIN only) — never secrets or environment variables' })
   getApplicationInfo() {
     return this.settings.getApplicationInfo();

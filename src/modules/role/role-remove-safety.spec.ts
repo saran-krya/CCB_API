@@ -48,6 +48,8 @@ describe('RoleService.remove — safety checks', () => {
       auditService as unknown as AuditService,
       userRoleService as unknown as UserRoleService,
       dataSource as any,
+      // The assignment boundary only feeds the pickers; the remove / delete paths never consult it.
+      {} as any,
     );
   });
 

@@ -1,0 +1,23 @@
+Subject: Complete your CCB account setup — Security Deposit required
+
+Your account has been approved
+
+Hello Sara,
+
+Your customer account (CUST-000123) with CCB has been approved. A Security Deposit of AED 1,000.00 is required before your account can be activated.
+
+Use the secure link below to set your password and complete the deposit payment.
+
+Customer reference: CUST-000123
+Security Deposit: AED 1,000.00
+Account: sara.ahmed@example.com
+Account status: Activates once the deposit payment is verified
+Link expires: in 24 hours (until 13 Nov 2026, 08:22 UTC)
+
+Set password & pay deposit: https://app.example.com/accept-invitation?token=SAMPLE-LINK-THAT-DOES-NOT-WORK
+
+Or copy and paste this link into your browser
+
+https://app.example.com/accept-invitation?token=SAMPLE-LINK-THAT-DOES-NOT-WORK
+
+This link can be used only once. Your account will be activated once the deposit payment is verified. If you didn't expect this email, you can safely ignore it.

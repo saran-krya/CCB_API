@@ -1,8 +1,12 @@
 import { Controller, Get, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { ROLES } from '../../common/constants/global';
 import { Authenticated } from '../../common/decorators/authenticated.decorator';
+import { Roles } from '../../common/decorators/roles.decorator';
 import { DashboardService } from './dashboard.service';
 import { DashboardConsumptionQueryDto } from './dto/dashboard-query.dto';
+import { PlatformDashboardResponse } from './dto/platform-dashboard-response.dto';
+import { PlatformDashboardService } from './platform-dashboard.service';
 
 /**
  * Deliberately open to ANY authenticated staff session — no `@Roles`/`@Permission` on this
@@ -20,13 +24,28 @@ import { DashboardConsumptionQueryDto } from './dto/dashboard-query.dto';
  *     real reachable audience is "any authenticated staff member," never a customer token.
  * If a future requirement needs role-scoped dashboard data, that is a product decision (which roles,
  * which widgets) this comment cannot make — add the real `Action` row(s) first, then `@Permission`.
+ *
+ * ONE exception, `GET dashboard/platform`: the SUPER_ADMIN section (internal-user statistics, recent audit entries,
+ * system health) is `@Roles(SUPER_ADMIN)` — it summarises the audit trail and infrastructure, which are the platform
+ * administrator's alone (same gate as `GET /audit-logs` and `GET /system-health`). A route-level `@Roles` overrides nothing
+ * above: the class-level `@Authenticated()` still admits every other route here to any staff session.
  */
 @ApiBearerAuth()
 @ApiTags('Dashboard')
 @Authenticated()
 @Controller({ path: 'dashboard', version: '1' })
 export class DashboardController {
-  constructor(private readonly dashboard: DashboardService) {}
+  constructor(
+    private readonly dashboard: DashboardService,
+    private readonly platformDashboard: PlatformDashboardService,
+  ) {}
+
+  @Get('platform')
+  @Roles(ROLES.SUPER_ADMIN)
+  @ApiOperation({ summary: 'SUPER_ADMIN dashboard: internal-user statistics, access configuration, recent audit entries and system health' })
+  getPlatform(): Promise<PlatformDashboardResponse> {
+    return this.platformDashboard.getPlatform();
+  }
 
   @Get('stats')
   @ApiOperation({ summary: 'Get platform-wide dashboard stat cards' })

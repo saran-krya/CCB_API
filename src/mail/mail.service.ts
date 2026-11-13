@@ -18,6 +18,21 @@ export class MailService {
   }
 
   /**
+   * Whether the SMTP settings a send needs are all present (the same four getTransporter requires). It reads configuration only — it never
+   * opens a connection — so it says "this server could try to send", not "the mail server is reachable". Used by the invitation screens to tell
+   * an administrator, before they invite anyone, that no e-mail can go out until SMTP is configured.
+   */
+  isConfigured(): boolean {
+    const required = [
+      this.config.get<string>('SMTP_HOST'),
+      this.config.get<string>('SMTP_PORT'),
+      this.config.get<string>(ENV_KEY.SMTP_USER),
+      this.config.get<string>('SMTP_PASSWORD'),
+    ];
+    return required.every((value) => typeof value === 'string' && value.trim().length > 0);
+  }
+
+  /**
    * Built lazily (not in the constructor) so a missing/invalid SMTP_* config fails the first send
    * attempt with a clear, logged error instead of crashing the whole app at boot — SMTP delivery is
    * a best-effort side effect of approval/deposit flows, never something that should stop the API
@@ -103,6 +118,17 @@ export class MailService {
         html: message.html,
         text: message.text,
       });
+      // "Sent" means the mail server ACCEPTED the message for its recipient. nodemailer resolves even when the server refused some
+      // recipient (it lists them in `rejected`), so the answer is read, never assumed: a message nobody accepted — or that any recipient
+      // refused — is reported as not sent, and every caller that records "sent" (customer activation, and any e-mail flow added later) stays truthful.
+      const rejectedCount = Array.isArray(info.rejected) ? info.rejected.length : 0;
+      const acceptedCount = Array.isArray(info.accepted) ? info.accepted.length : null;
+      if (rejectedCount > 0 || acceptedCount === 0) {
+        const error = `The mail server did not accept the message for its recipient (accepted: ${acceptedCount ?? 'unknown'}, rejected: ${rejectedCount})`;
+        this.logger.error('[SMTP] Email sending failed');
+        this.logger.error(`[SMTP] Error: ${error}`);
+        return { sent: false, error };
+      }
       this.logger.log(`[SMTP] Email sent successfully - messageId: ${info.messageId}`);
       return { sent: true };
     } catch (err) {

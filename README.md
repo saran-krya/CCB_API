@@ -2,6 +2,11 @@
 
 NestJS backend for the CCB billing platform.
 
+**CCB is on-premises software:** every customer runs its own installation with its own database, and the installation's highest
+administrator is the customer's own `SUPER_ADMIN` — never a CCB account. The model, the first-time installation, creating further
+administrators, recovery, upgrades and which console modules are kept, adapted or left out of a customer release are in
+[docs/ON_PREMISE_SUPER_ADMIN.md](docs/ON_PREMISE_SUPER_ADMIN.md). The sections below describe the bootstrap in detail.
+
 ## Default Super Admin & Initial Permissions
 
 This section documents exactly what happens the first time the application connects to a
@@ -32,19 +37,24 @@ error anywhere but `NODE_ENV=development`). TypeORM applies every pending migrat
 ### Fresh database (first ever boot)
 
 Once the schema exists, `BootstrapService.onApplicationBootstrap()` checks whether the `users` table has any
-(non-deleted) rows at all. If it is empty, this is treated as a brand-new install and the following happens, inside
-one database transaction:
+row at all — soft-deleted and deactivated accounts count too. If it is empty, this is treated as a brand-new install and the
+following happens, inside one database transaction:
 
 1. Every module, sub-module, screen, and action (the full permission tree) is seeded from
    `src/bootstrap/seed-data.ts`; then the list-of-values (LOV) entries and the system attributes.
 2. The one predefined role, `SUPER_ADMIN`, is created. It is the ONLY role the system defines: every other role is
    created and managed dynamically by `SUPER_ADMIN` through the application (Roles & Permissions) and lives only in
    the database — nothing is seeded, assumed, reserved or auto-granted for any other role name.
-3. **One Super Admin user is created and assigned the `SUPER_ADMIN` role.**
-4. The Community / Property / Unit master data (8 communities, 67 properties, 111 units) from
-   `src/bootstrap/seed-locations.ts`, which carries the data of `seed-community-property-unit.sql`. The SQL files stay
-   in the repository for reference; `seed-units-random.sql` (random test units) is intentionally not part of
-   initialization.
+3. **The installation's ONE default administrator account is created and assigned the `SUPER_ADMIN` role** (skipped with
+   `BOOTSTRAP_SEED_ADMIN=false`, in which case the first administrator is created afterwards with
+   `npm run maintenance:super-admin`). Its password is only a temporary one from the installer's environment: the account is
+   created with "must change password at first sign-in", so its holder chooses their own.
+4. **Only when sample data is enabled** (see below): the Community / Property / Unit master data (8 communities, 67
+   properties, 111 units) from `src/bootstrap/seed-locations.ts`, which carries the data of
+   `seed-community-property-unit.sql`. It is ONE estate's data, so it is **never loaded in production unless you opt in**
+   with `BOOTSTRAP_SEED_DEMO_DATA=true` (unset: loaded on a developer machine / in tests, never in production; `false`:
+   never). A customer installation therefore starts with no business data. The SQL files stay in the repository for
+   reference; `seed-units-random.sql` (random test units) is intentionally not part of initialization.
 
 Every step is find-or-create on the row's natural key (code, name, email, or property + unit number), including
 soft-deleted rows: a database that already holds part of this data is completed, never duplicated or overwritten.
@@ -57,17 +67,24 @@ The admin user's identity comes from three environment variables:
 
 | Variable | Required | Default if unset |
 |---|---|---|
-| `DEFAULT_ADMIN_EMAIL` | No | `admin@ccb.local` |
+| `DEFAULT_ADMIN_EMAIL` | **Yes in production** | `admin@ccb.local` outside production only — production refuses an unset value and this example address |
 | `DEFAULT_ADMIN_NAME` | No | `System Administrator` |
-| `DEFAULT_ADMIN_PASSWORD` | **Yes** | — |
+| `DEFAULT_ADMIN_PASSWORD` | **Yes**, when the account is created (not with `BOOTSTRAP_SEED_ADMIN=false`) | — |
 
-**`DEFAULT_ADMIN_PASSWORD` is mandatory.** There is no hardcoded, fallback, or auto-generated
+**`DEFAULT_ADMIN_PASSWORD` is mandatory** whenever bootstrap creates the account. There is no hardcoded, fallback, or auto-generated
 password anywhere in this codebase. If it is missing on a fresh database, bootstrap throws and the
-application refuses to start — add it to your `.env` file and restart. The password is hashed with
+application refuses to start — add it to your `.env` file and restart. It must meet the password policy, it is only a
+**temporary** password (the account must replace it at its first sign-in), and it is hashed with
 bcrypt (12 rounds) before being stored; it is never logged or printed.
 
 After the user and role are created, bootstrap grants the Super Admin role its permissions (see
-below) and logs a warning to change the default password after first login.
+below) and logs that the account must set its own password at its first sign-in and that `DEFAULT_ADMIN_PASSWORD`
+should then be removed from the environment (a production start that still finds it warns again).
+
+**The first administrator is protected.** The installation's initial `SUPER_ADMIN` — the oldest active holder of the role — cannot be
+deleted, deactivated, demoted or have its sign-in disabled through the application, and no `SUPER_ADMIN` can ever be left without a
+successor. Handing it over is a deliberate, server-side step (`npm run maintenance:super-admin -- --retire …`); see
+[docs/ON_PREMISE_SUPER_ADMIN.md](docs/ON_PREMISE_SUPER_ADMIN.md) §4.1 and §7.
 
 ### How the Super Admin actually gets its access
 
@@ -110,11 +127,12 @@ small, specific set of routes trust the `SUPER_ADMIN` role name directly in code
 
 ### Re-running bootstrap against an existing database
 
-Every subsequent application start checks the same `users` table count. If it is non-zero, the
-full seed (roles, Super Admin user, locations) is **never run again** — only the pending migrations (above) and a set of idempotent backfill
+Every subsequent application start checks the same `users` table — counting **every** user row, soft-deleted and deactivated accounts
+included. If it is non-zero, the full seed (roles, Super Admin user, locations) is **never run again** — so a repeated start can never create a
+second default administrator — only the pending migrations (above) and a set of idempotent backfill
 calls run: `ensureCriticalDefaults()` for modules/sub-modules/screens/actions/LOVs/attributes, plus
 the same `ensureAdminGrants()` call described above and its Policy-model counterpart
-`IamService.ensureAdminPolicyGrants()`.
+`IamService.ensureAdminPolicyGrants()`. No existing role, user or data is ever renamed or rewritten by a start.
 
 Every one of those backfill calls checks for an existing row before inserting — `ensureAdminGrants`
 skips any (role, action) pair that already has a grant row; `ensureLeafModuleGrants` does the same.
@@ -127,12 +145,23 @@ otherwise changes nothing.
 ### Setting it up
 
 1. Copy `.env.example` to `.env`.
-2. Set `DEFAULT_ADMIN_PASSWORD` to a real password that meets the password policy (at least 12 characters, at most 72 UTF-8 bytes — bcrypt ignores anything longer — and at least 3 of uppercase / lowercase / number / symbol) and a random `JWT_SECRET` of at least 32 characters (do not commit this file). The admin account must change its password at first sign-in.
-3. Optionally set `DEFAULT_ADMIN_EMAIL` and `DEFAULT_ADMIN_NAME`.
-4. Start ONE instance of the application against an empty database (the migrations, then bootstrap, run
+2. Set a random `JWT_SECRET` of at least 32 characters (do not commit this file) and choose how the first administrator is created:
+   * **temporary password in the environment:** `DEFAULT_ADMIN_PASSWORD` = a password that meets the password policy (at least 12
+     characters, at most 72 UTF-8 bytes — bcrypt ignores anything longer — and at least 3 of uppercase / lowercase / number / symbol) and
+     `DEFAULT_ADMIN_EMAIL` / `DEFAULT_ADMIN_NAME`. In production the e-mail **must** be the real address of the person who will administer the
+     installation — the example address `admin@ccb.local` is refused. The account must set its own password at first sign-in; **remove
+     `DEFAULT_ADMIN_PASSWORD` from the file afterwards.**
+   * **no password in any file:** `BOOTSTRAP_SEED_ADMIN=false`, then create the first administrator on the server with
+     `npm run maintenance:super-admin -- --email … --name "…" --apply` (one-time password printed once).
+
+   Leave `BOOTSTRAP_SEED_DEMO_DATA` unset for a customer installation (no sample business data in production); set it to `true` only
+   for a demo or training installation.
+3. Start ONE instance of the application against an empty database (the migrations, then bootstrap, run
    automatically; do not start several instances at once on a brand-new database — migrations and the first
    seed are not coordinated between processes).
-5. Log in with the email/password you set, and change the password immediately.
+4. Sign in with the e-mail and the temporary password; the application asks for a new password immediately.
+5. Create a second `SUPER_ADMIN` (two named people) and the delegated administrators you need — see
+   [docs/ON_PREMISE_SUPER_ADMIN.md](docs/ON_PREMISE_SUPER_ADMIN.md) §6.
 
 ## Security
 

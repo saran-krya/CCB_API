@@ -1,0 +1,15 @@
+Subject: Your CCB account is ready
+
+Your account is ready
+
+Hello Sara,
+
+Thank you, Sara. Your password has been set and your account is now active. Sign in with sara.ahmed@example.com and the password you just chose.
+
+Sign in: https://app.example.com/login
+
+Or copy and paste this link into your browser
+
+https://app.example.com/login
+
+If you didn't set up this account, contact your administrator right away.

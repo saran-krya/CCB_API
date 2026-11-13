@@ -27,8 +27,10 @@ export class RoleController {
   @Permission(ACTION_CODES.VIEW_ROLE)
   findAll(
     @Query() query: RoleQueryDto,
+    @CurrentUser() user: AuthenticatedUser,
   ) {
-    return this.roles.RoleLists(query);
+    // The viewer decides whether SUPER_ADMIN is in the list: only a super administrator sees it.
+    return this.roles.RoleLists(query, actorFrom(user));
   }
 
   @Get('dropdown')
@@ -52,8 +54,8 @@ export class RoleController {
 
   @Get("filter")
   @Permission(ACTION_CODES.VIEW_ROLE, ACTION_CODES.CREATE_USER, ACTION_CODES.EDIT_USER)
-  getRoleFilter() {
-    return this.roles.getRoleFilter();
+  getRoleFilter(@CurrentUser() user: AuthenticatedUser) {
+    return this.roles.getRoleFilter(actorFrom(user));
   }
 
   @Get("metaFilters")
@@ -64,8 +66,8 @@ export class RoleController {
 
   @Get(':id')
   @Permission(ACTION_CODES.VIEW_ROLE)
-  findOne(@Param('id', ParseIntPipe) id: number) {
-    return this.roles.findOne(id);
+  findOne(@Param('id', ParseIntPipe) id: number, @CurrentUser() user: AuthenticatedUser) {
+    return this.roles.findOneVisibleTo(id, actorFrom(user));
   }
 
   // Backs the Role Detail page specifically — assigned-user count + updatedAt, neither of which
@@ -74,8 +76,8 @@ export class RoleController {
   // collide with `dropdown`/`filter`/`metaFilters` above and never shadows the plain findOne route.
   @Get(':id/details')
   @Permission(ACTION_CODES.VIEW_ROLE)
-  findOneWithDetails(@Param('id', ParseIntPipe) id: number) {
-    return this.roles.findOneWithDetails(id);
+  findOneWithDetails(@Param('id', ParseIntPipe) id: number, @CurrentUser() user: AuthenticatedUser) {
+    return this.roles.findOneWithDetails(id, actorFrom(user));
   }
 
   @Patch(':id')

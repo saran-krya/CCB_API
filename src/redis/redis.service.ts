@@ -59,6 +59,12 @@ export class RedisService implements OnModuleDestroy {
     }
   }
 
+  /** Round-trips a PING to the server. Unlike every other method here it deliberately does NOT swallow a failure: its only
+   *  caller is the System Health check, which must report "down" truthfully instead of treating an outage as a cache miss. */
+  async ping(): Promise<void> {
+    await this.client.ping();
+  }
+
   /** Atomically adds one to a counter, starting its TTL (seconds) on the first increment so the window
    *  is fixed from the first event. Returns the new count and the seconds left in the window, or null
    *  when Redis is unavailable — the caller then falls back to its own in-process counter, so a Redis

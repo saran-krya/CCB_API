@@ -38,10 +38,13 @@ The acting user is passed to the services as an `Actor` built from the live prin
 | Only a SUPER_ADMIN may assign the SUPER_ADMIN role — on create user, on add roles, any other path | `UserService.create` / `addRoles` (pre-check) and `UserRoleService.addRolesToUser` (authoritative, same transaction) | 403 `Only SUPER_ADMIN can assign the SUPER_ADMIN role.` |
 | Only a SUPER_ADMIN may modify a SUPER_ADMIN account (edit, deactivate, delete, change roles, reset password, disable sign-in, revoke sessions) | `UserRoleService.assertActorMayModifyUser`, called by `UserService` and `AuthService` | 403 `Only SUPER_ADMIN can modify a SUPER_ADMIN account.` |
 | Nobody changes their own roles, deletes their own account, or deactivates themselves | `UserRoleService`, `UserService.update` / `remove` | 403 |
-| The last **active, non-deleted** SUPER_ADMIN can never be demoted, deactivated or deleted | `UserRoleService.assertNotLastActiveSuperAdmin` / `lockActiveSuperAdminHolders` (pessimistic row lock inside the same transaction) | 403 |
+| The last **active, non-deleted** SUPER_ADMIN can never be demoted, deactivated or deleted | `UserRoleService.assertNotLastActiveAdministrator` / `lockActiveHolders` (pessimistic row lock inside the same transaction) | 403 |
+| The installation's **initial** SUPER_ADMIN (the oldest active holder — derived from the data, no marker column) can never be deleted, deactivated, demoted or have its sign-in disabled through the application, even while other administrators exist; handing it over is a server-side step (`npm run maintenance:super-admin -- --retire …`) | `UserRoleService.initialAdministratorId` / `assertNotInitialAdministrator` / `assertNotLastActiveAdministrator` / `removeRoleFromUser`; `AuthService.disableSigninAccess` | 403 `Cannot … the initial SUPER_ADMIN account — it is protected …` |
+| **Assignment boundary:** a delegated administrator may assign a role only if every permission the role grants is one the administrator holds itself (policies + inline policies of its current roles + its own inline policies, read live); a SUPER_ADMIN and the boot-time system are unbounded. Policies, inline policies, the resource catalogue and role-permission trees are not delegable at all (`@Roles(SUPER_ADMIN)`) | `AssignmentBoundaryService`, enforced in the one grant path `UserRoleService.addRolesToUser` (create user, add roles, bootstrap all go through it) | 403 `Cannot assign the role "X": it grants permissions you do not hold (…)` |
+| **The same boundary on taking over an account:** a delegated administrator may reset the password of an account only if every permission the account holds is one the administrator holds itself (otherwise `RESET_USER_PASSWORD` would be a way around the role boundary: reset a more privileged user's password, sign in as them). The refusal names no permission | `AssignmentBoundaryService.assertAccountWithinBoundary`, via `UserRoleService.assertActorMayTakeOverAccount`, called by `AuthService.adminResetPassword` | 403 `Cannot reset the password of this account: it holds permissions you do not hold. …` |
 | A user always keeps at least one role | `UserRoleService.removeRoleFromUser` | 403 |
 | `UpdateUserDto` has no password and no role field | `src/modules/user/dto/create-user.dto.ts` | 400 (global `forbidNonWhitelisted`) |
-| The role pickers say which roles the viewer may assign (`assignable`, `assignableReason`) so the web app can show SUPER_ADMIN disabled with the tooltip **"Only SUPER_ADMIN can assign this role."** | `RoleService.getRoleDropdown` / `getRolePicker` | — |
+| The role pickers say which roles the viewer may assign (`assignable`, `assignableReason`) so the web app can show a role disabled with the reason — **"Only SUPER_ADMIN can assign this role."** for SUPER_ADMIN, **"This role grants permissions you do not hold."** for a role beyond the viewer's scope | `RoleService.getRoleDropdown` / `getRolePicker` | — |
 
 ## 3. Authentication and sessions
 
@@ -192,8 +195,14 @@ Every variable is listed, with comments and placeholders only, in `.env.example`
 ## 9. Known limitations
 
 * Third-party credentials, database passwords and the DEV server cannot be changed from code (section 8).
-* The seed file sets `DEFAULT_ADMIN_PASSWORD` from the environment; it only runs on an empty database.
-* Access tokens remain valid until they expire (`JWT_EXPIRES_IN`) as bearer tokens, but a deactivated user,
+* The first administrator's temporary password (`DEFAULT_ADMIN_PASSWORD`) is read from the environment by `BootstrapService` on a database that has never
+  held a user (soft-deleted rows count); it is not needed at all with `BOOTSTRAP_SEED_ADMIN=false`, and should be removed from the environment once
+  the first sign-in has replaced it (a production start warns while it is still there).
+* The assignment boundary is checked when a role is handed out or an account's password is reset, not re-evaluated later; a delegated administrator can
+  still deactivate, delete, edit, strip roles from and end the sessions of any non-SUPER_ADMIN account its permissions allow, including one with broader
+  business permissions than its own (docs/ON_PREMISE_SUPER_ADMIN.md §4.3).
+* Access tokens remain valid until they expire as bearer tokens — their lifetime is the session timeout (the `SESSION_TIMEOUT_MINUTES`
+  attribute, 30–1440 minutes; `JWT_EXPIRES_IN` is only the JwtModule's default option and is not consulted) — but a deactivated user,
   revoked role or changed password-change flag is honoured on the very next request because it is re-read
   every time.
 
@@ -272,7 +281,7 @@ placeholder, repaired with `npm run maintenance:iam-policy-repair` after review)
 | `role_permissions` | **Decides nothing.** Still feeds `/auth/context` `profile.permissions` (nav tree), the role edit page and role create (`/role-permissions/*`), the boot-time `ensureAdminGrants` (SUPER_ADMIN only), and `RoleService.remove`. **No longer read by the workflow screens or the approver checks.** Not dropped, not rewritten; existing SUPER_ADMIN rows for approval actions remain (inert). |
 | `workflow_approval_levels`, `GET/PUT workflow/approval-policy/:type` | Legacy advisory record, drives nothing, no UI. Kept; SUPER_ADMIN can no longer be recorded in it. |
 | `PUT workflow/approval-flow/:type/approvers` | Retired (410). Its web client (`setWorkflowApproversApi`, `useSetWorkflowApproversMutation`, the endpoint constant and the params type) was unused and was removed. |
-| `SUPER_ADMIN_FORCE_TARIFF_ACTIVATION`, `SUPER_ADMIN_REVOKE_AFTER_CYCLE_CLOSE` system attributes | Defined in `attribute.service.ts`; no consumer was found. Left for the owner to confirm and retire. |
+| `SUPER_ADMIN_FORCE_TARIFF_ACTIVATION`, `SUPER_ADMIN_REVOKE_AFTER_CYCLE_CLOSE` system attributes | Defined in `attribute.service.ts`; no consumer was found (re-checked 2026-11-11 across the API and the web). **Left in place** — the decision to retire them is the owner's; see docs/PROPOSED_SCHEMA_CHANGES.md §3. |
 
 ### Verification (2026-11-04)
 
@@ -304,7 +313,7 @@ and lookup labels such as the seeded `FIELD_INSPECTION_NOTIFY_ROLE` values, whic
 | Where | Behaviour |
 |---|---|
 | `common/constants/global.ts` — `ROLES` | Contains `SUPER_ADMIN` only. |
-| `bootstrap/seed-data.ts` — the seeded `ROLES` | A fresh database is seeded with the `SUPER_ADMIN` role only (and the one admin user). No business role is ever created at startup. |
+| `bootstrap/seed-data.ts` — the seeded `ROLES` | A fresh database is seeded with the `SUPER_ADMIN` role only (and the one admin user — except with `BOOTSTRAP_SEED_ADMIN=false`, which seeds no account). No business role is ever created at startup. |
 | `IamService.ensureAdminPolicyGrants`, `RolePermissionsService.ensureAdminGrants` | Serve `SUPER_ADMIN` alone: no ADMIN branch, and the ADMIN-only exclusion list (`ADMIN_GRANT_EXCLUDED_ACTION_CODES`) plus `ensureSuperAdminGrant`, which only compensated for it, were removed. |
 | `RoleService` | `SUPER_ADMIN` is the only reserved name (create / rename / delete protection, canonical look-alike matching). A role called ADMIN — or anything else — is created, renamed, edited and deleted like any ordinary role. |
 | Authorization | By the roles' attached policies (database), or `@Roles(SUPER_ADMIN)` on the SUPER_ADMIN-only structure routes. No other role name appears in a guard, decorator or condition. |
@@ -317,3 +326,17 @@ no longer grants anything to an ADMIN role, and its name is no longer reserved. 
 system-managed, so it stays an ordinary, editable and deletable policy; it is just no longer kept in sync, and its
 stored description (which says it is) is out of date. Review such roles in Roles & Permissions if you want to
 rename, re-scope or retire them — no migration does it for you.
+
+## 12. Administration permissions belong to SUPER_ADMIN alone
+
+The Administration Console (users, roles, policies, system health, settings, audit, e-mail templates, invitations) is kept apart from the Business Application. The console screens that are `@Roles(SUPER_ADMIN)` routes have no permission code and cannot be granted. The ones that ALSO exist as grantable codes are *administration permissions* — `VIEW/CREATE/EDIT/DELETE_USER`, `RESET_USER_PASSWORD`, `VIEW/CREATE/EDIT/DELETE_ROLE`, the navigation-only `VIEW/CREATE/EDIT/DELETE_POLICY` and `VIEW_RESOURCE` — and only `SUPER_ADMIN` may hold them. The set is `src/modules/iam/administration-permissions.ts`, derived from the resource catalogue (the `USER` and `ROLE` resources plus the navigation-only codes).
+
+| Layer | What it does | Where |
+|---|---|---|
+| Runtime | Drops the codes for any principal without `SUPER_ADMIN`, whatever policy, role-inline or user-inline policy lists them — so existing grants become inert on the next request, with no data change | `IamService.getActionCodesGrantedByPoliciesForRoles` |
+| Policy writes | 400 for a managed, role-inline or user-inline policy that lists one; 400 for attaching a policy that lists one to any role but `SUPER_ADMIN` | `IamService.validateStatements`, `attachPolicyToRole` |
+| Permission editor's tree | the System Admin pages and codes are not listed in the editor's tree (`GET /role-permissions/tree`, `/role/:id`) and cannot be saved (400) for any other role. The navigation catalog (`GET /auth/me/nav-catalog`) and a role's own legacy permissions are deliberately NOT filtered: every session's menu and links are built from them (an earlier version filtered them too and broke the Users / Roles links with a 404) | `RolePermissionsService.getPermissionTree(…, { forEditing: true })` |
+| Visibility | `SUPER_ADMIN` is not in the role pickers / list / filter, and `SUPER_ADMIN` accounts are not in the Users list, detail or filter, for anyone but a super administrator | `RoleService`, `UserService` (+ their controllers) |
+| Web | the Policy editor's resource picker leaves the Users and Roles resources out | `PolicyStatementCard.tsx` (`reservedForSuperAdmin`) |
+
+Unchanged and still enforced: only a `SUPER_ADMIN` grants the role or touches a `SUPER_ADMIN` account; the last active and the initial `SUPER_ADMIN` are protected; the assignment boundary; the role cannot be created, renamed or deleted. Not reserved, by decision (2026-11-12): the personal Account settings, Approval Workflows, **System Attributes** and **Lookup Values** (business modules depend on them, so they stay assignable to authorized business roles) and every business resource — see ON_PREMISE_SUPER_ADMIN.md §3.1. Staff invitations and staff password resets are covered (they need the Users codes); invitations of portal customers follow the business customer permissions. Specs: `administration-permissions.spec.ts`, `iam-business-approval.spec.ts` (resolver, policy writes), `role-permissions.service.spec.ts`, the role and user specs. Nothing was run.

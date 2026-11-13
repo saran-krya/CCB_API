@@ -1,7 +1,7 @@
 import { Controller, Get } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Roles } from '../../common/decorators/roles.decorator';
-import { ROLES } from '@app/common/constants/global';
+import { ADMINISTRATOR_ROLES } from '../../common/security/administrator-roles';
 import { IamService } from './iam.service';
 
 /**
@@ -10,7 +10,7 @@ import { IamService } from './iam.service';
  */
 @ApiBearerAuth()
 @ApiTags('IAM Resources')
-@Roles(ROLES.SUPER_ADMIN)
+@Roles(...ADMINISTRATOR_ROLES)
 @Controller({ path: 'iam/resources', version: '1' })
 export class ResourceController {
   constructor(private readonly iam: IamService) {}

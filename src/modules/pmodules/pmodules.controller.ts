@@ -21,6 +21,7 @@ import { Roles } from '../../common/decorators/roles.decorator';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 
 import { PModulesService } from './pmodules.service';
+import { ModuleCatalogQueryDto } from './dto/module-catalog.dto';
 
 import {
   CreatePModuleDto,
@@ -44,6 +45,14 @@ export class PModulesController {
     @Body() dto: CreatePModuleDto,
   ) {
     return this.pModulesService.create(dto);
+  }
+
+  // Declared before `:id` so "catalog" is never parsed as a module id.
+  @Get('catalog')
+  getCatalog(
+    @Query() query: ModuleCatalogQueryDto,
+  ) {
+    return this.pModulesService.getCatalog(query);
   }
 
   @Get()

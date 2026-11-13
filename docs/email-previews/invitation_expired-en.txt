@@ -1,0 +1,11 @@
+Subject: Your CCB invitation has expired
+
+This invitation has expired
+
+Hello Sara,
+
+The invitation to join CCB that was sent to sara.ahmed@example.com was not accepted in time, so its link no longer works and nothing was activated.
+
+If you still need access, ask System Administrator or your administrator to send you a new invitation.
+
+For your security, invitation links are valid for a limited time only. If you no longer need access, no action is needed.

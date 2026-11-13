@@ -797,6 +797,183 @@ describe('IamService', () => {
     });
   });
 
+  // What EACH role grants on its own — the other half of the assignment boundary (AssignmentBoundaryService compares it against what the
+  // assigning administrator holds). The same sources and the same Allow-only rule as the union above, kept apart per role.
+  describe('getActionCodesByRole — what each role grants on its own', () => {
+    type StatementRow = { effect: string; actions: string[] };
+    const allow = (...actions: string[]): StatementRow => ({ effect: 'Allow', actions });
+
+    const FINANCE = 5;
+    const OPERATIONS = 8;
+    const EMPTY_ROLE = 20;
+
+    let attached: Array<{ roleId: number; policy?: { statements?: StatementRow[] } }>;
+    let inline: Array<{ roleId: number; statements?: StatementRow[] }>;
+    beforeEach(() => {
+      attached = [
+        { roleId: FINANCE, policy: { statements: [allow('VIEW_CUSTOMER', 'APPROVE_TARIFF')] } },
+        { roleId: OPERATIONS, policy: { statements: [allow('EDIT_CUSTOMER'), allow('VIEW_CUSTOMER', 'VIEW_METER')] } },
+      ];
+      inline = [];
+      rolePoliciesRepo.find.mockImplementation(({ where }: { where: { roleId: { value: number[] } } }) =>
+        Promise.resolve(attached.filter((row) => where.roleId.value.includes(row.roleId))),
+      );
+      roleInlinePoliciesRepo.find.mockImplementation(({ where }: { where: { roleId: { value: number[] } } }) =>
+        Promise.resolve(inline.filter((row) => where.roleId.value.includes(row.roleId))),
+      );
+    });
+
+    it('keeps the roles apart — each role maps to exactly its own Allow codes, never a union across roles', async () => {
+      const byRole = await service.getActionCodesByRole([FINANCE, OPERATIONS]);
+
+      expect(byRole.get(FINANCE)).toEqual(new Set(['VIEW_CUSTOMER', 'APPROVE_TARIFF']));
+      expect(byRole.get(OPERATIONS)).toEqual(new Set(['EDIT_CUSTOMER', 'VIEW_CUSTOMER', 'VIEW_METER']));
+    });
+
+    it("includes the role's OWN inline policies in that role's set, and only that role's", async () => {
+      inline = [{ roleId: FINANCE, statements: [allow('VIEW_LEDGER')] }];
+
+      const byRole = await service.getActionCodesByRole([FINANCE, OPERATIONS]);
+
+      expect(byRole.get(FINANCE)).toEqual(new Set(['VIEW_CUSTOMER', 'APPROVE_TARIFF', 'VIEW_LEDGER']));
+      expect(byRole.get(OPERATIONS)?.has('VIEW_LEDGER')).toBe(false);
+    });
+
+    it('every requested id has an entry — a role with no policy at all, an empty policy, or an unloaded one maps to an empty set', async () => {
+      attached.push({ roleId: 30, policy: { statements: [] } }, { roleId: 31, policy: undefined });
+
+      const byRole = await service.getActionCodesByRole([EMPTY_ROLE, 30, 31, FINANCE]);
+
+      expect([...byRole.keys()]).toEqual([EMPTY_ROLE, 30, 31, FINANCE]);
+      expect(byRole.get(EMPTY_ROLE)).toEqual(new Set());
+      expect(byRole.get(30)).toEqual(new Set());
+      expect(byRole.get(31)).toEqual(new Set());
+      expect(byRole.get(FINANCE)?.size).toBe(2);
+    });
+
+    it('a statement whose effect is not Allow contributes nothing — from a policy or an inline policy', async () => {
+      attached = [{ roleId: FINANCE, policy: { statements: [allow('VIEW_CUSTOMER'), { effect: 'Deny', actions: ['DELETE_CUSTOMER'] }] } }];
+      inline = [{ roleId: FINANCE, statements: [{ effect: 'Deny', actions: ['DELETE_USER'] }] }];
+
+      const byRole = await service.getActionCodesByRole([FINANCE]);
+
+      expect(byRole.get(FINANCE)).toEqual(new Set(['VIEW_CUSTOMER']));
+    });
+
+    it('answers the whole list with TWO queries (attached policies, inline policies) — never one per role — and never reads a user\'s own inline policies', async () => {
+      await service.getActionCodesByRole([FINANCE, OPERATIONS, EMPTY_ROLE]);
+
+      expect(rolePoliciesRepo.find).toHaveBeenCalledTimes(1);
+      expect(rolePoliciesRepo.find.mock.calls[0][0].where.roleId.type).toBe('in');
+      expect(rolePoliciesRepo.find.mock.calls[0][0].where.roleId.value).toEqual([FINANCE, OPERATIONS, EMPTY_ROLE]);
+      expect(rolePoliciesRepo.find.mock.calls[0][0].relations).toEqual({ policy: { statements: true } });
+      expect(roleInlinePoliciesRepo.find).toHaveBeenCalledTimes(1);
+      expect(roleInlinePoliciesRepo.find.mock.calls[0][0].relations).toEqual({ statements: true });
+      expect(userInlinePoliciesRepo.find).not.toHaveBeenCalled();
+    });
+
+    it('drops anything that is not a real role id and de-duplicates — an all-invalid or empty list answers an empty map without querying', async () => {
+      const invalid = [undefined, null, NaN, 0, -3, 2.5] as unknown as number[];
+
+      expect((await service.getActionCodesByRole(invalid)).size).toBe(0);
+      expect((await service.getActionCodesByRole([])).size).toBe(0);
+      expect(rolePoliciesRepo.find).not.toHaveBeenCalled();
+      expect(roleInlinePoliciesRepo.find).not.toHaveBeenCalled();
+
+      const byRole = await service.getActionCodesByRole([...invalid, FINANCE, FINANCE]);
+
+      expect([...byRole.keys()]).toEqual([FINANCE]);
+      expect(rolePoliciesRepo.find.mock.calls[0][0].where.roleId.value).toEqual([FINANCE]);
+    });
+
+    it('is never cached — a policy detached since the last call is gone from the next answer', async () => {
+      expect((await service.getActionCodesByRole([FINANCE])).get(FINANCE)?.has('APPROVE_TARIFF')).toBe(true);
+
+      attached = []; // the policy is detached from the role
+
+      expect((await service.getActionCodesByRole([FINANCE])).get(FINANCE)).toEqual(new Set());
+      expect(rolePoliciesRepo.find).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  // The optional `manager` (the caller's open transaction): the assignment boundary passes it so that comparing what an administrator holds runs
+  // on the one connection the granting transaction already has, instead of taking a second pool connection while that transaction holds the first.
+  // Each entity gets its OWN fake repository, so a test can tell which ones were read: the manager's, never the injected ones.
+  describe("the caller's transaction (manager) — every read runs on that one connection", () => {
+    let txRolePolicies: { find: jest.Mock };
+    let txRoleInline: { find: jest.Mock };
+    let txUserInline: { find: jest.Mock };
+    let txRoles: { find: jest.Mock };
+    let tx: { getRepository: jest.Mock };
+
+    beforeEach(() => {
+      txRolePolicies = { find: jest.fn().mockResolvedValue([{ roleId: 5, policy: { statements: [{ effect: 'Allow', actions: ['VIEW_CUSTOMER'] }] } }]) };
+      txRoleInline = { find: jest.fn().mockResolvedValue([{ roleId: 5, statements: [{ effect: 'Allow', actions: ['EDIT_CUSTOMER'] }] }]) };
+      txUserInline = { find: jest.fn().mockResolvedValue([{ userId: 42, statements: [{ effect: 'Allow', actions: ['VIEW_METER'] }] }]) };
+      txRoles = { find: jest.fn().mockResolvedValue([{ id: 5, roleName: 'FINANCE' }]) };
+      tx = {
+        getRepository: jest.fn((entity: unknown) => {
+          if (entity === RolePolicy) return txRolePolicies;
+          if (entity === RoleInlinePolicy) return txRoleInline;
+          if (entity === UserInlinePolicy) return txUserInline;
+          if (entity === Role) return txRoles;
+          return undefined;
+        }),
+      };
+    });
+
+    it('getActionCodesGrantedByPoliciesForRoles reads the role policies, the role inline policies, the account\'s own inline policies and the administrator-role lookup from the manager — never from the injected repositories', async () => {
+      const codes = await service.getActionCodesGrantedByPoliciesForRoles([5], 42, tx as any);
+
+      expect(codes).toEqual(new Set(['VIEW_CUSTOMER', 'EDIT_CUSTOMER', 'VIEW_METER']));
+      for (const repo of [txRolePolicies, txRoleInline, txUserInline, txRoles]) expect(repo.find).toHaveBeenCalledTimes(1);
+      for (const repo of [rolePoliciesRepo, roleInlinePoliciesRepo, userInlinePoliciesRepo, rolesRepo]) expect(repo.find).not.toHaveBeenCalled();
+    });
+
+    it('the rules do not change with a manager — a SUPER_ADMIN holder still never receives a business-approval code', async () => {
+      const approval = [...BUSINESS_APPROVAL_ACTION_CODES][0];
+      txRoles.find.mockResolvedValue([{ id: 5, roleName: 'SUPER_ADMIN' }]);
+      txRolePolicies.find.mockResolvedValue([{ roleId: 5, policy: { statements: [{ effect: 'Allow', actions: ['VIEW_CUSTOMER', approval] }] } }]);
+
+      const codes = await service.getActionCodesGrantedByPoliciesForRoles([5], undefined, tx as any);
+
+      expect(codes.has(approval)).toBe(false);
+      expect(codes.has('VIEW_CUSTOMER')).toBe(true);
+    });
+
+    it('getActionCodesByRole reads the role policies and the role inline policies from the manager', async () => {
+      const byRole = await service.getActionCodesByRole([5], tx as any);
+
+      expect(byRole.get(5)).toEqual(new Set(['VIEW_CUSTOMER', 'EDIT_CUSTOMER']));
+      expect(txRolePolicies.find).toHaveBeenCalledTimes(1);
+      expect(txRoleInline.find).toHaveBeenCalledTimes(1);
+      expect(rolePoliciesRepo.find).not.toHaveBeenCalled();
+      expect(roleInlinePoliciesRepo.find).not.toHaveBeenCalled();
+    });
+
+    it('holdsAdministratorRole and findAdministratorRoleName look the roles up through the manager', async () => {
+      txRoles.find.mockResolvedValue([{ id: 5, roleName: 'SUPER_ADMIN' }]);
+
+      await expect(service.holdsAdministratorRole([5], tx as any)).resolves.toBe(true);
+      await expect(service.findAdministratorRoleName([5], tx as any)).resolves.toBe('SUPER_ADMIN');
+
+      expect(txRoles.find).toHaveBeenCalledTimes(2);
+      expect(rolesRepo.find).not.toHaveBeenCalled();
+    });
+
+    it('without a manager nothing changes — the injected repositories are read and the manager\'s are never touched', async () => {
+      rolePoliciesRepo.find.mockResolvedValue([]);
+
+      await service.getActionCodesGrantedByPoliciesForRoles([5], 42);
+
+      expect(rolePoliciesRepo.find).toHaveBeenCalledTimes(1);
+      expect(userInlinePoliciesRepo.find).toHaveBeenCalledTimes(1);
+      expect(txRolePolicies.find).not.toHaveBeenCalled();
+      expect(txUserInline.find).not.toHaveBeenCalled();
+      expect(txRoles.find).not.toHaveBeenCalled();
+    });
+  });
+
   // Confirms the SUPER_ADMIN Policy-sync fix found during the RBAC naming audit: real authorization
   // resolves exclusively through Policies (roleHasActionViaPolicy above), so SUPER_ADMIN's Policy — the ONLY
   // predefined role's — must be kept in sync with the active Resource/Action catalog the same way

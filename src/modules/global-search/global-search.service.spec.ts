@@ -29,12 +29,12 @@ function resultItem(overrides: Partial<GlobalSearchResultItem> = {}): GlobalSear
 }
 
 describe('GlobalSearchService', () => {
-  let rolePermissions: { getMyActionCodesForRoles: jest.Mock; anyRoleIsSuperAdmin: jest.Mock };
+  let rolePermissions: { getMyActionCodesForRoles: jest.Mock; anyRoleIsAdministrator: jest.Mock };
 
   beforeEach(() => {
     rolePermissions = {
       getMyActionCodesForRoles: jest.fn().mockResolvedValue(['VIEW_USER', 'VIEW_ROLE']),
-      anyRoleIsSuperAdmin: jest.fn().mockResolvedValue(false),
+      anyRoleIsAdministrator: jest.fn().mockResolvedValue(false),
     };
   });
 
@@ -105,7 +105,7 @@ describe('GlobalSearchService', () => {
 
   it('resolves granted action codes and SUPER_ADMIN status from the live roleIds exactly once, and hands both to every provider’s isEnabledFor', async () => {
     rolePermissions.getMyActionCodesForRoles.mockResolvedValue(['VIEW_UNIT']);
-    rolePermissions.anyRoleIsSuperAdmin.mockResolvedValue(true);
+    rolePermissions.anyRoleIsAdministrator.mockResolvedValue(true);
     let seenContext: SearchAuthContext | undefined;
     const provider = fakeProvider({
       providerName: 'A',
@@ -119,7 +119,7 @@ describe('GlobalSearchService', () => {
     await service.search('term', 10, [5, 6], 99);
 
     expect(rolePermissions.getMyActionCodesForRoles).toHaveBeenCalledWith([5, 6], 99);
-    expect(rolePermissions.anyRoleIsSuperAdmin).toHaveBeenCalledWith([5, 6]);
+    expect(rolePermissions.anyRoleIsAdministrator).toHaveBeenCalledWith([5, 6]);
     expect(seenContext?.isSuperAdmin).toBe(true);
     expect(seenContext?.grantedActionCodes.has('VIEW_UNIT')).toBe(true);
   });

@@ -1,0 +1,19 @@
+Subject: You've been invited to join CCB
+
+You're invited to join CCB
+
+Hello Sara,
+
+System Administrator has created a staff account for you on CCB. Accept the invitation to confirm your email address and choose your own password.
+
+Account: sara.ahmed@example.com
+Invited by: System Administrator
+Link expires: in 24 hours (until 13 Nov 2026, 08:22 UTC)
+
+Accept invitation: https://app.example.com/accept-invitation?token=SAMPLE-LINK-THAT-DOES-NOT-WORK
+
+Or copy and paste this link into your browser
+
+https://app.example.com/accept-invitation?token=SAMPLE-LINK-THAT-DOES-NOT-WORK
+
+This link can be used only once. If you weren't expecting this invitation, you can safely ignore this email. Nothing is activated unless you accept it.

@@ -12,7 +12,7 @@ import {
   ApiBearerAuth,
   ApiTags,
 } from '@nestjs/swagger';
-import { ROLES } from '@app/common/constants/global';
+import { ADMINISTRATOR_ROLES } from '../../common/security/administrator-roles';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { AuthenticatedUser } from '../../auth/interfaces/authenticated-user.interface';
@@ -24,7 +24,7 @@ import { SaveRoleWithPermissionsDto } from './dto/save-role-with-permissions.dto
 
 @ApiBearerAuth()
 @ApiTags('Role Permissions')
-@Roles(ROLES.SUPER_ADMIN)
+@Roles(...ADMINISTRATOR_ROLES)
 @Controller({
   path: 'role-permissions',
   version: '1',
@@ -43,7 +43,8 @@ export class RolePermissionsController {
 
   @Get("tree")
   getPermissionTree() {
-    return this.rolePermissionsService.getPermissionTree();
+    // The editor's tree: without the administration console's pages and permissions (they are SUPER_ADMIN's alone).
+    return this.rolePermissionsService.getPermissionTree(undefined, { forEditing: true });
   }
 
   @Get("role/:roleId")
@@ -52,6 +53,7 @@ export class RolePermissionsController {
   ) {
     return this.rolePermissionsService.getPermissionTree(
       Number(roleId),
+      { forEditing: true },
     );
   }
 

@@ -5,11 +5,16 @@ import {
     IsOptional,
     IsString,
     IsIn,
+    IsNotEmpty,
+    MaxLength,
+    Min,
 } from 'class-validator';
 
 export class CreatePModuleDto {
     @ApiProperty()
     @IsString()
+    @IsNotEmpty()
+    @MaxLength(150)
     moduleName!: string;
 
     @ApiProperty({
@@ -24,6 +29,7 @@ export class CreatePModuleDto {
     })
     @IsOptional()
     @IsNumber()
+    @Min(0)
     displayOrder?: number;
 
     @ApiProperty({

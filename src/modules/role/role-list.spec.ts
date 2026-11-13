@@ -1,5 +1,6 @@
 import { ROLES } from '@app/common/constants/global';
 import { RoleService } from './role.service';
+import { Actor, SYSTEM_ACTOR } from '../../common/security/actor';
 
 // The Roles list is searched, filtered, sorted and paged by the API, which also decides per row whether the
 // role is the system role and whether it may be deleted — the web client works none of that out itself.
@@ -67,6 +68,8 @@ describe('RoleService.RoleLists — server-driven search / filter / sort', () =>
       {} as any,
       { getUserCountsByRoleIds: jest.fn().mockImplementation(async () => userCounts) } as any,
       dataSource as any,
+      // The assignment boundary only feeds the pickers (getRoleDropdown / getRolePicker); the list screen never consults it.
+      {} as any,
     );
   });
 
@@ -84,6 +87,20 @@ describe('RoleService.RoleLists — server-driven search / filter / sort', () =>
     expect(andWhereCalls[0].sql).toContain('role.roleDescription LIKE :term');
     expect(andWhereCalls[0].sql).toContain('userCategory.label LIKE :term');
     expect(andWhereCalls[0].params).toEqual({ term: '%fin%' });
+  });
+
+  it('keeps SUPER_ADMIN out of the list of a viewer who is not a super administrator — nothing is hidden from a super administrator, the system or an internal caller', async () => {
+    const delegated: Actor = { kind: 'user', id: 2, roleNames: ['USER_MANAGER'] };
+    const superAdmin: Actor = { kind: 'user', id: 1, roleNames: ['SUPER_ADMIN'] };
+
+    await service.RoleLists(q(), delegated);
+    expect(andWhereCalls).toEqual([{ sql: 'BINARY role.roleName <> :administratorRole0', params: { administratorRole0: 'SUPER_ADMIN' } }]);
+
+    andWhereCalls.length = 0;
+    await service.RoleLists(q(), superAdmin);
+    await service.RoleLists(q(), SYSTEM_ACTOR);
+    await service.RoleLists(q());
+    expect(andWhereCalls).toHaveLength(0);
   });
 
   it('filters by user category and by created date', async () => {
