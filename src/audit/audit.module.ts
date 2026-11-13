@@ -1,6 +1,7 @@
 import { Global, Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { User } from '../modules/user/entities/user.entity';
+import { AccessDeniedAuditService } from '../common/security/access-denied-audit';
 import { AuditLogController } from './audit-log.controller';
 import { AuditLogQueryService } from './audit-log-query.service';
 import { AuditService } from './audit.service';
@@ -12,7 +13,7 @@ import { AuditLog } from './entities/audit-log.entity';
 @Module({
   imports: [TypeOrmModule.forFeature([AuditLog, User])],
   controllers: [AuditLogController],
-  providers: [AuditService, AuditLogQueryService, SecurityEventService],
-  exports: [AuditService, AuditLogQueryService, SecurityEventService],
+  providers: [AuditService, AuditLogQueryService, SecurityEventService, AccessDeniedAuditService],
+  exports: [AuditService, AuditLogQueryService, SecurityEventService, AccessDeniedAuditService],
 })
 export class AuditModule {}

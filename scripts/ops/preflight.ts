@@ -162,6 +162,21 @@ async function checkDependencies(env: Record<string, string | undefined>, produc
     } catch {
       add('Database account privileges', 'INFO', 'could not be read');
     }
+    try {
+      const triggers: Array<{ TRIGGER_NAME: string }> = await dataSource.query(
+        'SELECT TRIGGER_NAME FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = ? AND EVENT_OBJECT_TABLE = ?',
+        [env.DB_DATABASE, 'audit_logs'],
+      );
+      const names = new Set(triggers.map((row) => row.TRIGGER_NAME));
+      const missing = [!names.has('audit_logs_no_update') && 'UPDATE', !names.has('audit_logs_no_delete') && 'DELETE'].filter((label): label is string => !!label);
+      if (missing.length === 0) {
+        add('Audit log immutability', 'PASS', 'audit_logs append-only triggers (audit_logs_no_update, audit_logs_no_delete) are installed');
+      } else {
+        add('Audit log immutability', 'FAIL', `the audit_logs append-only ${missing.join('/')} trigger is missing: audit rows can be modified or deleted — run npm run migration:run (1795700000000-AddAuditLogsAppendOnlyTrigger) with the migration account`);
+      }
+    } catch (error) {
+      add('Audit log immutability', 'WARN', `could not be determined (${error instanceof Error ? error.message : String(error)})`);
+    }
   } catch (error) {
     add('Database connection', 'FAIL', `${error instanceof Error ? error.message.split('\n')[0] : String(error)}`);
   } finally {

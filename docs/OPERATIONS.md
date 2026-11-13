@@ -74,8 +74,9 @@ npm run migration:revert:prod   # reverts the LAST migration
 `npm run preflight` (compiled: `npm run preflight:prod`) answers "will this start, and is it safe to run?" before you start or upgrade. It is read-only:
 it reads the environment file the API would read, connects to the database and Redis, and prints a verdict per check — environment class, Node.js
 support, the start-up validation rules, CORS origins and cookie flags, reverse-proxy setting, Swagger, build output, mail server, database connection,
-pending migrations, the database account's privileges, Redis. Secrets are never printed. `-- --json` prints machine-readable output for a deployment
-pipeline, `-- --strict` fails on warnings, `-- --skip-db` checks the configuration only. Exit code 0 = ready, 1 = at least one failure.
+pending migrations, the database account's privileges, **the `audit_logs` append-only triggers (§7)**, Redis. Secrets are never printed. `-- --json`
+prints machine-readable output for a deployment pipeline, `-- --strict` fails on warnings, `-- --skip-db` checks the configuration only. Exit code
+0 = ready, 1 = at least one failure.
 
 ## 4. Health, readiness and shutdown
 
@@ -156,3 +157,27 @@ docs/SECURITY_HARDENING.md (§3) and `.env.example` (`LOGIN_*`). The practical c
   memory of the API process: they are cleared by restarting it, and expire by themselves after the window.
 * Locks, protected mode and unlocks appear in the audit trail (module `security`); `LOGIN_FAILED` rows are capped (12 a minute per account, 200 overall), so
   an attack is visible without being able to flood the table.
+
+## 7. Audit trail
+
+Every audited change (`audit_logs`) is written through one of two services — `AuditService.record()` (business-module changes: who changed what, before
+and after) or `SecurityEventService.record()` (module `security`: sign-ins, lock-outs, access refusals — `src/audit/audit.constants.ts` lists every
+`SECURITY_EVENT`). Both only ever **insert**; neither has an update or delete method, and `AuditLogController` (`GET /audit-logs`, `GET /audit-logs/:id`,
+SUPER_ADMIN only) has no write route. Read it in the console's *Audit and compliance* screen, or `GET /audit-logs` directly.
+
+**Append-only, enforced at the database.** Two triggers on `audit_logs` (migration `1795700000000-AddAuditLogsAppendOnlyTrigger`) reject any `UPDATE` or
+`DELETE` against the table outright (`SIGNAL SQLSTATE '45000'`), whichever account or code path attempts it. This is the actual security boundary — not
+the runtime account's grants, which cannot exclude one table from its UPDATE/DELETE privilege (`scripts/db/provision-db-users.sql` explains why). Only
+the migration account holds the `TRIGGER` privilege needed to create or drop them; the API's runtime account does not, so even a fully compromised
+runtime credential cannot silently disable them to cover its tracks. `npm run preflight` checks both triggers exist on every start-up review (§3) and
+**FAILs** if either is missing — apply the migration with the migration account (§2) if it does.
+
+**Access-denied events.** A signed-in staff request refused with 403 by the authorization guards (RolesGuard, PermissionGuard, the SUPER_ADMIN account
+protections, …) is written as `ACCESS_DENIED` (module `security`) by `AccessDeniedAuditService` (`src/common/security/access-denied-audit.ts`), mounted
+as Express middleware in `main.ts` so it sees every route the same way. It records only the method, the matched route PATTERN (never a raw id, email or
+query string) and the client address — never a request body or header. Capped at 20 a minute per user and 200 overall (the same shape as the sign-in
+lock-out's caps above), and at most once a minute per user **and route**, so a script hitting every route it can reach stays visible without flooding
+the table. `PASSWORD_CHANGE_REQUIRED` (and the reserved `MFA_ENROLLMENT_REQUIRED`, for when MFA enrollment is enforced the same way) are session-state
+refusals, not authorization denials, and are never recorded here. Scoped to staff sessions only: a customer-portal 403 is not recorded, because
+`audit_logs.performed_by` joins the `users` table and a Customer id is a separate id space (an account-invitations migration note explains this split)
+— recording one would misattribute the row or leave the actor blank.

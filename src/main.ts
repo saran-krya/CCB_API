@@ -4,6 +4,7 @@ import { NestFactory } from '@nestjs/core';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module';
+import { AccessDeniedAuditService } from './common/security/access-denied-audit';
 import { configureHttpSecurity } from './common/security/configure-http-security';
 import { createProxyHeaderWarning } from './common/security/proxy-warning';
 import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
@@ -51,6 +52,11 @@ async function bootstrap() {
   app.useGlobalInterceptors(
     new ResponseInterceptor(),
   );
+  // Writes `security` / ACCESS_DENIED audit rows for a signed-in staff request refused with 403 (see the service's own
+  // doc comment). Resolved from Nest's DI container (AuditModule is @Global) so it gets a real SecurityEventService,
+  // then mounted as plain Express middleware — after the filters/interceptors above, so it only ever reads a response
+  // that is already final and never changes it.
+  app.use(app.get(AccessDeniedAuditService).middleware());
 
   // Swagger UI and /docs-json describe every route, so they exist only where they are wanted: on by
   // default for a developer machine, off everywhere else unless SWAGGER_ENABLED=true is set explicitly.

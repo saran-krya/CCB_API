@@ -20,20 +20,33 @@
 -- =====================================================================================================
 
 -- 1. The account the running API uses (DB_USERNAME / DB_PASSWORD): data only. No CREATE / ALTER / DROP /
---    INDEX / REFERENCES — it cannot change the schema, drop a table or create further accounts.
+--    INDEX / REFERENCES / TRIGGER — it cannot change the schema, drop a table, create further accounts, or
+--    create/alter/drop a trigger (so it can never touch the audit_logs append-only triggers below).
 --    (SELECT ... FOR UPDATE, used for the last-SUPER_ADMIN and role-change locks, needs only these.)
+--
+--    `audit_logs` IS covered by this account's UPDATE/DELETE grant — MySQL has no "GRANT ... ON *.* EXCEPT
+--    this one table": a privilege is either database-wide or needs an explicit per-table GRANT for every
+--    OTHER table this account legitimately writes (every business table it updates/deletes rows of), which
+--    this project does not maintain table-by-table. The real immutability boundary for `audit_logs` is NOT
+--    this GRANT — it is the two BEFORE UPDATE/DELETE triggers the migration account creates below
+--    (migration 1795700000000-AddAuditLogsAppendOnlyTrigger.ts): they reject any UPDATE or DELETE on that one
+--    table regardless of which account issues it, and this account holds no TRIGGER privilege, so it can
+--    never drop or alter them even with a leaked credential or a SQL-injection bug.
 CREATE USER IF NOT EXISTS 'ccb_app'@'__API_HOST__' IDENTIFIED BY '__APP_PASSWORD__';
 GRANT SELECT, INSERT, UPDATE, DELETE ON `__DB_NAME__`.* TO 'ccb_app'@'__API_HOST__';
 
 -- 2. The account the migration CLI uses (DB_MIGRATION_USERNAME / DB_MIGRATION_PASSWORD, read only by
 --    src/config/data-source.ts for `npm run migration:run` / `migration:revert`). It can change the
 --    schema, but only inside this one database, and it is not used by the running API.
+--    TRIGGER is needed ONLY so this account can run migration 1795700000000-AddAuditLogsAppendOnlyTrigger.ts
+--    (the audit_logs append-only triggers) — it is deliberately NOT granted to 'ccb_app' above.
 CREATE USER IF NOT EXISTS 'ccb_migrator'@'__OPS_HOST__' IDENTIFIED BY '__MIGRATION_PASSWORD__';
-GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, DROP, INDEX, REFERENCES
+GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, DROP, INDEX, REFERENCES, TRIGGER
   ON `__DB_NAME__`.* TO 'ccb_migrator'@'__OPS_HOST__';
 
 -- 3. Check what each account can really do (read the output; nothing here should mention `*.*`, GRANT
---    OPTION, SUPER, FILE or PROCESS).
+--    OPTION, SUPER, FILE or PROCESS). 'ccb_app' specifically must NOT mention TRIGGER — that is what
+--    keeps it from ever being able to drop or alter the audit_logs append-only triggers.
 SHOW GRANTS FOR 'ccb_app'@'__API_HOST__';
 SHOW GRANTS FOR 'ccb_migrator'@'__OPS_HOST__';
 
