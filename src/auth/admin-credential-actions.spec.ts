@@ -7,8 +7,9 @@ jest.mock('bcryptjs', () => ({ hash: jest.fn().mockResolvedValue('hashed-passwor
 
 // The admin credential actions on ANOTHER staff user's account (Manage sign-in access). RESET_USER_PASSWORD hands the actor a working login for
 // the account, so a reset is held to the same ASSIGNMENT BOUNDARY as handing out a role (UserRoleService.assertActorMayTakeOverAccount) — and
-// disabling sign-in never touches the installation's INITIAL administrator. The rules themselves live in UserRoleService and are tested there;
-// here: that AuthService asks them, in the right order, and that a refusal writes nothing. Written, never run.
+// neither resetting the password nor disabling sign-in ever touches the installation's INITIAL administrator (M10), even for a PEER
+// SUPER_ADMIN actor the assignment boundary itself would otherwise exempt without a lookup. The rules themselves live in UserRoleService and
+// are tested there; here: that AuthService asks them, in the right order, and that a refusal writes nothing. Written, never run.
 
 const ADMIN: Actor = { kind: 'user', id: 80, roleNames: ['ADMIN'] };
 const SUPER_ADMIN: Actor = { kind: 'user', id: 1, roleNames: ['SUPER_ADMIN'] };
@@ -53,18 +54,34 @@ afterEach(() => {
 });
 
 describe('AuthService.adminResetPassword — a reset hands the actor a login, so it is bounded like a role grant', () => {
-  it('asks whether the account is a SUPER_ADMIN account, THEN whether it is within the actor\'s scope, BEFORE anything is written', async () => {
+  it('asks whether the account is a SUPER_ADMIN account, THEN whether it is the initial administrator, THEN whether it is within the actor\'s scope, BEFORE anything is written', async () => {
     const t = build();
 
     await t.service.adminResetPassword(TARGET_ID, { newPassword: NEW_PASSWORD } as any, ADMIN);
 
     expect(t.userRoles.assertActorMayModifyUser).toHaveBeenCalledWith(ADMIN, TARGET_ID);
+    expect(t.userRoles.assertNotInitialAdministrator).toHaveBeenCalledWith(TARGET_ID, 'reset the password of');
     expect(t.userRoles.assertActorMayTakeOverAccount).toHaveBeenCalledWith(ADMIN, TARGET_ID, 'reset the password of');
     const [modifyOrder] = t.userRoles.assertActorMayModifyUser.mock.invocationCallOrder;
+    const [initialOrder] = t.userRoles.assertNotInitialAdministrator.mock.invocationCallOrder;
     const [takeOverOrder] = t.userRoles.assertActorMayTakeOverAccount.mock.invocationCallOrder;
     const [writeOrder] = t.users.adminSetPasswordHash.mock.invocationCallOrder;
-    expect(modifyOrder).toBeLessThan(takeOverOrder);
+    expect(modifyOrder).toBeLessThan(initialOrder);
+    expect(initialOrder).toBeLessThan(takeOverOrder);
     expect(takeOverOrder).toBeLessThan(writeOrder);
+  });
+
+  it('M10: refuses (403) to reset the password of the initial administrator — nothing is written, not even by another SUPER_ADMIN', async () => {
+    const t = build();
+    t.userRoles.assertNotInitialAdministrator.mockRejectedValue(new ForbiddenException(initialSuperAdminProtectedMessage('reset the password of')));
+
+    await expect(t.service.adminResetPassword(TARGET_ID, { newPassword: NEW_PASSWORD } as any, SUPER_ADMIN)).rejects.toThrow(
+      initialSuperAdminProtectedMessage('reset the password of'),
+    );
+
+    expect(t.userRoles.assertActorMayTakeOverAccount).not.toHaveBeenCalled();
+    expect(t.users.adminSetPasswordHash).not.toHaveBeenCalled();
+    expect(t.audit.record).not.toHaveBeenCalled();
   });
 
   it('a refusal by the scope check writes NOTHING — no password hash, no audit row', async () => {
@@ -120,7 +137,7 @@ describe('AuthService.adminResetPassword — a reset hands the actor a login, so
     expect(JSON.stringify(t.audit.record.mock.calls)).not.toContain(result.generatedPassword!);
   });
 
-  it('a SUPER_ADMIN actor goes through the same two questions (UserRoleService answers "yes" for it without a lookup)', async () => {
+  it('a SUPER_ADMIN actor goes through the same questions (UserRoleService answers "yes" for it without a lookup)', async () => {
     const t = build();
 
     await t.service.adminResetPassword(TARGET_ID, { newPassword: NEW_PASSWORD } as any, SUPER_ADMIN);

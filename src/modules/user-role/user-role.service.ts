@@ -292,10 +292,14 @@ export class UserRoleService {
   }
 
   /**
-   * Refuses (403) an action that would delete, deactivate, demote or lock out the INITIAL administrator (see initialAdministratorId) — for
-   * the paths that are not already guarded inside a locking transaction (disabling someone's sign-in is one). Read-only, no lock. The
-   * transactional paths get the same rule from assertNotLastActiveAdministrator / removeRoleFromUser. It is deliberately NOT a rule
-   * against changing the account's other details or resetting its password: only losing the owner is guarded, not looking after them.
+   * Refuses (403) an action that would delete, deactivate, demote, lock out, or TAKE OVER the credentials of the INITIAL administrator
+   * (see initialAdministratorId) — for the paths that are not already guarded inside a locking transaction (disabling someone's sign-in and
+   * resetting their password are two). Read-only, no lock. The transactional paths get the same rule from
+   * assertNotLastActiveAdministrator / removeRoleFromUser. Resetting the password (AuthService.adminResetPassword) is included (M10): the normal
+   * assignment boundary (assertActorMayTakeOverAccount) exempts every SUPER_ADMIN actor, including a PEER administrator with no relationship to
+   * the installation's owner account — without this, any one of several co-equal SUPER_ADMINs could silently hand itself a working login to
+   * the owner's own account, which is a takeover, not merely "looking after them". It is still NOT a rule against changing the initial
+   * administrator's other, non-credential details (profile fields, for example) — only losing control of the owner account is guarded.
    */
   async assertNotInitialAdministrator(userId: number, action: string, manager?: EntityManager): Promise<void> {
     const holders = await this.activeAdministratorIds(manager);

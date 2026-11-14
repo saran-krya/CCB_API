@@ -30,7 +30,7 @@ the code.
 | M7 | Reverse-proxy IP detection / TRUST_PROXY | 1 | Fixed (prior session) | — |
 | H3 | Audit logs security hardening | 2 | **Fixed** | 2026-11-13 (commit `23b1b3f`) |
 | M1 | Module Catalog backend protection and immutability | 2 | **Fixed** | 2026-11-14 |
-| M10 | SUPER_ADMIN password reset security | 2 | In progress | 2026-11-14 |
+| M10 | SUPER_ADMIN password reset security | 2 | **Fixed** | 2026-11-14 |
 | — | Missing security audit events | 2 | Not started | — |
 | — | Authentication timing / invitation token security | 2 | Not started | — |
 | — | Authorization consistency across modules | 2 | Not started | — |
@@ -44,7 +44,7 @@ the code.
 | L1–L14 | Unknown — no original report text available | 6 | **Cannot be enumerated without the source report** | — |
 | — | Phase 7 — final verification | 7 | Not started | — |
 
-**Next action:** M10 (SUPER_ADMIN password reset security).
+**Next action:** missing security audit events (next unlabeled Phase 2 bullet).
 
 ---
 
@@ -118,3 +118,43 @@ See `docs/OPERATIONS.md` §7 for the operational writeup. Summary for this track
   backend finding; it already surfaces a 403 as an error toast generically, and now also receives
   `isProtected` on sub-modules/screens if a future UI pass wants to grey out the control pre-emptively instead
   of only after a rejected request.
+
+## M10 — SUPER_ADMIN password reset security (Fixed, 2026-11-14)
+
+- **Root cause:** `docs/ON_PREMISE_SUPER_ADMIN.md` §11 item 6 already documented this as an OPEN, unresolved
+  decision: *"Today another SUPER_ADMIN can still reset the initial administrator's password or change its
+  e-mail (it is 'looking after' the account, not losing it). Should those also need the server tool?"*
+  Verified in code: `AuthService.adminResetPassword` calls `assertActorMayModifyUser` and
+  `assertActorMayTakeOverAccount`, both of which return immediately (no lookup) for any SUPER_ADMIN actor —
+  `assertNotInitialAdministrator` (the check `disableSigninAccess` already uses) was never called. Separately,
+  `UserService.update` lets `dto.email` change with the same unconditional SUPER_ADMIN exemption and no
+  initial-administrator check at all. Net effect: any one of several co-equal SUPER_ADMINs could silently
+  reset the installation's OWNER account's password (a fully working login) or redirect its e-mail, with no
+  confirmation and no notification to the real owner — a single compromised SUPER_ADMIN credential was enough
+  to take over the one account every other protection (deletion/deactivation/demotion/sign-in-disable) was
+  built to keep safe.
+- **Decision:** resolved the open question as "yes, guard it" for password reset and e-mail change
+  specifically (both are a path to the owner's identity), while explicitly leaving ordinary profile edits
+  (name, mobile, designation) and ordinary peer-to-peer SUPER_ADMIN resets (any account OTHER than the
+  initial one) unchanged — consistent with this codebase's existing "SUPER_ADMINs trust each other" model,
+  which this finding does not try to overturn wholesale.
+- **Implementation:**
+  - `src/auth/auth.service.ts` (`adminResetPassword`) — added `assertNotInitialAdministrator(targetUserId,
+    'reset the password of')` right after the existing SUPER_ADMIN-account check, before the assignment
+    boundary.
+  - `src/modules/user/user.service.ts` (`update`) — added the same check, scoped to only fire when
+    `dto.email` is actually changing (`'change the e-mail address of'`).
+  - `src/modules/user-role/user-role.service.ts` — updated `assertNotInitialAdministrator`'s own doc comment
+    (it previously said the opposite: "deliberately NOT a rule against ... resetting its password").
+  - `docs/ON_PREMISE_SUPER_ADMIN.md` §4.1 and §11 item 6, `docs/SECURITY_HARDENING.md` (initial-SUPER_ADMIN
+    table row) — updated to describe the new guarantee and mark the open question resolved.
+- **Migrations:** none — pure authorization-logic change, no schema impact.
+- **Tests:** `src/auth/admin-credential-actions.spec.ts` — new test for the 403 + call-ordering, updated the
+  "goes through the same questions" test. `src/modules/user/user.service.spec.ts` — 3 new tests (initial
+  administrator's e-mail blocked / a non-initial SUPER_ADMIN's e-mail still changeable / re-saving the SAME
+  e-mail is not treated as a change). `npx jest src/modules/user src/auth src/modules/user-role` → **12
+  suites / 391 tests, all pass.** `tsc --noEmit` → clean.
+- **Remaining:** none identified for the specific gap this finding named. Noted, not actioned (out of scope
+  for M10, belongs to X1/X2): there is still no step-up/MFA challenge before ANY admin-reset of ANY account,
+  and no notification e-mail to the account holder when their password is reset or e-mail changed by someone
+  else — both become directly actionable once X1 (MFA) and SMTP/email-template delivery are in place.

@@ -641,6 +641,23 @@ describe('UserService — protections enforced end to end (real UserRoleService 
       expect(userStates[5].active).toBe(true);
     });
 
+    it('M10: the INITIAL SUPER_ADMIN (user 5) cannot have its e-mail changed either, even by another SUPER_ADMIN — nothing saved', async () => {
+      await expect(service.update(5, { email: 'attacker@example.com' } as any, ROOT)).rejects.toThrow(ForbiddenException);
+      await expect(service.update(5, { email: 'attacker@example.com' } as any, ROOT)).rejects.toThrow(
+        initialSuperAdminProtectedMessage('change the e-mail address of'),
+      );
+
+      expect(savedUsers).toEqual([]);
+    });
+
+    it('M10: a NON-initial SUPER_ADMIN (user 6) can still have its e-mail changed by another SUPER_ADMIN', async () => {
+      await expect(service.update(6, { email: 'new-address@example.com' } as any, ROOT)).resolves.toMatchObject({ email: 'new-address@example.com' });
+    });
+
+    it('M10: re-saving the initial administrator with its OWN unchanged e-mail is not a "change" — still allowed', async () => {
+      await expect(service.update(5, { email: 'user5@example.com', firstName: 'Renamed' } as any, ROOT)).resolves.toMatchObject({ firstName: 'Renamed' });
+    });
+
     it('a SUPER_ADMIN who is NOT the initial one can be deactivated while another ACTIVE SUPER_ADMIN exists', async () => {
       await expect(service.update(6, { active: false } as any, ROOT)).resolves.toMatchObject({ active: false });
 

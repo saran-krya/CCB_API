@@ -743,6 +743,15 @@ export class UserService {
       throw new ForbiddenException('You cannot deactivate your own account.');
     }
 
+    // M10 (docs/ON_PREMISE_SUPER_ADMIN.md §11 item 6, now resolved): changing the initial administrator's e-mail
+    // is a takeover vector in waiting — point future password recovery (or a mail-based 2FA reset) at an address
+    // the real owner does not control, then take the account over without ever touching its password hash here.
+    // assertActorMayModifyUser above is a no-op for a SUPER_ADMIN actor, exactly like the password-reset path
+    // (AuthService.adminResetPassword), so this needs its own explicit check the same way that one now has.
+    if (dto.email !== undefined && dto.email !== user.email) {
+      await this.userRoles.assertNotInitialAdministrator(id, "change the e-mail address of");
+    }
+
     const oldValue = withoutPasswordHash({ ...user });
     await this.validateUniqueFields(
       dto,

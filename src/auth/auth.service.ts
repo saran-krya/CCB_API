@@ -536,6 +536,12 @@ export class AuthService {
    * session for the target user (logoutAll) — unlike changePassword's own self-service call to
    * logoutAll, there is no "caller's own current session" to exempt here, since the caller (the
    * admin) and the target are different people; passing no exceptDeviceId revokes everything.
+   *
+   * M10: the installation's INITIAL administrator can never have its password reset through this route, by anyone — including another
+   * SUPER_ADMIN, who would otherwise pass every check below without a lookup (assertActorMayModifyUser/assertActorMayTakeOverAccount both
+   * exempt a SUPER_ADMIN actor unconditionally). A reset hands the actor a fully working login for the target account, so without this a
+   * single SUPER_ADMIN — one of possibly several, with no relationship to the owner account otherwise — could silently take over the
+   * installation's owner identity (see UserRoleService.assertNotInitialAdministrator's own doc comment).
    */
   async adminResetPassword(targetUserId: number, dto: AdminResetPasswordDto, actor: Actor): Promise<AdminResetPasswordResponseDto> {
     const targetUser = await this.users.findOne(targetUserId);
@@ -543,6 +549,7 @@ export class AuthService {
     // RESET_USER_PASSWORD is delegable, and a reset hands the actor a working login for the target — so a
     // SUPER_ADMIN account can only ever be reset by another SUPER_ADMIN...
     await this.userRoles.assertActorMayModifyUser(actor, targetUserId);
+    await this.userRoles.assertNotInitialAdministrator(targetUserId, 'reset the password of');
     // ...and, like handing out a role, taking over an account is held to the ASSIGNMENT BOUNDARY: a delegated administrator may only reset the
     // password of an account whose permissions it holds itself. Otherwise RESET_USER_PASSWORD would be a way around that boundary (reset a more
     // privileged user's password, sign in as them).
