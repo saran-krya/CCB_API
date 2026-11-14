@@ -62,7 +62,12 @@ The acting user is passed to the services as an `Actor` built from the live prin
   An admin reset defaults to `mustChangePassword = true`; the bootstrap admin is created with it set.
 * **Brute force**: per-IP request throttling (`THROTTLE_*`, strict limits on credential routes) plus a failed
   sign-in lock-out, returning 429 with `Retry-After` before any password is checked; unknown emails are counted
-  identically (no user enumeration). The lock-out counts failures **three ways** (fixed windows, `LOGIN_*`):
+  identically (no user enumeration) — in the response **and in its timing**: `AuthService.login` always runs a
+  real `bcrypt.compare`, against a fixed dummy hash when there is no real password hash to compare against (no
+  account with this e-mail; an account whose sign-in is disabled), so bcrypt's own cost factor — by far the
+  slowest step — is paid identically whichever of those is true, closing a timing side channel that would
+  otherwise answer "no such account" measurably faster than "wrong password for a real one" even though the
+  message never says so. The lock-out counts failures **three ways** (fixed windows, `LOGIN_*`):
   per **account and client** (one IP guessing one account is refused for that account — the account's owner, from
   another address, is not affected, so a stranger cannot lock the owner out by failing on purpose), per **client
   IP** (one machine spraying many accounts), and per **account across all clients** at a much higher threshold, which

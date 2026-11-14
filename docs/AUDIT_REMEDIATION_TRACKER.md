@@ -32,7 +32,7 @@ the code.
 | M1 | Module Catalog backend protection and immutability | 2 | **Fixed** | 2026-11-14 |
 | M10 | SUPER_ADMIN password reset security | 2 | **Fixed** | 2026-11-14 |
 | — | Missing security audit events | 2 | **Fixed** | 2026-11-14 |
-| — | Authentication timing / invitation token security | 2 | Not started | — |
+| — | Authentication timing / invitation token security | 2 | **Fixed** | 2026-11-14 |
 | — | Authorization consistency across modules | 2 | Not started | — |
 | X1 | MFA/2FA, especially for SUPER_ADMIN | 2 | Not started | — |
 | X2 | Secure password recovery | 2 | Not started | — |
@@ -44,7 +44,7 @@ the code.
 | L1–L14 | Unknown — no original report text available | 6 | **Cannot be enumerated without the source report** | — |
 | — | Phase 7 — final verification | 7 | Not started | — |
 
-**Next action:** authentication timing / invitation token security.
+**Next action:** authorization consistency across all modules.
 
 ---
 
@@ -186,3 +186,32 @@ See `docs/OPERATIONS.md` §7 for the operational writeup. Summary for this track
 - **Remaining:** none for the currently-built surface. The full success path of `login()` (issuing tokens) still
   has no dedicated unit test of its own (pre-existing gap, not introduced here) — noted for Phase 7 final
   verification, not fixed in this pass to keep this change scoped to the audit-event gap it was asked to close.
+
+## Authentication timing / invitation token security (Fixed, 2026-11-14)
+
+- **Investigation — invitation tokens:** reviewed `account-invitation.service.ts` and `common/utils/secure-token.util.ts`
+  in full. Found no gap: 32 random bytes (`crypto.randomBytes`, 256 bits) hashed with SHA-256 before storage
+  (the raw token exists only in the e-mailed link, never logged/audited); single-use enforced by one atomic
+  conditional `UPDATE ... WHERE status='PENDING' AND expires_at > NOW(6)` (of two simultaneous accept attempts
+  exactly one wins); 24-hour expiry judged by the DATABASE clock, not the app server's; a re-send invalidates
+  the previous token; the public `validate`/`accept` endpoints return the identical `INVALID_LINK` message for
+  every failure reason (no such token, expired, already used, account no longer eligible) and `validate` masks
+  the e-mail address even for a genuinely valid token. This was already correctly built (recent work, the same
+  migration that created the table) — nothing changed here.
+- **Root cause — authentication timing:** `AuthService.login()`'s own password checks were
+  `!!x.passwordHash && (await bcrypt.compare(...))` — bcrypt.compare (by far the slowest step, ~100-300ms at
+  this project's cost factor) was SKIPPED entirely whenever there was no real hash to compare against: a
+  non-existent e-mail, or an existing account whose sign-in is disabled (`passwordHash: null`). Both then
+  answered measurably FASTER than an existing, active account with a wrong password — even though every path
+  returns the identical "Invalid credentials" message, defeating the point of that identical message via a
+  timing side channel instead.
+- **Implementation:** `src/auth/auth.service.ts` — added a lazily-computed, memoized `dummyPasswordHash()` (a
+  real bcrypt hash of a password nobody uses, computed once); both branches of `login()` now always call
+  `bcrypt.compare`, falling back to the dummy hash instead of skipping the comparison. No behavior or message
+  changes — only the internal timing path.
+- **Migrations:** none.
+- **Tests:** new `src/auth/login-timing-safety.spec.ts` (3 tests: non-existent e-mail, disabled staff account,
+  customer with no password set — all three now provably invoke `bcrypt.compare` rather than skipping it).
+  `npx jest src/auth` → **8 suites / 116 tests, all pass.** `tsc --noEmit` → clean.
+- **Docs:** `docs/SECURITY_HARDENING.md` §3 updated (brute-force bullet).
+- **Remaining:** none identified.

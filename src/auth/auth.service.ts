@@ -70,6 +70,27 @@ interface SessionAudit {
   always?: boolean;
 }
 
+/**
+ * A bcrypt comparison to fall back on when there is no REAL password hash to compare against (no account with
+ * this e-mail at all; an account whose sign-in is disabled, `passwordHash: null`) — compared against instead of
+ * skipping the comparison, which is what AuthService.login does everywhere it decides a password is invalid.
+ *
+ * Without this, bcrypt.compare (bcrypt's own cost factor makes it the slowest step by far, ~100-300ms at this
+ * project's PASSWORD_HASH_ROUNDS) only runs when a real hash exists to compare against — so a non-existent
+ * e-mail, or one whose sign-in is disabled, answers measurably FASTER than one with a real, active password,
+ * even though every path returns the identical "Invalid credentials" message. That timing difference is enough
+ * to enumerate which e-mails have real (and active) accounts, defeating the point of the identical message.
+ * Computed once, lazily, the first time it is needed (never at module load — see the module's own tests, which
+ * mock bcryptjs with no `hashSync`), and reused for the life of the process: bcrypt.compare's running time
+ * depends only on the cost factor baked into the hash, never on what the hash or the candidate password are, so
+ * one fixed dummy hash is exactly as good a decoy on request 2 as it was on request 1,000,000.
+ */
+let dummyPasswordHashPromise: Promise<string> | undefined;
+function dummyPasswordHash(): Promise<string> {
+  dummyPasswordHashPromise ??= bcrypt.hash('no account anywhere uses this password', PASSWORD_HASH_ROUNDS);
+  return dummyPasswordHashPromise;
+}
+
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
@@ -123,10 +144,11 @@ export class AuthService {
       // lets the status check return a specific, account-status message without ever exposing
       // "this account exists" to someone who merely guessed the email and got the password wrong.
       // A wrong password always gets the same generic 'Invalid credentials' regardless of whether
-      // the account is active, inactive, or has no password hash at all (bcrypt.compare against
-      // undefined/'' never throws, it just returns false) — only once the password is CONFIRMED
-      // correct does the account's actual status get to shape the response.
-      const valid = !!user.passwordHash && (await bcrypt.compare(dto.password, user.passwordHash));
+      // the account is active, inactive, or has no password hash at all — only once the password is
+      // CONFIRMED correct does the account's actual status get to shape the response. Always a REAL
+      // bcrypt.compare (never skipped when there is no real hash — dummyPasswordHash's own doc
+      // comment) so a disabled account's own bcrypt cost is paid exactly like an active one's.
+      const valid = await bcrypt.compare(dto.password, user.passwordHash ?? (await dummyPasswordHash()));
       if (!valid) {
         this.logger.warn(`Staff login rejected for ${maskEmail(dto.email)} — password mismatch or no password set`);
         await this.noteFailedSignIn(dto.email, clientIp, { accountExists: true, entityId: user.id });
@@ -176,8 +198,9 @@ export class AuthService {
     // Same password-before-status ordering as the staff branch above, for the same reason — the
     // status check below must never run (and never shape the response) until the password is
     // confirmed correct, so an attacker who doesn't know the password can't use the response to
-    // learn anything about whether the account exists or what state it's in.
-    const customerValid = !!customer?.passwordHash && (await bcrypt.compare(dto.password, customer.passwordHash));
+    // learn anything about whether the account exists or what state it's in. Same timing reasoning
+    // too: always a real bcrypt.compare, never skipped for "no such customer" or "no password set".
+    const customerValid = await bcrypt.compare(dto.password, customer?.passwordHash ?? (await dummyPasswordHash()));
     if (!customerValid) {
       this.logger.warn(`Customer login rejected for ${maskEmail(dto.email)} — password mismatch, no account, or no password set`);
       // Counted the same whether or not the email exists, so the lock-out never reveals which emails are real.
