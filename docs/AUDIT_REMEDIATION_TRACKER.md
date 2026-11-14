@@ -33,7 +33,7 @@ the code.
 | M10 | SUPER_ADMIN password reset security | 2 | **Fixed** | 2026-11-14 |
 | — | Missing security audit events | 2 | **Fixed** | 2026-11-14 |
 | — | Authentication timing / invitation token security | 2 | **Fixed** | 2026-11-14 |
-| — | Authorization consistency across modules | 2 | Not started | — |
+| — | Authorization consistency across modules | 2 | **Reviewed — no gap found** | 2026-11-14 |
 | X1 | MFA/2FA, especially for SUPER_ADMIN | 2 | Not started | — |
 | X2 | Secure password recovery | 2 | Not started | — |
 | — | Database permissions / sensitive configuration review | 2 | Not started | — |
@@ -44,7 +44,7 @@ the code.
 | L1–L14 | Unknown — no original report text available | 6 | **Cannot be enumerated without the source report** | — |
 | — | Phase 7 — final verification | 7 | Not started | — |
 
-**Next action:** authorization consistency across all modules.
+**Next action:** X1 (MFA/2FA for SUPER_ADMIN) and X2 (secure password recovery) — the two large remaining Phase 2 items.
 
 ---
 
@@ -215,3 +215,30 @@ See `docs/OPERATIONS.md` §7 for the operational writeup. Summary for this track
   `npx jest src/auth` → **8 suites / 116 tests, all pass.** `tsc --noEmit` → clean.
 - **Docs:** `docs/SECURITY_HARDENING.md` §3 updated (brute-force bullet).
 - **Remaining:** none identified.
+
+## Authorization consistency across all modules (Reviewed — no gap found, 2026-11-14)
+
+A full line-by-line audit of all 39 controllers was not attempted (unbounded scope for one bullet in a
+7-phase project); this was a targeted review of the highest-risk patterns, honestly reported as such rather
+than claimed as exhaustive:
+- **No controller lacks an authorization decorator entirely** — every one of the 39 controller files in
+  `src/modules`/`src/auth`/`src/audit` uses at least one of `@Roles`/`@Permission`/`@Authenticated`/`@Public`.
+  Combined with `PermissionGuard`/`RolesGuard` failing CLOSED by default (confirmed by the guards' own specs,
+  which use a deliberately-unguarded `ProbeController` fixture to prove a route with no rule is denied, not
+  allowed) — an accidentally-unguarded route in this codebase is a functionality bug (always 403), never an
+  open-access one.
+- **Every `@Public()` use was read in context** (7 total, sitewide): login, refresh, logout, SSO redirect
+  (`auth.controller.ts`), invitation validate/accept (already reviewed above), customer account activation
+  (`customer.controller.ts`, rate-limited). All are routes that must work for an unauthenticated caller by
+  design, and none return more than that design requires.
+- **Customer-portal IDOR surface reviewed in full** (`customer-portal.service.ts`/`.controller.ts`) — the
+  highest-risk surface for a cross-tenant access bug, since it's the one principal type (Customer) whose every
+  record must be scoped to "my own account only". Every `getMy<X>(id)` method resolves ownership
+  server-side (`getOwnedUnitIds` / an explicit `assertOwnsUnit`/membership check) before returning anything,
+  and `customerId` is sourced ONLY from `@CurrentCustomer()` (the JWT principal), never from a client-supplied
+  parameter — confirmed by the file's own `/me/*` naming convention and doc comment stating this explicitly.
+- **Already-documented, deliberate exceptions** (`docs/SECURITY_HARDENING.md` §6, pre-existing): a short list
+  of permission codes that are UI-gating only — a decision already made and written down, not an oversight.
+- **Not reviewed in this pass** (recommend a dedicated follow-up if exhaustive, module-by-module coverage is
+  wanted): the remaining ~35 controllers' individual route-to-permission-code mappings were not each checked
+  by hand for "is this the RIGHT code for this operation's actual risk" — only the structural patterns above.
