@@ -72,7 +72,10 @@ The acting user is passed to the services as an `Actor` built from the live prin
   needs `RESET_USER_PASSWORD`), or on the server `npm run maintenance:unlock-signin` when nobody can sign in
   (docs/OPERATIONS.md, "Sign-in lock-out"). Lock-out events are written to the audit trail (module `security`:
   `LOGIN_FAILED` — capped at 12 a minute per account and 200 overall — `ACCOUNT_LOCKED`, `ACCOUNT_PROTECTED`,
-  `IP_LOCKED`, `SIGNIN_UNLOCKED`, `REFRESH_REPLAY_DETECTED`). A counter that ever loses its expiry (a Redis hiccup
+  `IP_LOCKED`, `SIGNIN_UNLOCKED`, `REFRESH_REPLAY_DETECTED`). The CORRECT password for an account whose status
+  refuses sign-in (a deactivated staff account, an overdue customer account) is a DIFFERENT event,
+  `SIGNIN_BLOCKED_ACCOUNT_STATUS` — recorded instead of, never alongside, a lock-out counter: it already proves
+  the real password, so counting it as a guess would be wrong. A counter that ever loses its expiry (a Redis hiccup
   between `INCR` and `EXPIRE`) is repaired on the next read, so a lock can never become permanent. Counters live in
   Redis when it is reachable and in process memory otherwise. A wrong **current password** on
   `PATCH /auth/change-password` counts toward the same counters (a locked client gets the same 429 before the

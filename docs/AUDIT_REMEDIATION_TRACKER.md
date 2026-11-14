@@ -31,7 +31,7 @@ the code.
 | H3 | Audit logs security hardening | 2 | **Fixed** | 2026-11-13 (commit `23b1b3f`) |
 | M1 | Module Catalog backend protection and immutability | 2 | **Fixed** | 2026-11-14 |
 | M10 | SUPER_ADMIN password reset security | 2 | **Fixed** | 2026-11-14 |
-| — | Missing security audit events | 2 | Not started | — |
+| — | Missing security audit events | 2 | **Fixed** | 2026-11-14 |
 | — | Authentication timing / invitation token security | 2 | Not started | — |
 | — | Authorization consistency across modules | 2 | Not started | — |
 | X1 | MFA/2FA, especially for SUPER_ADMIN | 2 | Not started | — |
@@ -44,7 +44,7 @@ the code.
 | L1–L14 | Unknown — no original report text available | 6 | **Cannot be enumerated without the source report** | — |
 | — | Phase 7 — final verification | 7 | Not started | — |
 
-**Next action:** missing security audit events (next unlabeled Phase 2 bullet).
+**Next action:** authentication timing / invitation token security.
 
 ---
 
@@ -158,3 +158,31 @@ See `docs/OPERATIONS.md` §7 for the operational writeup. Summary for this track
   for M10, belongs to X1/X2): there is still no step-up/MFA challenge before ANY admin-reset of ANY account,
   and no notification e-mail to the account holder when their password is reset or e-mail changed by someone
   else — both become directly actionable once X1 (MFA) and SMTP/email-template delivery are in place.
+
+## Missing security audit events (Fixed, 2026-11-14)
+
+- **Investigation:** audited every `SECURITY_EVENT.*` constant (`src/audit/audit.constants.ts`) against actual
+  call sites. Found: `LOGIN_FAILED`, `ACCOUNT_LOCKED`, `ACCOUNT_PROTECTED`, `IP_LOCKED`, `SIGNIN_UNLOCKED`,
+  `REFRESH_REPLAY_DETECTED` were all already wired up and well-tested; `ACCESS_DENIED` was wired up by H3 this
+  session; every `MFA_*`, `PASSWORD_RECOVERY_*`, `AUDIT_EXPORTED` and `AUDIT_INTEGRITY_FAILED` constant is
+  unused vocabulary for a feature that does not exist yet (X1, X2, Phase 4 audit export/integrity respectively)
+  — adding a call to one now, with no feature behind it, would be dead code, not a fix. Every admin credential
+  action (`ADMIN_RESET_PASSWORD`, `DISABLE_SIGNIN_ACCESS`, `REVOKE_SESSIONS`, `UNLOCK_SIGNIN`) and every
+  session-ending path (`logout`, `logoutDevice`, `logoutEverywhere`, `logoutOtherSessions`) already audits
+  itself. The one genuine, currently-reachable gap: `AuthService.login()`'s "authenticated identity, refused
+  standing" branches (a CORRECT password for a deactivated staff account or an overdue customer account) logged
+  a warning only — no audit/security trail at all, and no existing test exercised either branch.
+- **Implementation:** new `SECURITY_EVENT.SIGNIN_BLOCKED_ACCOUNT_STATUS` (`audit.constants.ts`); both `login()`
+  branches now call a new `noteSigninBlockedByStatus` helper (`src/auth/auth.service.ts`) — deliberately NOT
+  routed through the lock-out counters (`noteFailedSignIn`), since this proves a real password and must never
+  tighten the account's own guess-lockout.
+- **Migrations:** none.
+- **Tests:** new `src/auth/login-account-status.spec.ts` (3 tests — no prior spec exercised `login()`'s
+  inactive/overdue branches at all): deactivated staff blocked + audited, overdue customer blocked + audited,
+  and a wrong password against an inactive account still only ever produces ordinary `LOGIN_FAILED` (status is
+  never leaked before the password is confirmed). `npx jest src/auth` → **7 suites / 113 tests, all pass.**
+  `tsc --noEmit` → clean.
+- **Docs:** `docs/SECURITY_HARDENING.md` §3 updated to list the new event.
+- **Remaining:** none for the currently-built surface. The full success path of `login()` (issuing tokens) still
+  has no dedicated unit test of its own (pre-existing gap, not introduced here) — noted for Phase 7 final
+  verification, not fixed in this pass to keep this change scoped to the audit-event gap it was asked to close.

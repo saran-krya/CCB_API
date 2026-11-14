@@ -68,6 +68,14 @@ export const SECURITY_EVENT = {
   REFRESH_REPLAY_DETECTED: 'REFRESH_REPLAY_DETECTED',
   /** A signed-in user was refused (403) by the authorization guards. Recorded at most once a minute per user and route. */
   ACCESS_DENIED: 'ACCESS_DENIED',
+  /** The CORRECT password was presented for an account whose status currently refuses sign-in (a deactivated staff
+   *  account; an overdue customer account) — the authenticated identity is confirmed, only its standing is refused
+   *  (AuthService.login's own "authenticated identity, refused standing" distinction). Deliberately separate from
+   *  LOGIN_FAILED, which never confirms a credential for the account it names: this one means whoever tried it
+   *  already knows the real password, which is worth an operator's attention on its own (a departed employee's
+   *  credentials, for example) even though the client-facing 403 already says the account is disabled — no new
+   *  information reaches the client either way, this only adds server-side visibility. */
+  SIGNIN_BLOCKED_ACCOUNT_STATUS: 'SIGNIN_BLOCKED_ACCOUNT_STATUS',
   MFA_ENROLLED: 'MFA_ENROLLED',
   MFA_DISABLED: 'MFA_DISABLED',
   MFA_VERIFY_FAILED: 'MFA_VERIFY_FAILED',

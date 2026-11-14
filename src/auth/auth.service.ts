@@ -141,6 +141,7 @@ export class AuthService {
         // ('Account is deactivated') — an existing, narrower inconsistency this fix deliberately
         // does not touch (out of scope: refresh() re-validates an EXISTING session/token, a
         // different enough situation that changing it was not requested).
+        await this.noteSigninBlockedByStatus(dto.email, clientIp, user.id, 'inactive');
         throw new ForbiddenException(ERROR_MESSAGES.ACCOUNT_INACTIVE_CONTACT_ADMIN);
       }
 
@@ -198,6 +199,7 @@ export class AuthService {
       this.logger.warn(`Customer login rejected for ${maskEmail(dto.email)} — correct password, account overdue (customerId=${customer!.id})`);
       // 403 — same reasoning as the staff branch above: credentials already verified correct,
       // account status is what's refusing access now.
+      await this.noteSigninBlockedByStatus(dto.email, clientIp, customer!.id, 'overdue');
       throw new ForbiddenException(ERROR_MESSAGES.ACCOUNT_INACTIVE_CONTACT_ADMIN);
     }
 
@@ -703,6 +705,20 @@ export class AuthService {
       ],
     });
     await this.noteLockout(email, ip, outcome, context.entityId);
+  }
+
+  /** A CORRECT password for an account whose status refuses sign-in (SIGNIN_BLOCKED_ACCOUNT_STATUS — see its own doc
+   *  comment). Deliberately NOT routed through noteFailedSignIn/noteLockout: this is not a guess (recordFailure
+   *  would wrongly count it toward THIS account's lock-out, when the attempt already proved the real password),
+   *  and the client already learned the account's status from the 403 itself, so no dedupe/rate shaping is needed
+   *  here the way LOGIN_FAILED needs it against a guessing attack — a disabled account's holder trying again a few
+   *  times is not an attack. */
+  private async noteSigninBlockedByStatus(email: string, ip: string | undefined, entityId: number, reason: 'inactive' | 'overdue'): Promise<void> {
+    await this.security?.record({
+      action: SECURITY_EVENT.SIGNIN_BLOCKED_ACCOUNT_STATUS,
+      entityId,
+      details: { account: maskEmail(email), reason, ip: ip ?? null },
+    });
   }
 
   /** Writes an event for each lock-out threshold a failure has just crossed (and logs it, so an operator sees it without the audit screen). */
